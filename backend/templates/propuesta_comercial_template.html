@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Propuesta Comercial - {client_name}</title>
+    <style>
+        @page {
+            margin: 1.5cm;
+            size: A4;
+        }
+        
+        * {
+            box-sizing: border-box;
+        }
+        
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 0;
+            padding: 15px;
+            line-height: 1.4;
+            color: #000;
+            font-size: 11px;
+            background: white;
+        }
+        
+        .header-section {
+            width: 100%;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            overflow: hidden;
+        }
+        
+        .company-info {
+            float: left;
+            width: 60%;
+        }
+        
+        .company-name { 
+            font-size: 32px;
+            font-weight: bold;
+            color: #2c5f7c;
+            margin: 0 0 2px 0;
+            letter-spacing: -1px;
+        }
+        
+        .company-subtitle { 
+            font-size: 13px;
+            color: #2c5f7c;
+            margin: 0 0 5px 0;
+            font-weight: normal;
+        }
+        
+        .company-address { 
+            font-size: 10px;
+            line-height: 1.3;
+            color: #000;
+            margin: 0;
+        }
+        
+        .budget-box { 
+            float: right;
+            width: 35%;
+            border: 2px solid #000;
+            padding: 8px;
+            text-align: center;
+            margin-top: 5px;
+        }
+        
+        .budget-title { 
+            font-weight: bold;
+            font-size: 13px;
+            margin: 0 0 6px 0;
+        }
+        
+        .budget-table { 
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .budget-table td { 
+            border: 1px solid #000;
+            padding: 3px 5px;
+            font-size: 10px;
+        }
+        
+        .budget-table .label {
+            text-align: left;
+            font-weight: normal;
+        }
+        
+        .budget-table .value {
+            text-align: right;
+            font-weight: bold;
+        }
+        
+        .clear-fix { 
+            clear: both; 
+        }
+        
+        .client-section { 
+            margin: 15px 0;
+            font-size: 11px;
+        }
+        
+        .client-name {
+            font-weight: bold;
+            margin: 0 0 2px 0;
+        }
+        
+        .process-title {
+            font-weight: bold;
+            text-decoration: underline;
+            margin: 0 0 12px 0;
+        }
+        
+        .main-table { 
+            width: 100%;
+            border-collapse: collapse;
+            border: 2px solid #000;
+            margin: 8px 0;
+        }
+        
+        .main-table th { 
+            background-color: #f0f0f0;
+            font-weight: bold;
+            padding: 6px 5px;
+            text-align: center;
+            border: 1px solid #000;
+            font-size: 11px;
+        }
+        
+        .main-table td { 
+            padding: 4px 5px;
+            border: 1px solid #000;
+            font-size: 10px;
+            vertical-align: top;
+        }
+        
+        .category-row { 
+            background-color: #d3d3d3;
+            font-weight: bold;
+            text-align: center;
+        }
+        
+        .category-row td {
+            padding: 5px;
+            font-size: 11px;
+        }
+        
+        .coordination-row {
+            border-top: 2px solid #000;
+        }
+        
+        .coordination-row td {
+            padding: 5px;
+            font-weight: bold;
+        }
+        
+        .totals-table {
+            width: 100%;
+            border-collapse: collapse;
+            border: 2px solid #000;
+            margin-top: 0;
+        }
+        
+        .totals-table td {
+            padding: 5px;
+            border: 1px solid #000;
+            font-size: 11px;
+        }
+        
+        .total-row {
+            background-color: #f8f8f8;
+            font-weight: bold;
+        }
+        
+        .final-total {
+            background-color: #e0e0e0;
+            font-weight: bold;
+        }
+        
+        .final-total td {
+            padding: 6px;
+            font-size: 12px;
+        }
+        
+        /* PDF optimizations */
+        .main-table {
+            page-break-inside: avoid;
+        }
+        
+        p, div {
+            orphans: 3;
+            widows: 3;
+        }
+    </style>
+</head>
+<body>
+    <div class="header-section">
+        <div class="company-info">
+            <div class="company-name">sabra</div>
+            <div class="company-subtitle">corporation</div>
+            <div class="company-address">
+                Av. Principal, Mini Centro<br>
+                Principal Local 16, Lechería,<br>
+                Anzoátegui, 6016
+            </div>
+        </div>
+        
+        <div class="budget-box">
+            <div class="budget-title">PRESUPUESTO</div>
+            <table class="budget-table">
+                <tr>
+                    <td class="label">Fecha</td>
+                    <td class="value">[FECHA]</td>
+                </tr>
+                <tr>
+                    <td class="label">Duración</td>
+                    <td class="value">20 días</td>
+                </tr>
+                <tr>
+                    <td class="label">#</td>
+                    <td class="value">[NUMERO]</td>
+                </tr>
+            </table>
+        </div>
+        
+        <div class="clear-fix"></div>
+    </div>
+    
+    <div class="client-section">
+        <div class="client-name">Para:</div>
+        <div class="client-name">[CLIENTE]</div>
+        <div class="process-title">Proceso:</div>
+        <div class="process-title">[PROCESO]</div>
+    </div>
+    
+    <table class="main-table">
+        <thead>
+            <tr>
+                <th style="width: 50%;">Descripción</th>
+                <th style="width: 15%;">Cant</th>
+                <th style="width: 20%;">Precio unitario</th>
+                <th style="width: 15%;">Total</th>
+            </tr>
+        </thead>
+        <tbody>
+[PRODUCTOS_ROWS]
+        </tbody>
+    </table>
+    
+    <div class="totals-section">
+        <table class="totals-table">
+            <tr class="total-row">
+                <td colspan="2" style="text-align: left; font-weight: bold;">Notas:</td>
+                <td style="text-align: right; font-weight: bold;">Subtotal</td>
+                <td style="text-align: right; font-weight: bold;">[SUBTOTAL]</td>
+            </tr>
+            <tr class="final-total">
+                <td colspan="2"></td>
+                <td style="text-align: right; font-weight: bold;">Total</td>
+                <td style="text-align: right; font-weight: bold;">[TOTAL]</td>
+            </tr>
+        </table>
+    </div>
+</body>
+</html> 
