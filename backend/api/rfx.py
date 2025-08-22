@@ -75,7 +75,7 @@ def process_rfx():
         
         logger.info(f"✅ Content validation passed - has_files: {has_files}, has_text: {has_text}")
 
-        # 📄 PROCESAR ARCHIVOS (si existen)
+        # 📄 PROCESAR ARCHIVOS (si existen) - WITH DETAILED DEBUG
         upload_config = get_file_upload_config()
         extra_exts = ['.pdf','.doc','.docx','.txt','.xlsx','.csv','.png','.jpg','.jpeg','.tiff','.zip']
         try:
@@ -85,21 +85,42 @@ def process_rfx():
 
         valid_files, total_size = [], 0
         if has_files:
-            for f in files:
+            logger.info(f"📄 PROCESSING {len(files)} FILES:")
+            for file_index, f in enumerate(files):
                 if not f or f.filename == '':
+                    logger.warning(f"⚠️ SKIPPING EMPTY FILE {file_index+1}")
                     continue
-                logger.info(f"📄 Processing file: {f.filename}")
+                    
+                logger.info(f"📄 PROCESSING FILE {file_index+1}: '{f.filename}' (type: {f.content_type if hasattr(f, 'content_type') else 'unknown'})")
                 
                 if not _is_allowed_file(f.filename, upload_config.allowed_extensions):
+                    logger.error(f"❌ FILE TYPE NOT ALLOWED: {f.filename}")
                     return jsonify({"status":"error","message":f"File type not allowed. Supported: {', '.join(upload_config.allowed_extensions)}","error":"Invalid file type"}), 400
                 
                 content = f.read()
-                total_size += len(content)
-                if len(content) > upload_config.max_file_size:
+                content_size = len(content)
+                total_size += content_size
+                
+                logger.info(f"📄 FILE READ: '{f.filename}' → {content_size} bytes")
+                
+                # Check content type by looking at first few bytes
+                if content_size > 0:
+                    header = content[:20]
+                    if header.startswith(b'%PDF'):
+                        logger.info(f"📄 DETECTED: {f.filename} is PDF format")
+                    elif header.startswith(b'PK'):
+                        logger.info(f"📄 DETECTED: {f.filename} is ZIP-based format (DOCX/XLSX)")
+                    else:
+                        logger.info(f"📄 DETECTED: {f.filename} other format (first bytes: {header[:10]})")
+                
+                if content_size > upload_config.max_file_size:
+                    logger.error(f"❌ FILE TOO LARGE: {f.filename} ({content_size} bytes > {upload_config.max_file_size})")
                     return jsonify({"status":"error","message":f"File too large. Maximum size: {upload_config.max_file_size // (1024*1024)}MB","error":"File size exceeded"}), 413
                 
                 valid_files.append({"filename": f.filename, "content": content})
-                logger.info(f"✅ File processed: {f.filename} ({len(content)} bytes)")
+                logger.info(f"✅ FILE VALIDATED: '{f.filename}' ({content_size} bytes) - READY FOR PROCESSING")
+            
+            logger.info(f"📊 FILES SUMMARY: {len(valid_files)} valid files, total size: {total_size} bytes")
 
         # 📝 PROCESAR CONTENIDO DE TEXTO (si existe)
         if has_text:

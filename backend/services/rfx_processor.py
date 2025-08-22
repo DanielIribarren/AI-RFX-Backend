@@ -3152,12 +3152,20 @@ class RFXProcessorService:
         """Multi-file processing pipeline with OCR and spreadsheet support"""
         logger.info(f"📦 process_rfx_case start: {rfx_input.id} with {len(blobs)} file(s)")
         
+        # 🔍 DEBUG: Detailed file logging
+        for i, b in enumerate(blobs):
+            fname = b.get("filename", f"file_{i}")
+            content_size = len(b.get("content", b.get("bytes", b"")))
+            logger.info(f"🔍 INPUT FILE {i+1}: '{fname}' ({content_size} bytes)")
+        
         # 1) Expand ZIPs
         expanded: List[Dict[str, Any]] = []
-        for b in blobs:
-            fname = (b.get("filename") or "file").lower()
+        for i, b in enumerate(blobs):
+            fname = (b.get("filename") or f"file_{i}").lower()
             content = b.get("content") or b.get("bytes")
-            if not content: continue
+            if not content: 
+                logger.warning(f"⚠️ EMPTY FILE {i+1}: '{fname}' - skipping")
+                continue
             if USE_ZIP and (fname.endswith(".zip") or (content[:2] == b"PK" and not fname.endswith(".docx") and not fname.endswith(".xlsx"))):
                 try:
                     with zipfile.ZipFile(io.BytesIO(content)) as zf:
@@ -3173,62 +3181,124 @@ class RFXProcessorService:
         text_parts: List[str] = []
         canonical_items: List[Dict[str, Any]] = []
         
-        # 2) Per-file routing
-        for b in expanded:
+        # 2) Per-file routing with DETAILED DEBUG LOGGING
+        for file_index, b in enumerate(expanded):
             fname = b["filename"].lower()
             content: bytes = b["content"]
             kind = self._detect_content_type(content, fname)
-            logger.info(f"🔎 Detected: {fname} kind={kind}")
+            logger.info(f"🔎 PROCESSING FILE {file_index+1}: '{fname}' kind={kind} size={len(content)} bytes")
+            
             try:
                 if kind in ("pdf", "docx", "text"):
+                    logger.info(f"📄 Extracting text from {kind.upper()}: {fname}")
                     txt = self._extract_text_from_document(content)
+                    logger.info(f"📄 TEXT EXTRACTED from {fname}: {len(txt)} characters")
+                    
                     # Fallback OCR if PDF nearly empty
                     if kind == "pdf" and (not txt.strip() or len(re.sub(r"\s+", "", txt)) < 50):
+                        logger.info(f"🧠 PDF text too short ({len(txt)} chars), trying OCR for: {fname}")
                         ocr_txt = self._extract_text_with_ocr(content, kind="pdf", filename=fname)
                         if ocr_txt.strip():
-                            logger.info(f"🧠 OCR applied to {fname}")
+                            logger.info(f"🧠 OCR SUCCESS: {fname} → {len(ocr_txt)} characters")
                             txt = ocr_txt
+                        else:
+                            logger.warning(f"🧠 OCR FAILED for: {fname}")
+                    
                     if txt.strip():
                         text_parts.append(f"\n\n### SOURCE: {fname}\n{txt}")
+                        logger.info(f"✅ ADDED TO AI CONTEXT: {fname} ({len(txt)} chars)")
+                        # Show preview of text to verify content
+                        preview = txt[:300].replace('\n', ' ')
+                        logger.info(f"📝 CONTENT PREVIEW: {fname} → {preview}...")
+                    else:
+                        logger.error(f"❌ NO TEXT EXTRACTED from {fname} - file will be ignored!")
+                        
                 elif kind in ("xlsx", "csv"):
+                    logger.info(f"📊 Parsing spreadsheet: {fname}")
                     parsed = self._parse_spreadsheet_items(fname, content)
-                    logger.info(f"📊 Excel/CSV parsed: {len(parsed.get('items', []))} items, {len(parsed.get('text', ''))} chars of text")
+                    items_count = len(parsed.get('items', []))
+                    text_length = len(parsed.get('text', ''))
+                    logger.info(f"📊 SPREADSHEET PARSED: {fname} → {items_count} items, {text_length} chars of text")
+                    
                     if parsed["items"]: 
                         canonical_items.extend(parsed["items"])
-                        logger.info(f"📋 Sample items: {parsed['items'][:3]}")  # Log first 3 items for debugging
+                        logger.info(f"📋 PRODUCTS FOUND in {fname}: {items_count} items")
+                        # Log first 3 items for verification
+                        for i, item in enumerate(parsed['items'][:3]):
+                            logger.info(f"📋 PRODUCT {i+1}: {item}")
+                    else:
+                        logger.warning(f"⚠️ NO PRODUCTS found in spreadsheet: {fname}")
                     
-                    # 🆕 MEJORADO: Siempre agregar texto del Excel para que AI pueda extraer fechas/metadata
+                    # Always add text for AI metadata extraction
                     if parsed["text"]:  
                         text_parts.append(f"\n\n### SOURCE: {fname}\n{parsed['text']}")
-                        logger.info(f"📄 Excel text preview: {parsed['text'][:200]}...")
+                        preview = parsed['text'][:300].replace('\n', ' ')
+                        logger.info(f"📄 SPREADSHEET TEXT ADDED: {fname} → {preview}...")
                     else:
-                        # Si no hay texto pero sí items, crear resumen para la AI
+                        # Create summary for AI if we have items but no text
                         if parsed["items"]:
                             summary = f"EXCEL: {len(parsed['items'])} productos encontrados:\n"
-                            for item in parsed["items"][:5]:  # Primeros 5 productos
+                            for item in parsed["items"][:5]:  # First 5 products
                                 summary += f"- {item['nombre']}: {item['cantidad']} {item['unidad']}\n"
                             text_parts.append(f"\n\n### SOURCE: {fname}\n{summary}")
-                            logger.info(f"📄 Excel summary added to AI context: {len(summary)} chars")
+                            logger.info(f"📄 SUMMARY CREATED for {fname}: {len(summary)} chars")
+                        
                 elif kind == "image":
+                    logger.info(f"🖼️ Applying OCR to image: {fname}")
                     ocr_txt = self._extract_text_with_ocr(content, kind="image", filename=fname)
                     if ocr_txt.strip():
                         text_parts.append(f"\n\n### SOURCE: {fname} (OCR)\n{ocr_txt}")
+                        logger.info(f"✅ IMAGE OCR SUCCESS: {fname} → {len(ocr_txt)} chars")
+                        preview = ocr_txt[:300].replace('\n', ' ')
+                        logger.info(f"📝 OCR PREVIEW: {fname} → {preview}...")
+                    else:
+                        logger.error(f"❌ IMAGE OCR FAILED: {fname}")
                 else:
-                    logger.warning(f"⚠️ Unsupported kind for now: {fname}")
+                    logger.error(f"❌ UNSUPPORTED FILE TYPE: {fname} (kind={kind})")
+                    
             except Exception as e:
-                logger.warning(f"⚠️ Error processing {fname}: {e}")
+                logger.error(f"❌ PROCESSING ERROR for {fname}: {e}")
+                import traceback
+                logger.error(f"❌ FULL ERROR TRACE: {traceback.format_exc()}")
 
         combined_text = "\n\n".join(tp for tp in text_parts if tp.strip()) or ""
+        
+        # 🔍 CRITICAL DEBUG: Show what's being sent to AI
+        logger.info(f"📊 FINAL PROCESSING SUMMARY:")
+        logger.info(f"📊   - Files processed: {len(expanded)}")
+        logger.info(f"📊   - Text parts created: {len(text_parts)}")
+        logger.info(f"📊   - Canonical items found: {len(canonical_items)}")
+        logger.info(f"📊   - Combined text length: {len(combined_text)} characters")
+        
+        if combined_text.strip():
+            # Show preview of combined text
+            preview = combined_text[:500].replace('\n', ' ')
+            logger.info(f"📝 COMBINED TEXT PREVIEW (first 500 chars): {preview}...")
+            
+            # Show text structure
+            sources = [part.split('\n')[0] for part in combined_text.split("### SOURCE:") if part.strip()]
+            logger.info(f"📄 TEXT SOURCES DETECTED: {sources}")
+        else:
+            logger.warning(f"⚠️ NO COMBINED TEXT - only canonical items: {len(canonical_items)}")
+        
         if not combined_text.strip() and not canonical_items:
+            logger.error(f"❌ FATAL: No content extracted from ANY file!")
             raise ValueError("No se pudo extraer texto ni ítems de los archivos proporcionados")
 
         # 3) AI pipeline
         rfx_input.extracted_content = combined_text
+        logger.info(f"🤖 SENDING TO AI: {len(combined_text)} characters of combined text")
         raw_data = self._process_with_ai(combined_text)
+        
+        # Log AI results
+        ai_products_count = len(raw_data.get("productos", []))
+        logger.info(f"🤖 AI EXTRACTION RESULTS: {ai_products_count} products found")
+        
         if canonical_items:
-            ai_products_count = len(raw_data.get("productos", []))
+            logger.info(f"📊 OVERRIDING AI products with canonical spreadsheet products: {len(canonical_items)} items (AI found {ai_products_count})")
             raw_data["productos"] = canonical_items  # Spreadsheet is canonical
-            logger.info(f"📊 Canonical products from spreadsheet override AI products: {len(canonical_items)} items (AI found {ai_products_count})")
+        else:
+            logger.info(f"📊 USING AI extracted products: {ai_products_count} items")
 
         validated_data = self._validate_and_clean_data(raw_data, rfx_input.id)
         evaluation_metadata = self._evaluate_rfx_intelligently(validated_data, rfx_input.id)
