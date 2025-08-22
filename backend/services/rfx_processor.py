@@ -2483,6 +2483,8 @@ class RFXProcessorService:
             cleaned_data["productos"] = []
             validation_status["has_products"] = False
             validation_status["product_count"] = 0
+            # 🔧 FIX: Initialize cleaned_productos to prevent UnboundLocalError
+            cleaned_productos = []
             logger.info(f"📄 Processing as informational RFX without products")
         else:
             # Clean and validate each product - VERY PERMISSIVE
