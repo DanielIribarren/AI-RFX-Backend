@@ -101,7 +101,7 @@ uvicorn==0.24.0
 # ========================
 # Security & Authentication
 # ========================
-cryptography==41.0.8
+cryptography>=42.0.0
 PyJWT==2.8.0
 
 # ========================

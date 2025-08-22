@@ -25,54 +25,115 @@ logger = logging.getLogger(__name__)
 rfx_bp = Blueprint("rfx_api", __name__, url_prefix="/api/rfx")
 
 
+
 @rfx_bp.route("/process", methods=["POST"])
 def process_rfx():
     """
-    🎯 Main RFX processing endpoint - Improved version
-    Processes uploaded PDF/DOCX/TXT files using the new service architecture
+    🎯 Main RFX processing endpoint - FLEXIBLE version
+    Processes: SOLO ARCHIVOS | SOLO TEXTO | ARCHIVOS + TEXTO
+    
+    Casos de uso:
+    1. Solo archivos: frontend envía files → procesa archivos
+    2. Solo texto: frontend envía contenido_extraido → procesa texto
+    3. Ambos: frontend envía files + contenido_extraido → procesa todo
     """
     try:
+        # 🔍 LOGGING INICIAL - Debug para entender qué llega
+        logger.info(f"🔍 RFX Process Request received")
+        logger.info(f"📄 Request files: {list(request.files.keys())}")
+        logger.info(f"📝 Request form keys: {list(request.form.keys())}")
+        
         # Get file upload configuration
         upload_config = get_file_upload_config()
         
-        # Validate request has files (supports legacy 'pdf_file' or modern 'files[]')
-        if 'pdf_file' not in request.files and 'files' not in request.files:
-            return jsonify({"status":"error","message":"No file provided","error":"File upload is required"}), 400
+        # 🆕 NUEVA LÓGICA FLEXIBLE: Obtener archivos Y contenido de texto
+        files = []
+        if 'files' in request.files:
+            files = request.files.getlist('files')
+        elif 'pdf_file' in request.files:
+            files = [request.files['pdf_file']]
+            
+        contenido_extraido = request.form.get('contenido_extraido', '').strip()
+        
+        # 🔍 LOGGING DETALLADO
+        logger.info(f"📄 Files count: {len(files)}")
+        if contenido_extraido:
+            logger.info(f"📝 Text content length: {len(contenido_extraido)} characters")
+            logger.info(f"📝 Text preview: {contenido_extraido[:200]}...")
+        
+        # ✅ VALIDACIÓN FLEXIBLE: Debe tener AL MENOS archivos O texto
+        has_files = any(f and f.filename for f in files)
+        has_text = bool(contenido_extraido)
+        
+        if not has_files and not has_text:
+            logger.error("❌ No content provided - neither files nor text")
+            return jsonify({
+                "status": "error",
+                "message": "Debe proporcionar archivos o contenido de texto",
+                "error": "Content required"
+            }), 400
+        
+        logger.info(f"✅ Content validation passed - has_files: {has_files}, has_text: {has_text}")
 
+        # 📄 PROCESAR ARCHIVOS (si existen)
         upload_config = get_file_upload_config()
-        # Expand allowed extensions safely
         extra_exts = ['.pdf','.doc','.docx','.txt','.xlsx','.csv','.png','.jpg','.jpeg','.tiff','.zip']
         try:
             upload_config.allowed_extensions = list(sorted(set(upload_config.allowed_extensions) | set(extra_exts)))
         except Exception:
             pass
 
-        files = request.files.getlist('files') if 'files' in request.files else [request.files['pdf_file']]
         valid_files, total_size = [], 0
-        for f in files:
-            if not f or f.filename == '':
-                continue
-            if not _is_allowed_file(f.filename, upload_config.allowed_extensions):
-                return jsonify({"status":"error","message":f"File type not allowed. Supported: {', '.join(upload_config.allowed_extensions)}","error":"Invalid file type"}), 400
-            content = f.read()
-            total_size += len(content)
-            if len(content) > upload_config.max_file_size:
-                return jsonify({"status":"error","message":f"File too large. Maximum size: {upload_config.max_file_size // (1024*1024)}MB","error":"File size exceeded"}), 413
-            valid_files.append({"filename": f.filename, "content": content})
+        if has_files:
+            for f in files:
+                if not f or f.filename == '':
+                    continue
+                logger.info(f"📄 Processing file: {f.filename}")
+                
+                if not _is_allowed_file(f.filename, upload_config.allowed_extensions):
+                    return jsonify({"status":"error","message":f"File type not allowed. Supported: {', '.join(upload_config.allowed_extensions)}","error":"Invalid file type"}), 400
+                
+                content = f.read()
+                total_size += len(content)
+                if len(content) > upload_config.max_file_size:
+                    return jsonify({"status":"error","message":f"File too large. Maximum size: {upload_config.max_file_size // (1024*1024)}MB","error":"File size exceeded"}), 413
+                
+                valid_files.append({"filename": f.filename, "content": content})
+                logger.info(f"✅ File processed: {f.filename} ({len(content)} bytes)")
 
+        # 📝 PROCESAR CONTENIDO DE TEXTO (si existe)
+        if has_text:
+            # Crear archivo virtual con el contenido de texto
+            rfx_id_temp = f"RFX-{int(time.time())}-{random.randint(1000, 9999)}"
+            text_filename = f"{rfx_id_temp}_contenido_extraido.txt"
+            text_content = contenido_extraido.encode('utf-8')
+            
+            valid_files.append({
+                "filename": text_filename,
+                "content": text_content
+            })
+            total_size += len(text_content)
+            logger.info(f"✅ Text content processed as virtual file: {text_filename} ({len(text_content)} bytes)")
+
+        # Validación final de contenido
         if not valid_files:
-            return jsonify({"status":"error","message":"No file selected","error":"Empty filename"}), 400
+            logger.error("❌ No valid content after processing")
+            return jsonify({"status":"error","message":"No se pudo procesar el contenido proporcionado","error":"No valid content"}), 400
 
         # Optional total limit
         if total_size > getattr(upload_config, "max_total_size", 32*1024*1024):
             return jsonify({"status":"error","message":"Total upload too large. Maximum total size: 32MB","error":"Total size exceeded"}), 413
         
+        # 🆔 Generar ID y configuración RFX
         rfx_id = request.form.get('id', f"RFX-{int(time.time())}-{random.randint(1000, 9999)}")
         tipo_rfx = request.form.get('tipo_rfx', 'catering')
         rfx_input = RFXInput(id=rfx_id, rfx_type=RFXType(tipo_rfx))
 
+        logger.info(f"🚀 Starting RFX processing: {rfx_id} (type: {tipo_rfx})")
+        logger.info(f"📊 Processing summary: {len(valid_files)} files, total_size: {total_size} bytes")
+
         processor_service = RFXProcessorService()
-        # New multi-file pipeline:
+        # 🆕 PIPELINE FLEXIBLE: Procesa archivos Y/O texto
         rfx_processed = processor_service.process_rfx_case(rfx_input, valid_files)
         
         # NOTE: Proposal generation is now handled separately by user request
