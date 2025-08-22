@@ -1,25 +1,144 @@
-flask==3.0.2
+# ========================
+# Core Web Framework
+# ========================
+Flask==3.0.0
 flask-cors==4.0.0
-python-dotenv==1.0.1
-supabase>=2.0.0
-weasyprint>=60.0
-markdown>=3.5.1
-reportlab>=4.0.4
-pyppeteer>=1.0.2
-pydantic[email]==2.5.0
-openai>=1.0.0
-gunicorn>=21.2.0
-PyPDF2>=3.0.0
-python-docx>=1.1.0
-email-validator>=2.0.0
-# Optional PDF generation dependencies
-pillow>=10.0.0
-html5lib>=1.1
-# For text processing
-tiktoken>=0.4.0
-# For spreadsheet processing  
-pandas>=2.3.0
-openpyxl>=3.1.0
-# For testing
-pytest>=7.0.0
-pytest-asyncio>=0.21.0
+Werkzeug==3.0.1
+
+# ========================
+# Environment & Configuration
+# ========================
+python-dotenv==1.0.0
+
+# ========================
+# Data Validation & Models
+# ========================
+pydantic==2.5.2
+pydantic[email]==2.5.2
+
+# ========================
+# AI & OpenAI Integration
+# ========================
+openai==1.7.2
+
+# ========================
+# Database Integration
+# ========================
+supabase==2.3.0
+postgrest==0.13.2
+
+# ========================
+# Document Processing
+# ========================
+PyPDF2==3.0.1
+python-docx==1.1.0
+openpyxl==3.1.2
+xlrd==2.0.1
+
+# ========================
+# OCR & Image Processing (Optional)
+# ========================
+pytesseract==0.3.10
+Pillow==10.1.0
+pdf2image==1.16.3
+
+# ========================
+# Template Engine
+# ========================
+Jinja2==3.1.2
+MarkupSafe==2.1.3
+
+# ========================
+# HTML to PDF Generation
+# ========================
+weasyprint==60.2
+pdfkit==1.0.0
+
+# ========================
+# HTTP Requests & APIs
+# ========================
+requests==2.31.0
+urllib3==2.1.0
+
+# ========================
+# Date & Time Processing
+# ========================
+python-dateutil==2.8.2
+
+# ========================
+# Data Processing & Analysis
+# ========================
+pandas==2.1.4
+numpy==1.26.2
+
+# ========================
+# Testing Framework
+# ========================
+pytest==7.4.3
+pytest-flask==1.3.0
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+
+# ========================
+# Development Tools
+# ========================
+black==23.12.0
+flake8==6.1.0
+mypy==1.8.0
+isort==5.13.2
+
+# ========================
+# Logging & Monitoring
+# ========================
+structlog==23.2.0
+
+# ========================
+# Production Server
+# ========================
+gunicorn==21.2.0
+uvicorn==0.24.0
+
+# ========================
+# Security & Authentication
+# ========================
+cryptography==41.0.8
+PyJWT==2.8.0
+
+# ========================
+# Utilities
+# ========================
+click==8.1.7
+colorama==0.4.6
+tqdm==4.66.1
+
+# ========================
+# File Processing
+# ========================
+zipfile36==0.1.3
+mimetypes-plus==1.0.0
+
+# ========================
+# Email Processing (if needed)
+# ========================
+email-validator==2.1.0.post1
+
+# ========================
+# JSON & Serialization
+# ========================
+orjson==3.9.10
+
+# ========================
+# Performance & Caching
+# ========================
+redis==5.0.1
+celery==5.3.4
+
+# ========================
+# Health Checks & Monitoring
+# ========================
+healthcheck==1.3.3
+
+# ========================
+# Environment Detection
+# ========================
+python-multipart==0.0.6

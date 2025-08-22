@@ -1,4 +1,6 @@
-# Python
+# ========================
+# Python & Virtual Environment
+# ========================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -22,26 +24,102 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
 # Virtual environments
-venv/
-env/
-ENV/
-venv.bak/
-env.bak/
-
-# Environment variables
 .env
-.env.local
-.env.production
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
-# IDE
+# ========================
+# Flask Application Specific
+# ========================
+instance/
+.webassets-cache
+*.log
+
+# ========================
+# Environment Variables & Secrets
+# ========================
+.env
+.env.*
+!.env.example
+.env.local
+.env.development
+.env.production
+.env.test
+*.key
+*.pem
+*.crt
+config.json
+secrets.json
+
+# ========================
+# AI & ML Models
+# ========================
+*.model
+*.pkl
+*.h5
+*.pb
+models/
+checkpoints/
+embeddings/
+
+# ========================
+# File Uploads & Processing
+# ========================
+uploads/
+temp/
+tmp/
+*.pdf
+*.docx
+*.xlsx
+*.csv
+*.txt
+/backend/uploads/
+/backend/temp/
+
+# ========================
+# Database & Development Tools
+# ========================
+*.db
+*.sqlite
+*.sqlite3
+db.sqlite3
+database.db
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+
+# ========================
+# IDEs & Editors
+# ========================
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 .DS_Store?
 ._*
@@ -50,35 +128,83 @@ env.bak/
 ehthumbs.db
 Thumbs.db
 
-# Node.js (para el frontend)
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.npm
-.next/
-.nuxt/
-dist/
-coverage/
+# PyCharm
+.idea/
 
-# Logs
+# ========================
+# Operating System
+# ========================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+
+# ========================
+# Logs & Monitoring
+# ========================
 *.log
 logs/
+log/
+*.out
 
-# Database
-*.db
-*.sqlite
-*.sqlite3
+# ========================
+# Documentation Build
+# ========================
+docs/_build/
+site/
 
-# PDFs de prueba (opcional)
-*.pdf
-
-# Cache files
-.cache/
-.pytest_cache/
-
-# Temporary files
+# ========================
+# Backup Files
+# ========================
+*.bak
+*.backup
+*.orig
+*.save
+*.swp
 *.tmp
-*.temp
-temp/
-tmp/
+
+# ========================
+# Deployment & CI/CD
+# ========================
+.vercel
+.railway
+.github/workflows/secrets/
+
+# ========================
+# Cloud Storage & CDN
+# ========================
+.aws/
+.gcp/
+.azure/
+
+# ========================
+# Application Specific
+# ========================
+# RFX Processing Cache
+rfx_cache/
+proposal_cache/
+document_cache/
+
+# Generated files
+generated/
+output/
+
+# Evaluation results
+evals/results/
+benchmarks/
