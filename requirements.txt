@@ -1,0 +1,25 @@
+flask==3.0.2
+flask-cors==4.0.0
+python-dotenv==1.0.1
+supabase>=2.0.0
+weasyprint>=60.0
+markdown>=3.5.1
+reportlab>=4.0.4
+pyppeteer>=1.0.2
+pydantic[email]==2.5.0
+openai>=1.0.0
+gunicorn>=21.2.0
+PyPDF2>=3.0.0
+python-docx>=1.1.0
+email-validator>=2.0.0
+# Optional PDF generation dependencies
+pillow>=10.0.0
+html5lib>=1.1
+# For text processing
+tiktoken>=0.4.0
+# For spreadsheet processing  
+pandas>=2.3.0
+openpyxl>=3.1.0
+# For testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
