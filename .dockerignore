@@ -1,0 +1,15 @@
+.git
+venv
+**/__pycache__/
+**/*.pyc
+*.log
+.playwright
+node_modules
+tests
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+.env
+.env.*
+!.env.production.example
