@@ -2,13 +2,14 @@
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
     "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile"
+    "dockerfilePath": "Dockerfile.railway"
   },
   "deploy": {
-    "startCommand": "gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --threads 8 --timeout 180 --access-logfile - --error-logfile -",
+    "startCommand": "gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 2 --timeout 120 --max-requests 100 --max-requests-jitter 10 --access-logfile - --error-logfile - --log-level info backend.wsgi:application",
     "healthcheckPath": "/health",
-    "healthcheckTimeout": 100,
+    "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 3
+    "restartPolicyMaxRetries": 3,
+    "sleepApplication": false
   }
 }
