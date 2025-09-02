@@ -11,7 +11,6 @@ import time
 import random
 
 from backend.models.proposal_models import ProposalRequest, ProposalResponse, PropuestaGenerada, NotasPropuesta
-from backend.services.proposal_generator import ProposalGenerationService
 from backend.core.database import get_database_client
 
 logger = logging.getLogger(__name__)
@@ -77,7 +76,18 @@ def generate_proposal():
         from backend.utils.data_mappers import map_rfx_data_for_proposal
         rfx_data_mapped = map_rfx_data_for_proposal(rfx_data, rfx_products)
         
-        # Generar propuesta usando el servicio
+        # Generar propuesta usando el servicio (lazy import para evitar fallas en startup)
+        try:
+            from backend.services.proposal_generator import ProposalGenerationService
+        except Exception as import_error:
+            import traceback
+            logger.error(f"❌ Import error loading ProposalGenerationService: {import_error}\n{traceback.format_exc()}")
+            return jsonify({
+                "status": "error",
+                "message": "Internal server error - service unavailable",
+                "error": str(import_error)
+            }), 500
+
         proposal_generator = ProposalGenerationService()
         
         # Ejecutar generación asíncrona
