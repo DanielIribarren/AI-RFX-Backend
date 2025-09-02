@@ -141,13 +141,21 @@ Si necesitas hacer rollback:
 
 ### Build Fails
 
-**Error común**: "Failed to build Docker image"
+**Error común**: "Failed to build Docker image" o "Package 'wkhtmltopdf' has no installation candidate"
 
 **Solución**:
 
-1. Revisa los logs de build en Railway
-2. Verifica que `requirements.txt` esté en la raíz
-3. Asegúrate que `.dockerignore` no excluya archivos necesarios
+1. **Opción 1 (Recomendada)**: Usa `Dockerfile.minimal` si no necesitas PDF/OCR:
+
+   ```bash
+   # Renombra el archivo
+   mv Dockerfile.minimal Dockerfile
+   ```
+
+2. **Opción 2**: El `Dockerfile` principal ya está arreglado para instalar wkhtmltopdf correctamente
+
+3. Revisa los logs de build en Railway para errores específicos
+4. Verifica que `requirements.txt` esté en la raíz
 
 ### App Crashes on Start
 
