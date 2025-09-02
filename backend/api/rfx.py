@@ -26,6 +26,7 @@ rfx_bp = Blueprint("rfx_api", __name__, url_prefix="/api/rfx")
 
 
 
+
 @rfx_bp.route("/process", methods=["POST"])
 def process_rfx():
     """
@@ -207,7 +208,8 @@ def get_recent_rfx():
                 # Additional fields for consistency with history
                 "tipo": record.get("rfx_type", "catering"),
                 "numero_productos": len(record.get("requested_products", [])) if record.get("requested_products") else 0,
-                "costo_total": record.get("actual_cost", 0.0) or 0.0
+                "costo_total": record.get("actual_cost", 0.0) or 0.0,
+                "currency": record.get("currency", "USD")  # ✅ Incluir moneda en listado
             }
             recent_items.append(recent_item)
         
@@ -396,6 +398,21 @@ def get_rfx_by_id(rfx_id: str):
         proposals = db_client.get_proposals_by_rfx_id(rfx_id)
         estado = "completed" if proposals else "in_progress"
         
+        # 🆕 Get generated document HTML content for frontend
+        generated_html = None
+        if proposals:
+            # Get the most recent proposal/document
+            latest_proposal = proposals[0]  # proposals are ordered by created_at DESC
+            # Extract HTML content from the document
+            html_content = latest_proposal.get("content_html") or latest_proposal.get("content")
+            if html_content:
+                generated_html = html_content
+                logger.info(f"✅ Including HTML content for RFX {rfx_id}: {len(html_content)} characters")
+            else:
+                logger.warning(f"⚠️ No HTML content found in latest proposal for RFX {rfx_id}")
+        else:
+            logger.info(f"ℹ️ No proposals found for RFX {rfx_id}, no HTML to include")
+        
         # Get structured products with real database IDs
         structured_products = db_client.get_rfx_products(rfx_id)
         products_list = []
@@ -424,6 +441,7 @@ def get_rfx_by_id(rfx_id: str):
             "delivery_time": rfx_record.get("delivery_time"),
             "status": rfx_record.get("status", "in_progress"),
             "priority": rfx_record.get("priority", "medium"),
+            "currency": rfx_record.get("currency", "USD"),  # ✅ Exponer moneda del RFX
             "estimated_budget": rfx_record.get("estimated_budget"),
             "actual_cost": rfx_record.get("actual_cost"),
             "received_at": rfx_record.get("received_at"),
@@ -456,7 +474,10 @@ def get_rfx_by_id(rfx_id: str):
             "email_empresa": company_data.get("email", metadata.get("email_empresa", "")),
             "telefono_empresa": company_data.get("phone", metadata.get("telefono_empresa", "")),
             "telefono_solicitante": requester_data.get("phone", metadata.get("telefono_solicitante", "")),
-            "cargo_solicitante": requester_data.get("position", metadata.get("cargo_solicitante", ""))
+            "cargo_solicitante": requester_data.get("position", metadata.get("cargo_solicitante", "")),
+            
+            # 🆕 Generated HTML content for frontend preview
+            "generated_html": generated_html
         }
         
         response = {
@@ -472,6 +493,208 @@ def get_rfx_by_id(rfx_id: str):
         return jsonify({
             "status": "error",
             "message": f"Failed to retrieve RFX {rfx_id}",
+            "error": str(e)
+        }), 500
+
+
+@rfx_bp.route("/<rfx_id>/products", methods=["GET"])
+def get_rfx_products(rfx_id: str):
+    """Get products for a specific RFX with currency information"""
+    try:
+        from ..core.database import get_database_client
+        db_client = get_database_client()
+        
+        # Verificar que el RFX existe y obtener su moneda
+        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        if not rfx_record:
+            return jsonify({
+                "status": "error",
+                "message": "RFX not found",
+                "error": f"No RFX found with ID: {rfx_id}"
+            }), 404
+        
+        # Obtener productos
+        products = db_client.get_rfx_products(rfx_id)
+        rfx_currency = rfx_record.get("currency", "USD")
+        
+        # Formatear productos con información de moneda
+        products_response = []
+        for product in products:
+            product_data = {
+                "id": product.get("id"),
+                "product_name": product.get("product_name"),
+                "description": product.get("description"),
+                "category": product.get("category"),
+                "quantity": product.get("quantity"),
+                "unit_of_measure": product.get("unit_of_measure"),
+                "estimated_unit_price": product.get("estimated_unit_price"),
+                "total_estimated_cost": product.get("total_estimated_cost"),
+                "specifications": product.get("specifications"),
+                "is_mandatory": product.get("is_mandatory"),
+                "notes": product.get("notes"),
+                "created_at": product.get("created_at"),
+                "updated_at": product.get("updated_at")
+            }
+            products_response.append(product_data)
+        
+        response = {
+            "status": "success",
+            "message": f"Retrieved {len(products)} products for RFX {rfx_id}",
+            "data": {
+                "rfx_id": rfx_id,
+                "currency": rfx_currency,  # ✅ Moneda del RFX
+                "products": products_response,
+                "total_items": len(products),
+                "subtotal": sum(p.get("total_estimated_cost", 0) or 0 for p in products)
+            }
+        }
+        
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting products for RFX {rfx_id}: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to retrieve RFX products",
+            "error": str(e)
+        }), 500
+
+
+@rfx_bp.route("/<rfx_id>/currency", methods=["PUT"])
+def update_rfx_currency(rfx_id: str):
+    """Update currency for an RFX (simple version - no conversions)"""
+    try:
+        logger.info(f"🔄 Updating currency for RFX: {rfx_id}")
+        
+        # Validate request format
+        if not request.is_json:
+            return jsonify({
+                "status": "error",
+                "message": "Content-Type must be application/json",
+                "error": "Invalid content type"
+            }), 400
+        
+        data = request.get_json()
+        new_currency = data.get("currency")
+        
+        if not new_currency:
+            return jsonify({
+                "status": "error",
+                "message": "Currency is required",
+                "error": "Missing currency field"
+            }), 400
+        
+        # Basic currency validation (ISO 4217 format)
+        new_currency = new_currency.upper().strip()
+        if len(new_currency) != 3 or not new_currency.isalpha():
+            return jsonify({
+                "status": "error",
+                "message": "Invalid currency format. Use 3-letter ISO code (e.g., USD, EUR, MXN)",
+                "error": "Invalid currency format"
+            }), 400
+        
+        from ..core.database import get_database_client
+        db_client = get_database_client()
+        
+        # Verificar que el RFX existe
+        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        if not rfx_record:
+            return jsonify({
+                "status": "error",
+                "message": "RFX not found",
+                "error": f"No RFX found with ID: {rfx_id}"
+            }), 404
+        
+        current_currency = rfx_record.get("currency", "USD")
+        
+        # Check if currency is already the same
+        if current_currency == new_currency:
+            return jsonify({
+                "status": "success",
+                "message": f"RFX currency is already {new_currency}",
+                "data": {
+                    "rfx_id": rfx_id,
+                    "currency": new_currency,
+                    "changed": False
+                }
+            }), 200
+        
+        # Check if RFX has products with prices (for warnings, not blocking)
+        products = db_client.get_rfx_products(rfx_id)
+        priced_products_count = sum(1 for p in products if p.get("estimated_unit_price", 0) > 0)
+        
+        # Prepare warnings for response
+        warnings = []
+        if priced_products_count > 0:
+            warnings.append("prices_not_converted")
+            logger.warning(f"⚠️ Currency change for RFX {rfx_id}: {priced_products_count} products have prices that will NOT be converted")
+        
+        # Update currency in database
+        try:
+            response = db_client.client.table("rfx_v2")\
+                .update({"currency": new_currency})\
+                .eq("id", rfx_id)\
+                .execute()
+            
+            if response.data:
+                # Log the change in history with pricing context
+                history_data = {
+                    "rfx_id": rfx_id,
+                    "event_type": "currency_updated",
+                    "description": f"Currency changed from {current_currency} to {new_currency}. {priced_products_count} products with prices were not converted.",
+                    "old_values": {"currency": current_currency},
+                    "new_values": {
+                        "currency": new_currency, 
+                        "priced_products_count": priced_products_count,
+                        "conversion_applied": False
+                    },
+                    "performed_by": "user"
+                }
+                db_client.insert_rfx_history(history_data)
+                
+                logger.info(f"✅ Currency updated for RFX {rfx_id}: {current_currency} → {new_currency}")
+                
+                # Prepare response with warnings
+                response_data = {
+                    "rfx_id": rfx_id,
+                    "old_currency": current_currency,
+                    "new_currency": new_currency,
+                    "changed": True,
+                    "priced_products_count": priced_products_count
+                }
+                
+                if warnings:
+                    response_data["warnings"] = warnings
+                
+                message = f"Currency updated successfully from {current_currency} to {new_currency}"
+                if priced_products_count > 0:
+                    message += f". {priced_products_count} product prices were NOT converted and require manual adjustment."
+                
+                return jsonify({
+                    "status": "success",
+                    "message": message,
+                    "data": response_data
+                }), 200
+            else:
+                return jsonify({
+                    "status": "error",
+                    "message": "Failed to update currency",
+                    "error": "Database update returned no data"
+                }), 500
+                
+        except Exception as db_error:
+            logger.error(f"❌ Database error updating currency: {db_error}")
+            return jsonify({
+                "status": "error",
+                "message": "Database error while updating currency",
+                "error": str(db_error)
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating currency for RFX {rfx_id}: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to update RFX currency",
             "error": str(e)
         }), 500
 

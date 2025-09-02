@@ -14,6 +14,7 @@ from pathlib import Path
 from backend.models.proposal_models import ProposalRequest, GeneratedProposal, ProposalStatus
 from backend.core.config import get_openai_config
 from backend.core.database import get_database_client
+from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
 
 import logging
 
@@ -28,6 +29,7 @@ class ProposalGenerationService:
         self.openai_client = None  # Lazy initialization
         self.db_client = get_database_client()
         self.template_html = self._load_template()
+        self.pricing_service = PricingConfigurationServiceV2()
     
     def _get_openai_client(self):
         """Lazy initialization of OpenAI client"""
@@ -136,156 +138,378 @@ class ProposalGenerationService:
         
         client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
         productos = rfx_data.get("productos", [])  # Usar "productos" en español para consistencia
+        rfx_id = proposal_request.rfx_id
+        
+        # 🆕 Extraer moneda del RFX (desde BD V2.0)
+        rfx_currency = rfx_data.get("currency", "USD")  # Fallback a USD si no hay moneda
+        logger.debug(f"💰 Currency extracted from RFX data: {rfx_currency}")
+        
+        # Obtener configuración de pricing
+        pricing_config = self.pricing_service.get_rfx_pricing_configuration(rfx_id)
         
         # Preparar datos estructurados para la IA con precios reales
         productos_info = []
+        subtotal = 0.0
         for producto in productos:
+            precio_unitario = producto.get("estimated_unit_price", 0.0)
+            cantidad = producto.get("quantity", producto.get("cantidad", 1))
+            total_producto = precio_unitario * cantidad
+            subtotal += total_producto
+            
             productos_info.append({
                 "nombre": producto.get("name", producto.get("nombre", "product")),
-                "cantidad": producto.get("quantity", producto.get("cantidad", 1)),
+                "cantidad": cantidad,
                 "unidad": producto.get("unit", producto.get("unidad", "units")),
-                "precio_unitario": producto.get("estimated_unit_price", 0.0),  # ✅ Include real prices
-                "total": producto.get("total_estimated_cost", 0.0)  # ✅ Include calculated totals
+                "precio_unitario": precio_unitario,
+                "total": total_producto
             })
         
+        # Calcular pricing con configuraciones
+        pricing_calculation = self.pricing_service.calculate_pricing(rfx_id, subtotal)
+        
+        # Preparar instrucciones de pricing para la IA
+        pricing_instructions = self._build_pricing_instructions(pricing_calculation, pricing_config)
+        
+        # 🆕 Preparar instrucciones de moneda para la IA
+        currency_instructions = self._build_currency_instructions(rfx_currency)
+        
         prompt = f"""
-Eres un experto en generar propuestas comerciales HTML para sabra corporation.
+<system>
+Eres un asistente experto especializado en la generación de presupuestos comerciales profesionales para Sabra Corporation. Tu función principal es transformar datos estructurados de solicitudes (RFX) en documentos HTML comerciales de alta calidad, adaptándote inteligentemente al contexto y requerimientos específicos de cada cliente.
 
-TEMPLATE HTML BASE (usa esta estructura exacta):
-{self.template_html}
+Combinas precisión técnica con flexibilidad comercial, manteniendo siempre los estándares profesionales de la empresa mientras te adaptas a las necesidades particulares de cada solicitud.
+</system>
 
-DATOS DEL RFX:
-Solicitante: {client_info.get('name', 'Solicitante')}
-Email: {client_info.get('email', '')}
-Lugar: {rfx_data.get('location', 'Por definir')}
-Fecha entrega: {rfx_data.get('delivery_date', 'Por definir')}
+<role>
+Actúas como un generador inteligente de presupuestos HTML, especializado en:
+- Análisis automático de dominios de negocio (catering, construcción, tecnología, logística, etc.)
+- Aplicación de lógica condicional para servicios adicionales
+- Cálculos matemáticos precisos y verificables
+- Adaptación flexible según especificaciones del usuario
+- Generación de HTML profesional y renderizable
+- Compatibilidad perfecta con Playwright para conversión PDF
+- Mantenimiento de estándares comerciales de Sabra Corporation
 
-PRODUCTOS CON PRECIOS REALES:
+Tu expertise abarca múltiples industrias y te adaptas al contexto específico de cada solicitud, manteniendo siempre la calidad y profesionalismo en los documentos generados.
+</role>
+
+<context>
+INFORMACIÓN DE LA SOLICITUD:
+- Solicitante: {client_info.get('name', 'Solicitante')}
+- Email: {client_info.get('email', '')}
+- Empresa: {client_info.get('company', '')}
+- Lugar de entrega: {rfx_data.get('location', 'Por definir')}
+- Fecha de entrega: {rfx_data.get('delivery_date', 'Por definir')}
+- Número de personas (si aplica): {rfx_data.get('people_count', '')}
+- Solicitud de costo por persona: {rfx_data.get('cost_per_person_requested', False)}
+
+PRODUCTOS Y SERVICIOS:
 {json.dumps(productos_info, ensure_ascii=False, indent=2)}
 
-<prompt>
-    <system>
-        Eres un asistente experto en generación de presupuestos comerciales para Sabra Corporation. Tu función es transformar datos estructurados de solicitudes de productos o servicios (RFX) en documentos HTML profesionales listos para ser entregados a clientes empresariales.
+ESPECIFICACIONES ADICIONALES DEL USUARIO:
+{proposal_request.notes if hasattr(proposal_request, 'notes') and proposal_request.notes else "Ninguna - usar configuración estándar"}
 
-        Actúas como un generador inteligente, enfocado en claridad, precisión matemática, presentación comercial efectiva, y uso correcto de estructuras HTML. No debes inventar información no proporcionada, excepto para completar nombres oficiales de empresas reconocidas si vienen abreviados o incompletos.
-    </system>
+CONFIGURACIONES DE PRICING:
+{pricing_instructions if pricing_instructions else "Usar configuración estándar"}
 
-    <context>
-        Recibes datos provenientes del sistema (frontend), los cuales incluyen:
+CONFIGURACIÓN DE MONEDA:
+{currency_instructions}
+TEMPLATE HTML DE REFERENCIA:
+{self.template_html}
 
-        - Nombre del cliente solicitante y su correo electrónico.
-        - Nombre de la empresa cliente (puede venir incompleto).
-        - Lugar de entrega y fecha estimada.
-        - Lista detallada de productos o servicios requeridos, incluyendo nombre, cantidad, unidad y precio unitario ya definido.
-        - Una plantilla HTML de referencia visual (no restrictiva) con el formato general deseado para la propuesta.
+FECHA ACTUAL: {datetime.now().strftime('%d/%m/%y')}
 
-        El presupuesto puede pertenecer a múltiples dominios, tales como catering, construcción, tecnología, eventos, logística, marketing o retail.
-    </context>
+Trabajas en un entorno empresarial donde cada presupuesto debe reflejar profesionalismo y precisión. Los clientes esperan documentos de calidad comercial que puedan presentar internamente o a sus stakeholders. La flexibilidad es clave, pero sin comprometer la estructura fundamental del presupuesto. El HTML generado DEBE ser compatible con Playwright para conversión a PDF.
+</context>
 
-    <instructions>
-        <step>A. Utiliza la plantilla HTML del archivo test_design.html como guía visual. Respeta la estética, pero puedes adaptar la estructura interna de las filas si lo consideras necesario para claridad.</step>
-        <step>B. Reemplaza los siguientes marcadores dentro del HTML:</step>
-        <substeps>
-            <substep>[FECHA] → Fecha actual en formato DD/MM/YY</substep>
-            <substep>[NUMERO] → Código único con formato PROP-DDMMYY-XXX</substep>
-            <substep>[CLIENTE] → Nombre completo del cliente en MAYÚSCULAS</substep>
-            <substep>[EMPRESA] → Nombre completo oficial de la empresa (completar si está abreviado)</substep>
-            <substep>[PROCESO] → Descripción del proceso, ejemplo: "Cotización - Catering Torre Norte"</substep>
-            <substep>[PRODUCTOS_ROWS] → Filas HTML con todos los productos organizados</substep>
-            <substep>[SUBTOTAL] → Suma total de productos (sin coordinación)</substep>
-            <substep>[TOTAL] → Suma final con coordinación incluida si aplica</substep>
-        </substeps>
+<instructions>
+<step>1. ANÁLISIS INTELIGENTE DEL CONTEXTO</step>
+    <substep>• Identifica el dominio del presupuesto (catering, construcción, tecnología, eventos, logística, servicios profesionales, etc.)</substep>
+    <substep>• Determina si los productos requieren categorización automática por tipo</substep>
+    <substep>• Evalúa si aplica "Coordinación y logística" según la naturaleza del proyecto y servicios involucrados</substep>
+    <substep>• Analiza las especificaciones adicionales del usuario para adaptaciones específicas</substep>
 
-        <step>C. Si el dominio permite categorización (ej: catering), organiza los productos por categoría.</step>
-        <step>D. Si no aplica categorización, muestra los productos en una tabla simple ordenada.</step>
-        <step>E. Calcula correctamente los totales: cantidad × precio unitario por producto.</step>
-        <step>F. Si se requiere, agrega una fila adicional de "Coordinación y logística" con un 15% sobre el subtotal.</step>
-        <step>G. Genera un HTML funcional, válido y listo para imprimir o enviar.</step>
-    </instructions>
+<step>2. PROCESAMIENTO INTELIGENTE DE DATOS</step>
+    <substep>• Completa nombres de empresas conocidas si vienen abreviados (ej: "Chevron" → "Chevron Global Technology Services Company")</substep>
+    <substep>• Organiza productos por categorías relevantes cuando sea apropiado para el dominio</substep>
+    <substep>• Calcula automáticamente: cantidad × precio_unitario = total por cada producto</substep>
+    <substep>• Genera subtotal sumando todos los totales de productos</substep>
 
-    <criteria>
-        <item>Precisión numérica en todos los cálculos (unidad × precio = total).</item>
-        <item>Profesionalismo en la presentación visual, sin romper el diseño base.</item>
-        <item>USAR SIEMPRE los precios definidos en 'precio_unitario' y 'total' de cada producto - NO inventar precios.</item>
-        <item>Completar el nombre oficial de la empresa si se detecta abreviación o falta parcial.</item>
-        <item>Adaptabilidad según el tipo de RFX: el modelo debe ajustarse a la estructura más clara según contexto.</item>
-        <item>Los valores deben estar correctamente formateados y alineados en la tabla.</item>
-    </criteria>
+<step>3. APLICACIÓN DE REGLAS CONDICIONALES</step>
+    <substep>• COORDINACIÓN Y LOGÍSTICA: Incluir automáticamente cuando el proyecto requiera coordinación, gestión, organización o servicios logísticos</substep>
+    <substep>• Aplica a mayoría de dominios: catering, eventos, construcción, logística, servicios técnicos, instalaciones, servicios profesionales</substep>
+    <substep>• NO aplica a: ventas directas simples, productos de retail básico sin servicios</substep>
+    <substep>• Calcular coordinación y logística como 18% del subtotal cuando aplique</substep>
+    <substep>• Si cost_per_person_requested = True: calcular y mostrar prominentemente "Costo por persona" = total_final ÷ people_count</substep>
+    <substep>• Si hay especificaciones adicionales: adaptarse a los requerimientos específicos manteniendo la estructura profesional base</substep>
 
-    <examples>
-        <example>
-            <input>
-                Empresa: "Chevron"
-                Cliente: "Luis Romero"
-                Lugar: "Torre Barcelona"
-                Fecha: "2025-08-21"
-                Productos:
-                - Tequeños | 100 unidades | $1.50
-                - Jugo natural | 15 litros | $3.50
-                - Shots de pie limón | 20 unidades | $2.50
-            </input>
-            <expected_output>
-                HTML con:
-                - CLIENTE: LUIS ROMERO
-                - EMPRESA: CHEVRON GLOBAL TECHNOLOGY SERVICES COMPANY
-                - PROCESO: "Cotización - Catering Torre Barcelona"
-                - Clasificación en: PASAPALOS SALADOS, PASAPALOS DULCES, BEBIDAS
-                - Subtotal calculado correctamente
-                - Coordinación del 15%
-                - Total final exacto
-            </expected_output>
-        </example>
-        <example>
-            <input>
-                Empresa: "ConstruTop"
-                Productos:
-                - Cemento Gris | 25 sacos | $9.00
-                - Arena Lavada | 5 m³ | $40.00
-            </input>
-            <expected_output>
-                HTML con:
-                - EMPRESA: CONSTRUTOP (completado si no está en mayúsculas o le falta razón social)
-                - Tabla sin categorías específicas
-                - Totales calculados correctamente
-                - Sin coordinación si no aplica
-            </expected_output>
-        </example>
-    </examples>
+<step>4. GENERACIÓN DEL HTML FINAL</step>
+    <substep>• Reemplazar todos los marcadores del template con datos procesados:</substep>
+        <subitem>[FECHA] → Fecha actual en formato DD/MM/YY</subitem>
+        <subitem>[NUMERO] → PROP-DDMMYY-XXX (código único)</subitem>
+        <subitem>[CLIENTE] → Nombre del cliente en MAYÚSCULAS</subitem>
+        <subitem>[EMPRESA] → Nombre completo oficial de la empresa</subitem>
+        <subitem>[PROCESO] → Descripción contextual del proceso según dominio</subitem>
+        <subitem>[PRODUCTOS_ROWS] → Filas HTML organizadas y categorizadas</subitem>
+        <subitem>[SUBTOTAL] → Suma total de todos los productos</subitem>
+        <subitem>[COORDINACION] → 18% del subtotal si aplica</subitem>
+        <subitem>[TOTAL] → Total final (subtotal + coordinación si aplica)</subitem>
+        <subitem>[COSTO_PERSONA] → Total ÷ personas solo si se solicita explícitamente</subitem>
+    <substep>• Asegurar que el HTML sea válido, funcional y renderizable en navegadores</substep>
+    <substep>• Mantener estructura responsive y profesional del template base</substep>
+    <substep>• NUNCA iniciar el código HTML con ```html ni terminarlo con ```, generar HTML limpio directamente</substep>
+    <substep>• NO agregar estilos CSS incompatibles con Playwright para conversión PDF</substep>
+    <substep>• SOLO usar CSS compatible con Playwright/Chromium para PDF: flexbox, grid, border-radius, box-shadow, transforms básicos</substep>
+    <substep>• OBLIGATORIO: Incluir -webkit-print-color-adjust: exact !important en elementos con colores de fondo</substep>
+    <substep>• EVITAR: viewport units (vw, vh), hover states, transitions, animations, backdrop-filter</substep>
+    <substep>• USAR: px, %, cm, pt para unidades; font-family web-safe; colores con !important para elementos críticos</substep>
+    <substep>• NO AGREGAR Notas adicionales como como las CONFIGURACIONES DE PRICING o currency</substep>
+</instructions>
 
-    <reasoning>
-        <chain_of_thought>
-            <step>1. Analiza el dominio del RFX.</step>
-            <step>2. Evalúa si se puede clasificar por categoría.</step>
-            <step>3. Procesa cada producto: calcula total = cantidad × precio.</step>
-            <step>4. Suma los totales para calcular el subtotal.</step>
-            <step>5. Si aplica coordinación, calcula 15% del subtotal y agrégalo como fila.</step>
-            <step>6. Construye el HTML con los valores reemplazados en el lugar correcto.</step>
-            <step>7. Asegúrate de que la salida sea HTML funcional, válido y estético.</step>
-        </chain_of_thought>
-    </reasoning>
+<criteria>
+<requirement>PRECISIÓN MATEMÁTICA: Todos los cálculos deben ser exactos, verificables y consistentes</requirement>
+<requirement>FLEXIBILIDAD INTELIGENTE: Adaptarse a especificaciones adicionales sin perder profesionalismo ni funcionalidad</requirement>
+<requirement>CONSISTENCIA DE DATOS: Usar SIEMPRE los precios definidos en los datos de entrada, nunca inventar o modificar valores</requirement>
+<requirement>COMPLETITUD CONTEXTUAL: Incluir todos los elementos requeridos según el dominio y contexto específico</requirement>
+<requirement>PROFESIONALISMO COMERCIAL: Mantener formato de alta calidad apto para presentaciones empresariales</requirement>
+<requirement>COMPATIBILIDAD PLAYWRIGHT: Generar HTML/CSS 100% compatible con Playwright para conversión PDF sin errores</requirement>
+<requirement>VALIDEZ TÉCNICA: Generar código HTML funcional, bien estructurado y sin marcadores de código (```)</requirement>
+<requirement>ADAPTABILIDAD CONTROLADA: Ser flexible con formatos y presentación manteniendo siempre los estándares de calidad</requirement>
+</criteria>
 
-    <creativity_trigger>
-        - Si una empresa viene incompleta, completa su nombre a su versión oficial o corporativa más conocida.
-        - Si no hay categoría clara para un producto, colócalo como “Otros servicios”.
-        - Si el nombre del producto es demasiado largo, puedes simplificarlo sin perder precisión.
-    </creativity_trigger>
+<examples>
+<example1>
+<title>Catering Corporativo con Especificaciones Personalizadas</title>
+<input>
+Dominio: Catering corporativo
+Empresa: "Chevron"
+Especificaciones adicionales: "Incluir información nutricional, destacar opciones veganas, usar formato premium con colores corporativos"
+Productos: 
+- Tequeños (100 unidades, $1.50 c/u)
+- Jugo natural (15 litros, $3.50 c/u) 
+- Pie de limón (20 unidades, $2.50 c/u)
+Personas: 50
+Costo por persona solicitado: True
+</input>
+<output>
+→ EMPRESA: "CHEVRON GLOBAL TECHNOLOGY SERVICES COMPANY"
+→ PROCESO: "Cotización - Catering Corporativo Torre Barcelona"
+→ CATEGORIZACIÓN:
+  • PASAPALOS SALADOS: Tequeños (100 × $1.50 = $150.00)
+  • BEBIDAS: Jugo natural (15 × $3.50 = $52.50)
+  • POSTRES: Pie de limón (20 × $2.50 = $50.00)
+→ SUBTOTAL: $252.50
+→ COORDINACIÓN Y LOGÍSTICA (18%): $45.45
+→ TOTAL: $297.95
+→ COSTO POR PERSONA: $297.95 ÷ 50 = $5.96
+→ FORMATO: Premium con información nutricional y destacado vegano
+→ CSS: Solo estilos compatibles con Playwright PDF
+</output>
+</example1>
 
-    <output>
-        Entrega SOLO un bloque de HTML completo, limpio, funcional y renderizable en navegadores. No agregues explicaciones, texto adicional ni mensajes fuera del bloque.
-    </output>
-</prompt>
+<example2>
+<title>Construcción con Configuración Estándar</title>
+<input>
+Dominio: Construcción
+Empresa: "ConstruMax"
+Especificaciones adicionales: Ninguna - usar configuración estándar
+Productos:
+- Cemento Gris (25 sacos, $9.00 c/u)
+- Arena Lavada (5 m³, $40.00 c/u)
+- Varillas 3/8" (100 unidades, $12.00 c/u)
+Personas: No aplica
+Costo por persona solicitado: False
+</input>
+<output>
+→ EMPRESA: "CONSTRUMAX"
+→ PROCESO: "Cotización - Materiales de Construcción"
+→ PRODUCTOS (sin categorización específica):
+  • Cemento Gris: 25 sacos × $9.00 = $225.00
+  • Arena Lavada: 5 m³ × $40.00 = $200.00  
+  • Varillas 3/8": 100 un × $12.00 = $1,200.00
+→ SUBTOTAL: $1,625.00
+→ COORDINACIÓN Y LOGÍSTICA (18%): $292.50
+→ TOTAL: $1,917.50
+→ FORMATO: Estándar profesional
+→ NO mostrar costo por persona
+→ HTML limpio sin marcadores de código
+</output>
+</example2>
 
+<example3>
+<title>Venta Directa Simplificada</title>
+<input>
+Dominio: Venta directa de productos tecnológicos
+Empresa: "TechStore"
+Especificaciones adicionales: "Formato minimalista, solo productos y totales, sin servicios adicionales"
+Productos:
+- Laptop HP (2 unidades, $850.00 c/u)
+- Mouse inalámbrico (2 unidades, $25.00 c/u)
+- Teclado mecánico (2 unidades, $45.00 c/u)
+Personas: No aplica
+Costo por persona solicitado: False
+</input>
+<output>
+→ EMPRESA: "TECHSTORE"
+→ PROCESO: "Cotización - Equipos Tecnológicos"
+→ PRODUCTOS (lista simple):
+  • Laptop HP: 2 un × $850.00 = $1,700.00
+  • Mouse inalámbrico: 2 un × $25.00 = $50.00
+  • Teclado mecánico: 2 un × $45.00 = $90.00
+→ SUBTOTAL: $1,840.00
+→ NO incluir coordinación y logística (venta directa simple)
+→ TOTAL: $1,840.00
+→ FORMATO: Minimalista según especificaciones
+→ CSS: Estilos básicos compatibles con PDF
+</output>
+</example3>
+</examples>
+
+CSS_COMPATIBILITY_RULES:
+OBLIGATORIO USAR:
+- display: flex, grid, block, inline-block
+- font-family: Arial, sans-serif (web-safe)
+- font-size en px o pt
+- margin, padding en px, cm o %
+- border: 1px solid #color
+- background-color con -webkit-print-color-adjust: exact !important
+- color con !important para elementos críticos
+- text-align, font-weight, font-style
+- width, height en px, % o cm
+- border-radius, box-shadow (efectos básicos)
+
+PROHIBIDO USAR:
+- viewport units (vw, vh, vmin, vmax)
+- hover, focus, active states
+- transition, animation properties
+- backdrop-filter, filter complejos
+- position: fixed (problemático en PDF)
+- rem units (usar px o pt)
+- JavaScript-dependent classes
+- @media queries complejas
 
 IMPORTANTE:
-- Mantén nombres de productos simples y directos
-- Usa precios realistas para catering corporativo
-- Asegúrate que matemáticas sean correctas
+- Mantén nombres de productos simples y profesionales
+- Usa precios exactos definidos en los datos de entrada
+- Asegúrate que todas las operaciones matemáticas sean correctas
 - Fecha actual para [FECHA]: {datetime.now().strftime('%d/%m/%y')}
+- NUNCA incluir marcadores ```html o ``` en el output
+- Responde SOLO con HTML completo y funcional, sin explicaciones adicionales
 
-RESPONDE SOLO CON HTML COMPLETO Y FUNCIONAL (sin explicaciones):
-        """
+RESPONDE ÚNICAMENTE CON HTML COMPLETO Y FUNCIONAL (SIN ```html NI ``` AL INICIO O FINAL):
+"""
+
         
         return prompt
+    
+    def _build_pricing_instructions(self, pricing_calculation, pricing_config) -> str:
+        """Construye instrucciones específicas de pricing para la IA"""
+        try:
+            instructions = ["CONFIGURACIONES DE PRICING APLICADAS:"]
+            
+            # Información del subtotal
+            instructions.append(f"SUBTOTAL BASE: ${pricing_calculation.subtotal:.2f}")
+            
+            # Configuración de coordinación
+            if pricing_calculation.coordination_enabled:
+                rate_percent = pricing_calculation.coordination_rate * 100
+                instructions.append(f"✅ COORDINACIÓN HABILITADA:")
+                instructions.append(f"   - Agregar {rate_percent:.1f}% de coordinación y logística")
+                instructions.append(f"   - Monto de coordinación: ${pricing_calculation.coordination_amount:.2f}")
+                instructions.append(f"   - Mostrar como línea separada: 'Coordinación y logística ({rate_percent:.1f}%): ${pricing_calculation.coordination_amount:.2f}'")
+            else:
+                instructions.append("❌ COORDINACIÓN DESHABILITADA: No agregar coordinación al presupuesto")
+            
+            # Configuración de costo por persona
+            if pricing_calculation.cost_per_person_enabled and pricing_calculation.headcount:
+                instructions.append(f"✅ COSTO POR PERSONA HABILITADO:")
+                instructions.append(f"   - Número de personas: {pricing_calculation.headcount}")
+                instructions.append(f"   - Costo por persona: ${pricing_calculation.cost_per_person:.2f}")
+                instructions.append(f"   - Incluir al final: 'Costo por persona: ${pricing_calculation.cost_per_person:.2f} ({pricing_calculation.headcount} personas)'")
+            else:
+                instructions.append("❌ COSTO POR PERSONA DESHABILITADO: No mostrar cálculo por persona")
+            
+            # Configuración de impuestos
+            if pricing_calculation.taxes_enabled:
+                rate_percent = pricing_calculation.tax_rate * 100
+                instructions.append(f"✅ IMPUESTOS HABILITADOS:")
+                instructions.append(f"   - Tasa de impuesto: {rate_percent:.1f}%")
+                instructions.append(f"   - Monto de impuesto: ${pricing_calculation.tax_amount:.2f}")
+                instructions.append(f"   - Mostrar línea de impuesto antes del total final")
+            else:
+                instructions.append("❌ IMPUESTOS DESHABILITADOS: No agregar impuestos")
+            
+            # Total final
+            instructions.append(f"TOTAL FINAL CALCULADO: ${pricing_calculation.total_cost:.2f}")
+            
+            instructions.append("")
+            instructions.append("INSTRUCCIONES CRÍTICAS:")
+            instructions.append("- Usa exactamente los montos calculados arriba")
+            instructions.append("- No inventes nuevos cálculos")
+            instructions.append("- Respeta las configuraciones habilitadas/deshabilitadas")
+            instructions.append("- Mantén la estructura del template HTML")
+            instructions.append("- El total final debe ser exactamente el TOTAL FINAL CALCULADO")
+            
+            return "\n".join(instructions)
+            
+        except Exception as e:
+            logger.error(f"❌ Error building pricing instructions: {e}")
+            return "CONFIGURACIONES DE PRICING: Usar configuración estándar (coordinación 18%)"
+    
+    def _build_currency_instructions(self, currency: str) -> str:
+        """🆕 Construye instrucciones específicas de moneda para la IA"""
+        try:
+            # Mapeo de monedas a símbolos y formatos
+            currency_config = {
+                "USD": {"symbol": "$", "name": "Dólares Americanos", "format": "$1,000.00", "position": "before"},
+                "EUR": {"symbol": "€", "name": "Euros", "format": "€1.000,00", "position": "before"},
+                "GBP": {"symbol": "£", "name": "Libras Esterlinas", "format": "£1,000.00", "position": "before"},
+                "JPY": {"symbol": "¥", "name": "Yenes", "format": "¥1,000", "position": "before"},
+                "MXN": {"symbol": "$", "name": "Pesos Mexicanos", "format": "$1,000.00 MXN", "position": "before"},
+                "CAD": {"symbol": "C$", "name": "Dólares Canadienses", "format": "C$1,000.00", "position": "before"},
+                "AUD": {"symbol": "A$", "name": "Dólares Australianos", "format": "A$1,000.00", "position": "before"},
+                "BRL": {"symbol": "R$", "name": "Reales Brasileños", "format": "R$1.000,00", "position": "before"},
+                "COP": {"symbol": "$", "name": "Pesos Colombianos", "format": "$1.000,00 COP", "position": "before"},
+                "CHF": {"symbol": "CHF", "name": "Francos Suizos", "format": "CHF 1,000.00", "position": "before"}
+            }
+            
+            config = currency_config.get(currency, {
+                "symbol": "$", 
+                "name": "Dólares (USD)", 
+                "format": "$1,000.00", 
+                "position": "before"
+            })
+            
+            instructions = [
+                f"MONEDA DE LA SOLICITUD: {currency}",
+                f"NOMBRE COMPLETO: {config['name']}",
+                f"SÍMBOLO A USAR: {config['symbol']}",
+                f"FORMATO DE EJEMPLO: {config['format']}",
+                "",
+                "INSTRUCCIONES CRÍTICAS PARA MONEDA:",
+                f"1. USAR EXCLUSIVAMENTE la moneda {currency} para todos los precios",
+                f"2. Mostrar símbolo '{config['symbol']}' antes de cada cantidad monetaria",
+                f"3. Formato de números: usar comas para miles y punto para decimales (ej: {config['format']})",
+                f"4. NO cambiar la moneda a USD si la solicitud es en {currency}",
+                f"5. Mantener consistencia: todos los precios deben usar {config['symbol']}",
+                f"6. En títulos/encabezados mencionar 'Presupuesto en {config['name']}'",
+                "",
+                "EJEMPLOS DE FORMATO CORRECTO:",
+                f"- Subtotal: {config['symbol']}1,250.00",
+                f"- Coordinación y logística: {config['symbol']}225.00", 
+                f"- Total: {config['symbol']}1,475.00",
+                "",
+                "IMPORTANTE:",
+                f"- La moneda {currency} fue detectada automáticamente del documento original",
+                f"- Respetar la moneda original es crucial para la precisión comercial",
+                f"- NO inventar tasas de cambio ni convertir a otras monedas"
+            ]
+            
+            return "\n".join(instructions)
+            
+        except Exception as e:
+            logger.error(f"❌ Error building currency instructions: {e}")
+            return f"MONEDA: Usar {currency} con símbolo correspondiente para todos los precios"
 
     def _build_compact_ai_prompt(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest) -> str:
         """Versión compacta del prompt para reintento en caso de timeout.
@@ -294,6 +518,9 @@ RESPONDE SOLO CON HTML COMPLETO Y FUNCIONAL (sin explicaciones):
         """
         client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
         productos = rfx_data.get("productos", [])
+        
+        # 🆕 Extraer moneda para prompt compacto
+        rfx_currency = rfx_data.get("currency", "USD")
 
         productos_info = []
         for producto in productos:
@@ -360,6 +587,7 @@ INSTRUCCIONES CLAVE:
 - Calcula total por fila = cantidad × precio_unitario cuando total==0.
 - Suma para el Total final.
 - Rellena [CLIENTE] (mayúsculas), [EMPRESA] (versión oficial si es abreviada), [PRODUCTOS_ROWS] y [TOTAL].
+- MONEDA: Usar {rfx_currency} para todos los precios con símbolo correspondiente
 - Mantén HTML breve, válido y limpio. Responde SOLO el HTML completo, sin comentarios.
 - Fecha actual para [FECHA]: {datetime.now().strftime('%d/%m/%y')}
 """
@@ -476,7 +704,12 @@ INSTRUCCIONES CLAVE:
         client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
         proposal_id = uuid.uuid4()  # UUID object, not string
         rfx_uuid = uuid.UUID(proposal_request.rfx_id) if isinstance(proposal_request.rfx_id, str) else proposal_request.rfx_id
-        total_cost = self._extract_total_from_html(html_content)
+        
+        # Obtener total del cálculo de pricing en lugar de extraerlo del HTML
+        productos = rfx_data.get("productos", [])
+        subtotal = sum(p.get("estimated_unit_price", 0) * p.get("quantity", 0) for p in productos)
+        pricing_calculation = self.pricing_service.calculate_pricing(proposal_request.rfx_id, subtotal)
+        total_cost = pricing_calculation.total_cost
         
         return GeneratedProposal(
             id=proposal_id,
@@ -496,7 +729,19 @@ INSTRUCCIONES CLAVE:
                 "generation_method": "ai_template_simplified",
                 "ai_model": self.openai_config.model,
                 "document_type": "commercial_proposal",
-                "generation_version": "2.0_simplified"
+                "generation_version": "2.0_with_pricing_config",
+                # Pricing configuration metadata
+                "pricing": {
+                    "subtotal": pricing_calculation.subtotal,
+                    "coordination_enabled": pricing_calculation.coordination_enabled,
+                    "coordination_amount": pricing_calculation.coordination_amount,
+                    "cost_per_person_enabled": pricing_calculation.cost_per_person_enabled,
+                    "headcount": pricing_calculation.headcount,
+                    "cost_per_person": pricing_calculation.cost_per_person,
+                    "taxes_enabled": pricing_calculation.taxes_enabled,
+                    "tax_amount": pricing_calculation.tax_amount,
+                    "applied_configs": pricing_calculation.applied_configs
+                }
             }
         )
     

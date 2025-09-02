@@ -601,6 +601,121 @@ class DatabaseClient:
             raise
     
     # ========================
+    # SMART RFX LOOKUP METHODS
+    # ========================
+    
+    def find_rfx_by_identifier(self, identifier: str) -> Optional[Dict[str, Any]]:
+        """
+        🔍 Smart RFX lookup: Try UUID first, then search by requester name, then company name
+        
+        Args:
+            identifier: Could be UUID, requester name, or company name
+            
+        Returns:
+            RFX record if found, None otherwise
+        """
+        try:
+            logger.info(f"🔍 Smart RFX lookup for identifier: '{identifier}'")
+            
+            # 1. Try UUID first (fastest)
+            try:
+                import uuid as _uuid
+                _ = _uuid.UUID(identifier)
+                logger.info(f"✅ Identifier '{identifier}' is valid UUID, direct lookup")
+                return self.get_rfx_by_id(identifier)
+            except (ValueError, TypeError):
+                logger.info(f"🔄 Identifier '{identifier}' is not UUID, trying name-based search")
+            
+            # 2. Search by requester name
+            requester_result = self._find_rfx_by_requester_name(identifier)
+            if requester_result:
+                logger.info(f"✅ Found RFX by requester name: {requester_result['id']}")
+                return requester_result
+            
+            # 3. Search by company name
+            company_result = self._find_rfx_by_company_name(identifier)
+            if company_result:
+                logger.info(f"✅ Found RFX by company name: {company_result['id']}")
+                return company_result
+            
+            logger.warning(f"❌ No RFX found for identifier: '{identifier}'")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error in smart RFX lookup for '{identifier}': {e}")
+            return None
+    
+    def _find_rfx_by_requester_name(self, requester_name: str) -> Optional[Dict[str, Any]]:
+        """Find RFX by requester name (case insensitive)"""
+        try:
+            # First, find requester by name
+            requester_response = self.client.table("requesters")\
+                .select("id, name, company_id")\
+                .eq("name", requester_name)\
+                .execute()
+            
+            if not requester_response.data:
+                # Try fuzzy search
+                requester_response = self.client.table("requesters")\
+                    .select("id, name, company_id")\
+                    .ilike("name", f"%{requester_name}%")\
+                    .execute()
+            
+            if requester_response.data:
+                # Found requester(s), now find their RFX
+                for requester in requester_response.data:
+                    rfx_response = self.client.table("rfx_v2")\
+                        .select("*, companies(*), requesters(*)")\
+                        .eq("requester_id", requester["id"])\
+                        .order("created_at", desc=True)\
+                        .limit(1)\
+                        .execute()
+                    
+                    if rfx_response.data:
+                        logger.info(f"Found RFX by requester name '{requester_name}': {rfx_response.data[0]['id']}")
+                        return rfx_response.data[0]
+                
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error searching RFX by requester name '{requester_name}': {e}")
+            return None
+    
+    def _find_rfx_by_company_name(self, company_name: str) -> Optional[Dict[str, Any]]:
+        """Find RFX by company name (case insensitive)"""
+        try:
+            # First, find company by name
+            company_response = self.client.table("companies")\
+                .select("id, name")\
+                .eq("name", company_name)\
+                .execute()
+            
+            if not company_response.data:
+                # Try fuzzy search
+                company_response = self.client.table("companies")\
+                    .select("id, name")\
+                    .ilike("name", f"%{company_name}%")\
+                    .execute()
+            
+            if company_response.data:
+                # Found company(s), now find their RFX
+                for company in company_response.data:
+                    rfx_response = self.client.table("rfx_v2")\
+                        .select("*, companies(*), requesters(*)")\
+                        .eq("company_id", company["id"])\
+                        .order("created_at", desc=True)\
+                        .limit(1)\
+                        .execute()
+                    
+                    if rfx_response.data:
+                        logger.info(f"Found RFX by company name '{company_name}': {rfx_response.data[0]['id']}")
+                        return rfx_response.data[0]
+                
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error searching RFX by company name '{company_name}': {e}")
+            return None
+
+    # ========================
     # LEGACY COMPATIBILITY HELPERS
     # ========================
     

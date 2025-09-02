@@ -510,6 +510,7 @@ FORMATO JSON EXTENDIDO:
             {"name": "fecha", "description": "fecha de entrega del evento", "format": "YYYY-MM-DD"},
             {"name": "hora_entrega", "description": "hora de entrega del evento", "format": "HH:MM"},
             {"name": "lugar", "description": "dirección completa o ubicación donde se realizará el evento", "format": None},
+            {"name": "currency", "description": "MONEDA: código de moneda ISO 4217 de 3 letras mencionada en el documento. INSTRUCCIONES ESPECÍFICAS: 1) Buscar símbolos monetarios: $ (verificar contexto para USD/MXN/CAD), €, £, ¥, CHF, etc. 2) Buscar menciones explícitas: 'dólares americanos'=USD, 'euros'=EUR, 'pesos mexicanos'=MXN, 'libras'=GBP, 'yenes'=JPY, 'francos suizos'=CHF. 3) Buscar códigos ISO: USD, EUR, MXN, CAD, GBP, JPY, CHF, AUD, BRL, COP, PEN, etc. 4) Analizar contexto geográfico: Venezuela/Colombia→USD, México→MXN, Europa→EUR, Reino Unido→GBP. 5) Si hay precios con $ sin contexto adicional→USD. 6) Si NO hay ninguna mención de moneda→USD (predeterminado). EJEMPLOS: '$100 USD'→USD, '€50'→EUR, '100 pesos'→MXN, '$1000 canadienses'→CAD, 'precio en libras £200'→GBP", "format": "3-letter ISO code"},
             # 🆕 MVP: Campo requirements para instrucciones específicas del cliente
             {"name": "requirements", "description": "REQUIREMENTS: Instrucciones, preferencias o requisitos específicos mencionados por el cliente (ej: 'empleados con +5 años experiencia', 'solo opciones vegetarianas', 'presupuesto máximo $1000', 'sin frutos secos por alergias'). Solo extraer si hay instrucciones claras y específicas, NO descripciones generales", "format": None},
             {"name": "requirements_confidence", "description": "CONFIDENCE: Nivel de confianza 0.0-1.0 sobre la extracción de requirements. 1.0 = muy específicos y claros, 0.5 = algo ambiguos, 0.0 = no hay requirements específicos", "format": "decimal 0.0-1.0"}
@@ -1146,6 +1147,7 @@ class RFXProcessorService:
             "hora_entrega": "",
             "fecha": "",
             "lugar": "",
+            "currency": "USD",
             "texto_original_relevante": ""
         }
         
@@ -1172,7 +1174,8 @@ class RFXProcessorService:
                 ("tipo_solicitud", chunk_result.tipo_solicitud),
                 ("hora_entrega", chunk_result.hora_entrega),
                 ("fecha", chunk_result.fecha),
-                ("lugar", chunk_result.lugar)
+                ("lugar", chunk_result.lugar),
+                ("currency", getattr(chunk_result, 'currency', "USD"))
             ]
             
             for field_name, field_value in fields_to_combine:
@@ -1291,6 +1294,7 @@ class RFXProcessorService:
                 "hora_entrega": "",
                 "fecha": "",
                 "lugar": "",
+                "currency": "USD",
                 "texto_original_relevante": ""
             }
     
@@ -1615,6 +1619,7 @@ class RFXProcessorService:
       <level_1 priority="critical">
         <field>nombre_empresa</field>
         <field>productos_servicios</field>
+        <field>moneda</field>
         <field>fecha_requerida</field>
         <field>ubicacion_servicio</field>
       </level_1>
@@ -2038,6 +2043,7 @@ class RFXProcessorService:
         "fecha": "fecha de entrega en formato YYYY-MM-DD (null si no se encuentra)",
         "hora_entrega": "hora de entrega en formato HH:MM (null si no se encuentra)",
         "lugar": "dirección completa o ubicación del evento (null si no se encuentra)",
+        "currency": "MONEDA: código de moneda ISO 4217 de 3 letras mencionada en el documento (ej: USD, EUR, MXN, CAD). Buscar símbolos como $, €, £, CAD$, USD$, menciones de 'dólares', 'euros', 'pesos', etc. Si no se encuentra específicamente, usar 'USD' como predeterminado",
         "requirements": "INSTRUCCIONES ESPECÍFICAS, preferencias o restricciones mencionadas por el cliente. NO incluir descripción general del servicio (null si no se encuentra)",
         "texto_original_relevante": "fragmento del texto donde encontraste la información principal",
         "confidence_score": número_decimal_entre_0_y_1_indicando_confianza_en_extracción
@@ -2104,6 +2110,13 @@ class RFXProcessorService:
         - EMPRESA = compañía/organización que solicita el servicio
         - SOLICITANTE = persona individual dentro de la empresa
         - Si ves "sofia.elena@chevron.com" → nombre_empresa="Chevron", email_solicitante="sofia.elena@chevron.com"
+
+        REGLAS CRÍTICAS PARA MONEDA:
+        - Buscar símbolos: $ (puede ser USD o MXN según contexto), €, £, CAD$, USD$
+        - Buscar menciones: "dólares" = USD, "euros" = EUR, "pesos" = MXN, "libras" = GBP
+        - Buscar códigos explícitos: USD, EUR, MXN, CAD, GBP
+        - Si hay precios con $ sin contexto adicional → usar USD como predeterminado
+        - Si NO hay ninguna mención de moneda → usar USD como predeterminado
 
         INSTRUCCIONES ESPECÍFICAS PARA PRODUCTOS:
         - Busca CUALQUIER tipo de comida, bebida o servicio de catering
@@ -2193,6 +2206,7 @@ class RFXProcessorService:
             "hora_entrega": "",
             "fecha": "",
             "lugar": "",
+            "currency": "USD",
             "texto_original_relevante": "",
             # 🆕 MVP: Requirements fields for compatibility
             "requirements": None,
@@ -2227,6 +2241,10 @@ class RFXProcessorService:
             if result.get("lugar") and not combined["lugar"]:
                 combined["lugar"] = result["lugar"]
                 logger.debug(f"📍 Found lugar in chunk {i+1}: {result['lugar']}")
+                
+            if result.get("currency") and not combined["currency"]:
+                combined["currency"] = result["currency"]
+                logger.debug(f"💰 Found currency in chunk {i+1}: {result['currency']}")
             
             # 🆕 MVP: Combine requirements from chunks
             if result.get("requirements") and not combined["requirements"]:
@@ -2371,6 +2389,92 @@ class RFXProcessorService:
         # TODO: En el futuro, guardar en tabla de logs para análisis
         # self.requirements_logs.insert(log_data)
     
+    def _validate_and_normalize_currency(self, currency: str) -> str:
+        """🆕 Valida y normaliza códigos de moneda ISO 4217"""
+        if not currency or currency.lower() in ["null", "none", "", "undefined"]:
+            logger.debug(f"💰 No currency provided, using default: USD")
+            return "USD"
+        
+        # Lista de monedas válidas más comunes en el contexto de negocio
+        valid_currencies = {
+            # Monedas principales
+            "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD",
+            # Monedas latinoamericanas
+            "MXN", "BRL", "ARS", "COP", "PEN", "CLP", "UYU", "BOB", "VES",
+            # Monedas asiáticas
+            "CNY", "HKD", "SGD", "KRW", "INR", "THB", "MYR", "IDR",
+            # Otras monedas relevantes
+            "NOK", "SEK", "DKK", "PLN", "CZK", "HUF", "RUB", "ZAR"
+        }
+        
+        # Normalizar entrada
+        currency_clean = currency.strip().upper()
+        
+        # Validación directa
+        if currency_clean in valid_currencies:
+            logger.debug(f"💰 Currency validated: {currency_clean}")
+            return currency_clean
+        
+        # Mapeo de aliases comunes
+        currency_aliases = {
+            # Símbolos a códigos
+            "$": "USD",  # Predeterminado para $
+            "€": "EUR",
+            "£": "GBP", 
+            "¥": "JPY",
+            "₽": "RUB",
+            "₹": "INR",
+            
+            # Variaciones textuales
+            "DOLLAR": "USD",
+            "DOLARES": "USD", 
+            "DÓLARES": "USD",
+            "DOLLARS": "USD",
+            "EURO": "EUR",
+            "EUROS": "EUR",
+            "POUND": "GBP",
+            "POUNDS": "GBP",
+            "LIBRA": "GBP",
+            "LIBRAS": "GBP",
+            "YEN": "JPY",
+            "PESO": "MXN",  # Predeterminado para peso sin contexto
+            "PESOS": "MXN",
+            "REAL": "BRL",
+            "REALES": "BRL",
+            "R$": "BRL",
+            
+            # Códigos con sufijos
+            "USD$": "USD",
+            "CAD$": "CAD",
+            "AUD$": "AUD",
+            "MXN$": "MXN",
+            
+            # Variaciones regionales
+            "DÓLAR": "USD",
+            "DÓLARES AMERICANOS": "USD",
+            "DÓLARES ESTADOUNIDENSES": "USD",
+            "PESOS MEXICANOS": "MXN",
+            "PESOS COLOMBIANOS": "COP",
+            "SOLES": "PEN",
+            "BOLIVARES": "VES"
+        }
+        
+        # Buscar en aliases
+        if currency_clean in currency_aliases:
+            mapped_currency = currency_aliases[currency_clean]
+            logger.debug(f"💰 Currency mapped: {currency} → {mapped_currency}")
+            return mapped_currency
+        
+        # Intentar extraer código de una cadena más larga
+        for valid_code in valid_currencies:
+            if valid_code in currency_clean:
+                logger.debug(f"💰 Currency extracted from text: {currency} → {valid_code}")
+                return valid_code
+        
+        # Si no se puede validar, usar USD por defecto
+        logger.warning(f"⚠️ Invalid currency '{currency}', using default: USD")
+        return "USD"
+    
     def _validate_and_clean_data(self, raw_data: Dict[str, Any], rfx_id: str) -> Dict[str, Any]:
         """Validate and clean extracted data with fallbacks for invalid values"""
         # 🔍 DEBUG: Log validation process
@@ -2470,6 +2574,11 @@ class RFXProcessorService:
         else:
             cleaned_data["lugar"] = "Ubicación por definir"
             logger.warning(f"⚠️ No location found, using fallback")
+        
+        # 🆕 Currency validation and normalization
+        currency = raw_data.get("currency", "").strip().upper()
+        cleaned_data["currency"] = self._validate_and_normalize_currency(currency)
+        logger.info(f"💰 Currency processed: '{raw_data.get('currency', '')}' → '{cleaned_data['currency']}'")
         
         # Validate products - VERY PERMISSIVE (Allow empty products for informational RFXs)
         productos = raw_data.get("productos", [])
@@ -2646,7 +2755,9 @@ class RFXProcessorService:
                 "email_empresa": validated_data.get("email_empresa", ""),
                 "telefono_empresa": validated_data.get("telefono_empresa", ""),
                 "telefono_solicitante": validated_data.get("telefono_solicitante", ""),
-                "cargo_solicitante": validated_data.get("cargo_solicitante", "")
+                "cargo_solicitante": validated_data.get("cargo_solicitante", ""),
+                # ✨ MONEDA: Currency extraída por AI
+                "validated_currency": validated_data.get("currency", "USD")
             }
             
             # Integrate intelligent evaluation metadata if available
@@ -2783,6 +2894,7 @@ class RFXProcessorService:
                 "requested_products": rfx_processed.requested_products or [],
                 "received_at": rfx_processed.received_at.isoformat() if rfx_processed.received_at else None,
                 "metadata_json": rfx_processed.metadata_json,
+                "currency": rfx_processed.metadata_json.get('validated_currency', 'USD') if rfx_processed.metadata_json else 'USD',
                 
                 # 🆕 MVP: Requirements específicos del cliente
                 "requirements": rfx_processed.requirements,
@@ -3075,6 +3187,7 @@ class RFXProcessorService:
             "hora_entrega": "",
             "fecha": "",
             "lugar": "",
+            "currency": "USD",
             "texto_original_relevante": "",
             # 🆕 MVP: Requirements fields for compatibility
             "requirements": None,

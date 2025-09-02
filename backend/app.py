@@ -17,6 +17,7 @@ from backend.core.database import get_database_client
 from backend.api.rfx import rfx_bp
 from backend.api.proposals import proposals_bp
 from backend.api.download import download_bp
+from backend.api.pricing import pricing_bp
 from backend.models.rfx_models import RFXResponse
 
 # Configure logging
@@ -71,6 +72,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(rfx_bp)
     app.register_blueprint(proposals_bp)
     app.register_blueprint(download_bp)
+    app.register_blueprint(pricing_bp)
     
     # Legacy compatibility routes
     _register_legacy_routes(app)
