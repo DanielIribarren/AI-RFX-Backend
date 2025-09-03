@@ -20,6 +20,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     build-essential \
     libffi-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -39,16 +40,7 @@ EXPOSE 8080
 
 # Health check optimizado para Railway
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD sh -c 'python - <<"PY" || exit 1
-import os, sys
-import requests
-port = os.getenv("PORT", "8080")
-try:
-    r = requests.get(f"http://localhost:{port}/health", timeout=5)
-    sys.exit(0 if r.status_code == 200 else 1)
-except Exception:
-    sys.exit(1)
-PY'
+    CMD sh -c 'curl -fsS "http://localhost:${PORT:-8080}/health" > /dev/null || exit 1'
 
 # Comando optimizado para Railway
 CMD sh -c 'exec gunicorn \
