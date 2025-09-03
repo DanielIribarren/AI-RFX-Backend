@@ -33,17 +33,26 @@ COPY . .
 # Crear directorio para archivos temporales si no existe
 RUN mkdir -p /tmp/rfx_uploads
 
-# Configuración de salud y puerto (Railway maneja PORT automáticamente)
-ENV PORT=${PORT:-8080}
-EXPOSE ${PORT}
+# Configuración de salud y puerto (Railway inyecta PORT en runtime); exponemos 8080 por defecto
+ENV PORT=8080
+EXPOSE 8080
 
 # Health check optimizado para Railway
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get(f'http://localhost:${PORT}/health')" || exit 1
+    CMD sh -c 'python - <<"PY" || exit 1
+import os, sys
+import requests
+port = os.getenv("PORT", "8080")
+try:
+    r = requests.get(f"http://localhost:{port}/health", timeout=5)
+    sys.exit(0 if r.status_code == 200 else 1)
+except Exception:
+    sys.exit(1)
+PY'
 
 # Comando optimizado para Railway
-CMD exec gunicorn \
-    --bind 0.0.0.0:${PORT} \
+CMD sh -c 'exec gunicorn \
+    --bind 0.0.0.0:${PORT:-8080} \
     --workers 1 \
     --threads 2 \
     --timeout 120 \
@@ -54,4 +63,4 @@ CMD exec gunicorn \
     --log-level info \
     --worker-class sync \
     --worker-tmp-dir /tmp \
-    backend.wsgi:application
+    backend.wsgi:application'
