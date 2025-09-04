@@ -15,7 +15,7 @@ from backend.app import app
 
 if __name__ == "__main__":
     print("🚀 Starting AI-RFX Backend (Unified Architecture)")
-    print("📡 API available at: http://localhost:5001")
+    print("📡 API available at: http://localhost:3186")
     print("🔧 Endpoints:")
     print("   - POST /api/rfx/process")
     print("   - POST /api/proposals/generate")
@@ -24,4 +24,4 @@ if __name__ == "__main__":
     print("=" * 50)
     
     # Start the application
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    app.run(host='0.0.0.0', port=3186, debug=True)

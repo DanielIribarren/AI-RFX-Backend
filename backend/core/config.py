@@ -53,7 +53,7 @@ class OpenAIConfig:
 class ServerConfig:
     """Flask server configuration"""
     host: str = "0.0.0.0"
-    port: int = 5001
+    port: int = 3186
     debug: bool = False
     cors_origins: List[str] = None
     cors_methods: List[str] = None
@@ -139,7 +139,7 @@ class Config:
         
         return ServerConfig(
             host=os.getenv("HOST", "0.0.0.0"),
-            port=int(os.getenv("PORT", "5001")),
+            port=int(os.getenv("PORT", "3186")),
             debug=self.environment == Environment.DEVELOPMENT,
             cors_origins=cors_origins.split(",") if cors_origins else [],
             cors_methods=os.getenv("CORS_METHODS", "GET,POST,PUT,DELETE,OPTIONS").split(","),

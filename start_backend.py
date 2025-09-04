@@ -186,10 +186,10 @@ except Exception as e:
 def start_backend():
     """Start the backend server with enhanced logging"""
     print("🚀 Starting AI-RFX Backend...")
-    print("📊 Server will be available at: http://localhost:5001")
-    print("🔍 API endpoints will be at: http://localhost:5001/api/")
-    print("📋 Health check: http://localhost:5001/health")
-    print("💰 Pricing API: http://localhost:5001/api/pricing/")
+    print("📊 Server will be available at: http://localhost:3186")
+    print("🔍 API endpoints will be at: http://localhost:3186/api/")
+    print("📋 Health check: http://localhost:3186/health")
+    print("💰 Pricing API: http://localhost:3186/api/pricing/")
     print("\n📋 Key Pricing Endpoints:")
     print("   GET  /api/pricing/config/{rfx_id}    - Get configuration")
     print("   PUT  /api/pricing/config/{rfx_id}    - Save configuration") 
