@@ -38,8 +38,9 @@ from backend.models.proposal_models import ProposalRequest, ProposalNotes
 from backend.core.config import get_openai_config
 from backend.core.database import get_database_client
 from backend.utils.validators import EmailValidator, DateValidator, TimeValidator
-from backend.utils.text_utils import chunk_text, clean_json_string
+from backend.utils.text_utils import clean_json_string
 from backend.core.feature_flags import FeatureFlags
+from backend.services.function_calling_extractor import FunctionCallingRFXExtractor
 
 import logging
 
@@ -683,6 +684,7 @@ class ModularRFXExtractor:
                     ],
                     temperature=openai_config.temperature,
                     max_tokens=openai_config.max_tokens,
+                    response_format={"type": "json_object"},  # 🆕 JSON MODE: Sistema modular
                     timeout=30
                 )
                 
@@ -840,6 +842,21 @@ class RFXProcessorService:
             strategy=extraction_strategy,
             debug_mode=debug_mode
         )
+        
+        # 🚀 FUNCTION CALLING EXTRACTOR (Fase 2B)
+        # Inicializar solo si está habilitado por feature flag
+        self.function_calling_extractor = None
+        if FeatureFlags.function_calling_enabled():
+            try:
+                self.function_calling_extractor = FunctionCallingRFXExtractor(
+                    openai_client=self.openai_client,
+                    model=self.openai_config.model,
+                    debug_mode=debug_mode
+                )
+                logger.info("🚀 Function Calling Extractor initialized successfully")
+            except Exception as e:
+                logger.warning(f"⚠️ Function Calling Extractor initialization failed: {e}")
+                logger.info("📋 Falling back to JSON mode extraction")
         
         # Estadísticas de procesamiento para debugging
         self.processing_stats = {
@@ -1019,289 +1036,109 @@ class RFXProcessorService:
             raise ValueError(f"Failed to extract text from file: {e}")
     
     def _process_with_ai(self, text: str) -> Dict[str, Any]:
-        """🆕 REFACTORIZADO: Process extracted text with modular AI system"""
+        """🚀 REFACTORIZADO: Process COMPLETE text with single AI call - NO CHUNKING"""
         try:
             start_time = time.time()
-            logger.info(f"🤖 Starting MODULAR AI processing for text of {len(text)} characters")
+            word_count = len(text.split())
+            estimated_tokens = int(word_count * 1.2)  # Conservative estimate
             
-            # 🔍 DEBUG: Always log text preview to understand what AI sees
-            logger.info(f"📄 DEBUG_TEXT_PREVIEW: {text[:500]}...")
+            logger.info(f"🚀 Starting COMPLETE AI processing for text of {len(text)} characters (~{estimated_tokens} tokens)")
+            
+            # 🔍 DEBUG: Log text preview and key indicators
+            logger.info(f"📄 TEXT_PREVIEW: {text[:500]}...")
+            
+            # Quick analysis for completeness validation
             text_lower = text.lower()
             keywords_found = []
             if "fecha" in text_lower: keywords_found.append("fecha")
             if "hora" in text_lower: keywords_found.append("hora") 
             if "entrega" in text_lower: keywords_found.append("entrega")
-            if "cristobal" in text_lower or "cristóbal" in text_lower: keywords_found.append("cristobal")
-            if "lopenza" in text_lower: keywords_found.append("lopenza")
+            if "productos" in text_lower or "servicios" in text_lower: keywords_found.append("productos")
             
-            if keywords_found:
-                logger.info(f"🗓️ KEYWORDS_FOUND: {keywords_found}")
-            else:
-                logger.warning(f"⚠️ NO_KEYWORDS_FOUND - may explain missing data")
-                
-            if self.modular_extractor.debug_mode:
-                logger.debug(f"📄 Full text to process: {text[:1000]}..." if len(text) > 1000 else f"📄 Full text: {text}")
+            logger.info(f"🗓️ KEYWORDS_FOUND: {keywords_found}" if keywords_found else "⚠️ NO_KEYWORDS_FOUND")
             
-            # 🚀 GPT-4o: Use much larger chunks with 128k context window
-            # Reserve ~25k tokens for prompt + 3k for response = 100k available for text
-            chunks = chunk_text(text, max_tokens=100000)
-            logger.info(f"📝 Text split into {len(chunks)} chunks")
+            # Validate text size for model limits (GPT-4o: 128K tokens)
+            if estimated_tokens > 120000:
+                logger.warning(f"⚠️ Text might exceed model limits: {estimated_tokens} tokens")
+                # Fallback to chunking only if absolutely necessary
+                return self._process_with_ai_chunked_fallback(text)
             
-            # 🆕 Process each chunk using modular extractor
-            chunk_results = []
-            for i, chunk in enumerate(chunks):
-                logger.info(f"🤖 Processing chunk {i+1}/{len(chunks)} ({len(chunk)} characters)")
-                
-                # 🔍 Debug: Log chunk word count and estimated token count
-                word_count = len(chunk.split())
-                estimated_tokens = int(word_count * 1.2)  # Conservative estimate
-                logger.info(f"📊 Chunk {i+1} stats: {word_count} words, ~{estimated_tokens} tokens estimated")
-                
-                if self.modular_extractor.debug_mode:
-                    logger.debug(f"📄 Chunk {i+1} content: {chunk[:300]}...")
-                
-                # Usar el nuevo sistema modular
-                chunk_result = self.modular_extractor.extract_from_chunk(
-                    chunk_text=chunk,
-                    chunk_index=i,
-                    openai_client=self.openai_client,
-                    openai_config=self.openai_config
-                )
-                
-                chunk_results.append(chunk_result)
-                
-                # Log what was found in this chunk (enhanced logging)
-                if chunk_result and hasattr(chunk_result, 'productos') and chunk_result.productos:
-                    product_names = [p.nombre for p in chunk_result.productos]
-                    confidences = [f"{p.confidence:.2f}" for p in chunk_result.productos if hasattr(p, 'confidence')]
-                    logger.info(f"✅ Chunk {i+1} found {len(chunk_result.productos)} productos: {product_names}")
-                    if self.modular_extractor.debug_mode and confidences:
-                        logger.debug(f"   Confidence scores: {confidences}")
-                else:
-                    logger.warning(f"⚠️ Chunk {i+1} found NO productos")
-                
-                # Log extraction metadata if available
-                if self.modular_extractor.debug_mode and chunk_result.extraction_metadata:
-                    metadata = chunk_result.extraction_metadata
-                    logger.debug(f"📊 Chunk {i+1} metadata: Strategy={metadata.get('strategy')}, Fields={metadata.get('client_fields_found', 0)}+{metadata.get('event_fields_found', 0)}")
+            # 🎯 ESTRATEGIA DE EXTRACCIÓN CON FALLBACKS
+            extracted_data = None
             
-            # 🆕 Combine results using enhanced combination logic
-            logger.info(f"🔄 Combining results from {len(chunk_results)} chunks using modular system")
-            combined_data = self._combine_modular_chunk_results(chunk_results)
-            
-            # Update processing statistics
-            processing_time = time.time() - start_time
-            self.processing_stats['chunks_processed'] += len(chunks)
-            
-            # Enhanced logging with confidence information
-            logger.info(f"✅ MODULAR AI processing completed in {processing_time:.3f}s")
-            logger.info(f"📊 Final combined products: {len(combined_data.get('productos', []))} total")
-            
-            if combined_data.get("productos"):
-                product_names = [p['nombre'] for p in combined_data['productos']]
-                logger.info(f"📦 Product names found: {product_names}")
-                
-                if self.modular_extractor.debug_mode:
-                    avg_confidence = sum(p.get('confidence', 0) for p in combined_data['productos']) / len(combined_data['productos'])
-                    logger.debug(f"📊 Average product confidence: {avg_confidence:.3f}")
+            # 1️⃣ PRIMERA OPCIÓN: Function Calling (más robusto)
+            if self.function_calling_extractor and FeatureFlags.function_calling_enabled():
+                try:
+                    logger.info(f"🚀 Attempting Function Calling extraction...")
+                    db_result = self.function_calling_extractor.extract_rfx_data(text)
                     
-                    # Log extraction summary
-                    extraction_summary = self.modular_extractor.get_extraction_summary()
-                    logger.debug(f"📈 Extraction Summary: Quality={extraction_summary.extraction_quality}, AI Calls={extraction_summary.ai_calls_made}, Retries={extraction_summary.retries_attempted}")
+                    # Convertir resultado de function calling a formato legacy
+                    extracted_data = self._convert_function_calling_to_legacy_format(db_result)
+                    logger.info(f"✅ Function Calling extraction successful")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Function Calling extraction failed: {e}")
+                    if not FeatureFlags.json_mode_fallback_enabled():
+                        raise  # Si no hay fallback habilitado, propagar error
+            
+            # 2️⃣ SEGUNDA OPCIÓN: JSON Mode (sistema actual)
+            if not extracted_data and FeatureFlags.json_mode_fallback_enabled():
+                try:
+                    logger.info(f"🔄 Falling back to JSON Mode extraction...")
+                    extracted_data = self._extract_complete_with_ai(text)
+                    logger.info(f"✅ JSON Mode extraction successful")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ JSON Mode extraction failed: {e}")
+            
+            # 3️⃣ TERCERA OPCIÓN: Legacy fallback
+            if not extracted_data:
+                logger.warning(f"🔄 Falling back to legacy extraction...")
+                extracted_data = self._process_with_ai_chunked_fallback(text)
+            
+            # 🔍 Validate completeness automatically
+            completeness_result = self._validate_product_completeness(extracted_data, text)
+            
+            # Calculate processing metrics
+            processing_time = time.time() - start_time
+            self.processing_stats['total_documents_processed'] += 1
+            
+            # Enhanced logging
+            products_found = len(extracted_data.get('productos', []))
+            logger.info(f"✅ COMPLETE AI processing completed in {processing_time:.3f}s")
+            logger.info(f"📊 Products found: {products_found}")
+            logger.info(f"💰 Cost optimization: Single call vs multiple chunks")
+            
+            if extracted_data.get("productos"):
+                product_names = [p['nombre'] for p in extracted_data['productos']]
+                logger.info(f"📦 Product names: {product_names}")
             else:
-                logger.error(f"❌ NO PRODUCTS found in final combined data!")
-                self.processing_stats['fallback_usage_count'] += 1
+                logger.error(f"❌ NO PRODUCTS found!")
+                
+            # Add completeness validation results
+            extracted_data['completeness_validation'] = completeness_result
+            extracted_data['processing_metrics'] = {
+                'processing_time': processing_time,
+                'estimated_tokens': estimated_tokens,
+                'single_call': True,
+                'cost_optimized': True
+            }
             
-            # Store debug information in the combined data if in debug mode
-            if self.modular_extractor.debug_mode:
-                combined_data['modular_debug_info'] = {
-                    'extraction_strategy': self.modular_extractor.strategy.value,
-                    'total_processing_time': processing_time,
-                    'extraction_summary': self.modular_extractor.get_extraction_summary().dict(),
-                    'chunks_metadata': [result.extraction_metadata for result in chunk_results]
-                }
-            
-            logger.debug(f"📦 Combined data keys: {list(combined_data.keys())}")
-            return combined_data
+            return extracted_data
             
         except Exception as e:
-            logger.error(f"❌ MODULAR AI processing failed: {e}")
+            logger.error(f"❌ COMPLETE AI processing failed: {e}")
             self.processing_stats['fallback_usage_count'] += 1
             
-            # En caso de error, usar el sistema legacy como fallback
-            logger.warning(f"🔄 Fallback to legacy system due to modular processing error")
-            return self._process_with_ai_legacy(text)
+            # Fallback to chunking only as last resort
+            logger.warning(f"🔄 Fallback to chunked processing due to error")
+            return self._process_with_ai_chunked_fallback(text)
     
-    def _combine_modular_chunk_results(self, chunk_results: List[ChunkExtractionResult]) -> Dict[str, Any]:
-        """🆕 Combina resultados de chunks usando el sistema modular mejorado"""
-        combined = {
-            "email": "",
-            "email_empresa": "",
-            "nombre_solicitante": "",
-            "nombre_empresa": "",
-            "telefono_solicitante": "",
-            "telefono_empresa": "",
-            "cargo_solicitante": "",
-            "tipo_solicitud": "",
-            "productos": [],
-            "hora_entrega": "",
-            "fecha": "",
-            "lugar": "",
-            "currency": "USD",
-            "texto_original_relevante": ""
-        }
-        
-        # Estadísticas de combinación
-        confidence_scores = []
-        texto_fragments = []
-        extraction_metadata = []
-        
-        logger.info(f"🔄 Combining {len(chunk_results)} modular chunk results")
-        
-        for i, chunk_result in enumerate(chunk_results):
-            if self.modular_extractor.debug_mode:
-                logger.debug(f"📦 Processing chunk result {i+1}: {chunk_result.chunk_index}")
-            
-            # Combinar campos usando prioridad de confidence si están disponibles
-            fields_to_combine = [
-                ("email", chunk_result.email),
-                ("email_empresa", chunk_result.email_empresa),
-                ("nombre_solicitante", chunk_result.nombre_solicitante),
-                ("nombre_empresa", chunk_result.nombre_empresa),
-                ("telefono_solicitante", chunk_result.telefono_solicitante),
-                ("telefono_empresa", chunk_result.telefono_empresa),
-                ("cargo_solicitante", chunk_result.cargo_solicitante),
-                ("tipo_solicitud", chunk_result.tipo_solicitud),
-                ("hora_entrega", chunk_result.hora_entrega),
-                ("fecha", chunk_result.fecha),
-                ("lugar", chunk_result.lugar),
-                ("currency", getattr(chunk_result, 'currency', "USD"))
-            ]
-            
-            for field_name, field_value in fields_to_combine:
-                if field_value and not combined[field_name]:
-                    combined[field_name] = field_value
-                    
-                    if self.modular_extractor.debug_mode:
-                        # Buscar confidence score para este campo
-                        field_confidence = next(
-                            (cs.confidence for cs in chunk_result.confidence_scores 
-                             if cs.field_name == field_name), 
-                            0.8
-                        )
-                        logger.debug(f"📧 Found {field_name} in chunk {i+1}: {field_value} (confidence: {field_confidence:.2f})")
-            
-            # Combinar productos con validación Pydantic ya aplicada
-            if chunk_result.productos:
-                productos_count = len(chunk_result.productos)
-                
-                # Convertir ProductExtraction a dict para compatibilidad
-                for producto in chunk_result.productos:
-                    producto_dict = {
-                        "nombre": producto.nombre,
-                        "cantidad": producto.cantidad,
-                        "unidad": producto.unidad
-                    }
-                    
-                    # Añadir confidence si está en modo debug
-                    if self.modular_extractor.debug_mode:
-                        producto_dict["confidence"] = producto.confidence
-                    
-                    combined["productos"].append(producto_dict)
-                
-                logger.debug(f"📦 Added {productos_count} productos from chunk {i+1}")
-            
-            # Recopilar texto relevante
-            if chunk_result.texto_original_relevante:
-                texto_fragments.append(f"Chunk {i+1}: {chunk_result.texto_original_relevante}")
-            
-            # Recopilar confidence scores
-            confidence_scores.extend(chunk_result.confidence_scores)
-            
-            # Recopilar metadata de extracción
-            if chunk_result.extraction_metadata:
-                extraction_metadata.append({
-                    'chunk_index': chunk_result.chunk_index,
-                    'metadata': chunk_result.extraction_metadata
-                })
-        
-        # Combinar fragmentos de texto
-        if texto_fragments:
-            combined["texto_original_relevante"] = " | ".join(texto_fragments)
-        
-        # Añadir metadata de debugging si está habilitado
-        if self.modular_extractor.debug_mode:
-            combined["modular_extraction_metadata"] = {
-                'total_confidence_scores': len(confidence_scores),
-                'chunks_with_products': len([cr for cr in chunk_results if cr.productos]),
-                'average_products_per_chunk': len(combined["productos"]) / len(chunk_results) if chunk_results else 0,
-                'extraction_metadata': extraction_metadata,
-                'combined_confidence_scores': [cs.dict() for cs in confidence_scores]
-            }
-        
-        # Log final combined result
-        logger.info(f"✅ Combined result: {len(combined['productos'])} productos total")
-        
-        if self.modular_extractor.debug_mode:
-            # Calcular estadísticas de confidence
-            if confidence_scores:
-                avg_confidence = sum(cs.confidence for cs in confidence_scores) / len(confidence_scores)
-                logger.debug(f"📊 Overall average confidence: {avg_confidence:.3f}")
-            
-            # Log breakdown by field type with empresa information
-            solicitante_fields = [k for k in combined.keys() if combined[k] and k in ['email', 'nombre_solicitante', 'telefono_solicitante', 'cargo_solicitante']]
-            empresa_fields = [k for k in combined.keys() if combined[k] and k in ['email_empresa', 'nombre_empresa', 'telefono_empresa']]
-            event_fields = [k for k in combined.keys() if combined[k] and k in ['fecha', 'hora_entrega', 'lugar']]
-            logger.info(f"📋 Fields found - Solicitante: {len(solicitante_fields)}, Empresa: {len(empresa_fields)}, Event: {len(event_fields)}, Products: {len(combined['productos'])}")
-            
-            # Log specific empresa and solicitante info if found
-            if empresa_fields:
-                empresa_details = [f"{k}: {combined[k]}" for k in empresa_fields if combined[k]]
-                logger.info(f"🏢 Empresa info: {', '.join(empresa_details)}")
-            
-            if solicitante_fields:
-                solicitante_details = [f"{k}: {combined[k]}" for k in solicitante_fields if combined[k]]
-                logger.info(f"👤 Solicitante info: {', '.join(solicitante_details)}")
-        
-        return combined
-    
-    def _process_with_ai_legacy(self, text: str) -> Dict[str, Any]:
-        """🔧 Sistema legacy como fallback para compatibilidad"""
-        logger.warning(f"⚠️ Using LEGACY processing system as fallback")
-        
+    def _extract_complete_with_ai(self, text: str) -> Dict[str, Any]:
+        """🎯 NUEVA FUNCIÓN: Extrae datos con una sola llamada a IA - SIN CHUNKING"""
         try:
-            # 🚀 GPT-4o: Use larger chunks for better context (legacy method)
-            chunks = chunk_text(text, max_tokens=100000)
-            logger.info(f"📝 Legacy: Text split into {len(chunks)} chunks")
-            
-            # Process each chunk using legacy method
-            chunk_results = []
-            for i, chunk in enumerate(chunks):
-                result = self._extract_info_from_chunk_legacy(chunk)
-                chunk_results.append(result)
-            
-            # Combine results using legacy method
-            combined_data = self._combine_chunk_results_legacy(chunk_results)
-            return combined_data
-            
-        except Exception as e:
-            logger.error(f"❌ Legacy processing also failed: {e}")
-            # Return minimal fallback data
-            return {
-                "email": "",
-                "nombre_solicitante": "",
-                "productos": [],
-                "hora_entrega": "",
-                "fecha": "",
-                "lugar": "",
-                "currency": "USD",
-                "texto_original_relevante": ""
-            }
-    
-    def _extract_info_from_chunk_legacy(self, chunk: str, max_retries: int = 2) -> Dict[str, Any]:
-        """🔧 LEGACY: Extract information from a single text chunk using OpenAI"""
-        
-        system_prompt = """<rfx_analysis_system>
+            # 🎨 SYSTEM PROMPT PROFESIONAL (del sistema legacy optimizado)
+            system_prompt = """<rfx_analysis_system>
   <identity>
     <role>Especialista experto en análisis inteligente de documentos RFX con capacidades avanzadas de evaluación automática</role>
     <version>4.0</version>
@@ -1340,279 +1177,23 @@ class RFXProcessorService:
       <separation_logic>Aplicar lógica específica para cada tipo de información</separation_logic>
       <validation>Verificar correcta categorización de datos</validation>
     </principle>
-    <principle name="especificidad_tecnica">
-      <rule>Separar requisitos específicos de descripciones generales</rule>
-      <pattern_recognition>Identificar patrones de instrucciones vs descripciones</pattern_recognition>
-      <quality_assessment>Evaluar nivel de especificidad encontrado</quality_assessment>
-    </principle>
-    <principle name="confidence_scoring">
-      <rule>Evaluar la certeza de cada extracción basada en evidencia textual</rule>
-      <scoring_factors>
-        <factor weight="0.3">Claridad del texto</factor>
-        <factor weight="0.25">Especificidad de la información</factor>
-        <factor weight="0.25">Consistencia interna</factor>
-        <factor weight="0.2">Completitud del contexto</factor>
-      </scoring_factors>
-      <transparency>Documentar razones para scores asignados</transparency>
-    </principle>
-    <principle name="robustez_operacional">
-      <rule>Mantener funcionalidad incluso con documentos imperfectos</rule>
-      <graceful_degradation>Extraer información parcial cuando sea posible</graceful_degradation>
-      <error_reporting>Documentar problemas encontrados para mejora continua</error_reporting>
+    <principle name="completitud_total">
+      <rule>ENCONTRAR Y EXTRAER **TODOS** los productos/servicios mencionados sin excepción</rule>
+      <pattern_recognition>Si ves listas numeradas (1., 2., 3...) o con viñetas (-, •), extrae TODOS los ítems</pattern_recognition>
+      <validation>NO te detengas en los primeros productos encontrados</validation>
+      <completeness_check>Incluye comida, bebidas, equipos, servicios, personal, extras</completeness_check>
+      <verification>Verifica completitud antes de responder - si hay 15 productos, debes encontrar los 15</verification>
     </principle>
   </core_principles>
 
   <output_requirements>
-    <format>JSON estructurado válido únicamente</format>
+    <format>JSON estructurado válido únicamente - SIN markdown fences</format>
+    <json_mode>Responder ÚNICAMENTE con objeto JSON válido, sin ```json ni texto adicional</json_mode>
     <null_handling>Campos null cuando no hay información explícita</null_handling>
     <evidence_based>Incluir fragmento de texto original como evidencia</evidence_based>
     <confidence_required>Score de confianza obligatorio para cada extracción</confidence_required>
     <error_transparency>Reportar problemas y limitaciones encontradas</error_transparency>
   </output_requirements>
-
-  <data_extraction_rules>
-    <information_hierarchy>
-      <level_1 priority="critical">
-        <field>nombre_empresa</field>
-        <field>productos_servicios</field>
-        <field>fecha_requerida</field>
-        <field>ubicacion_servicio</field>
-      </level_1>
-      <level_2 priority="high">
-        <field>nombre_solicitante</field>
-        <field>email_solicitante</field>
-        <field>telefono_solicitante</field>
-        <field>tipo_solicitud</field>
-      </level_2>
-      <level_3 priority="medium">
-        <field>requisitos_especiales</field>
-        <field>especificaciones</field>
-        <field>presupuesto</field>
-      </level_3>
-    </information_hierarchy>
-
-    <validation_protocols>
-      <email_validation>
-        <pattern>RFC 5322 compliant</pattern>
-        <business_logic>Distinguir emails corporativos vs personales</business_logic>
-        <domain_extraction>Extraer empresa del dominio si aplicable</domain_extraction>
-      </email_validation>
-      <date_validation>
-        <formats>ISO 8601, DD/MM/YYYY, DD-MM-YYYY, natural language</formats>
-        <future_check>Validar que fechas sean futuras</future_check>
-        <reasonability>Verificar lead time apropiado por industria</reasonability>
-      </date_validation>
-      <quantity_validation>
-        <numeric_extraction>Identificar números y unidades</numeric_extraction>
-        <context_validation>Verificar coherencia con tipo de producto</context_validation>
-        <range_checking>Aplicar rangos razonables por dominio</range_checking>
-      </quantity_validation>
-    </validation_protocols>
-  </data_extraction_rules>
-
-  <error_recovery_strategies>
-    <partial_extraction>
-      <strategy>Continuar procesamiento aunque algunos campos fallen</strategy>
-      <documentation>Documentar campos problemáticos en insights</documentation>
-      <confidence_adjustment>Reducir confidence global proporcionalmente</confidence_adjustment>
-    </partial_extraction>
-    
-    <ambiguity_handling>
-      <strategy>Reportar múltiples interpretaciones posibles</strategy>
-      <evidence>Incluir fragmento ambiguo en evidencia</evidence>
-      <recommendation>Sugerir clarificación específica</recommendation>
-    </ambiguity_handling>
-    
-    <missing_information>
-      <strategy>Usar null explícitamente, no asumir valores</strategy>
-      <prioritization>Identificar campos críticos faltantes</prioritization>
-      <guidance>Proporcionar recomendaciones específicas para completar</guidance>
-    </missing_information>
-  </error_recovery_strategies>
-</rfx_analysis_system>
-
-<role_definition>
-  <primary_function>
-    Analizar documentos RFX de múltiples industrias extrayendo información estructurada con evaluación automática de calidad y generación de insights específicos por dominio.
-  </primary_function>
-  
-  <expertise_areas>
-    <area name="document_analysis">
-      <skill>Procesamiento de texto avanzado con OCR fallback</skill>
-      <skill>Identificación de patrones y estructuras documentales</skill>
-      <skill>Extracción de entidades nombradas específicas</skill>
-    </area>
-    <area name="domain_classification">
-      <skill>Detección automática de industria con 95%+ precisión</skill>
-      <skill>Análisis de keywords ponderado multi-dimensional</skill>
-      <skill>Adaptación de criterios según dominio detectado</skill>
-    </area>
-    <area name="quality_evaluation">
-      <skill>Evaluación multi-capa de completitud y consistencia</skill>
-      <skill>Scoring adaptativo con thresholds específicos</skill>
-      <skill>Generación de métricas de procesabilidad</skill>
-    </area>
-    <area name="insight_generation">
-      <skill>Recomendaciones contextuales específicas por industria</skill>
-      <skill>Identificación proactiva de gaps y inconsistencias</skill>
-      <skill>Priorización de mejoras por impacto y urgencia</skill>
-    </area>
-  </expertise_areas>
-
-  <behavioral_traits>
-    <trait name="precision">Extraer solo información explícitamente presente</trait>
-    <trait name="adaptability">Ajustar criterios según dominio detectado</trait>
-    <trait name="transparency">Proporcionar evidencia y confidence scores</trait>
-    <trait name="robustness">Funcionar efectivamente con documentos imperfectos</trait>
-    <trait name="insight_driven">Generar recomendaciones accionables</trait>
-  </behavioral_traits>
-
-  <communication_style>
-    <format>JSON estructurado exclusivamente</format>
-    <tone>Técnico, preciso, basado en evidencia</tone>
-    <approach>Metodología Chain-of-Thought interna</approach>
-    <transparency>Documentar limitaciones y assumptions</transparency>
-  </communication_style>
-</role_definition>
-
-<operational_context>
-  <system_integration>
-    <platform>Sistema RFX AI v4.0 con arquitectura de 6 capas</platform>
-    <evaluators>6 evaluadores inteligentes con 100% test coverage</evaluators>
-    <performance>2.12% overhead, <3ms por evaluación</performance>
-    <reliability>88 tests unitarios, 95%+ precisión verificada</reliability>
-  </system_integration>
-
-  <processing_environment>
-    <input_formats>
-      <format type="pdf">Extracción con PyPDF2 + OCR fallback</format>
-      <format type="docx">Análisis de estructura ZIP + XML parsing</format>
-      <format type="xlsx">Procesamiento con Pandas + openpyxl</format>
-      <format type="csv">Auto-detección de delimitadores</format>
-      <format type="images">OCR con Tesseract + preprocessing</format>
-    </input_formats>
-    
-    <output_integration>
-      <database>Supabase con metadatos enriquecidos</database>
-      <frontend>Next.js con visualización de evaluaciones</frontend>
-      <pdf_generation>WeasyPrint con reportes de calidad</pdf_generation>
-      <api_endpoints>REST API para integración empresarial</api_endpoints>
-    </output_integration>
-  </processing_environment>
-
-  <business_context>
-    <target_industries>
-      <industry name="catering" maturity="production">Eventos corporativos, celebraciones</industry>
-      <industry name="construccion" maturity="development">Proyectos, remodelaciones</industry>
-      <industry name="it_services" maturity="development">Software, consultoría</industry>
-      <industry name="eventos" maturity="development">Organización, logística</industry>
-      <industry name="logistica" maturity="planning">Transporte, distribución</industry>
-      <industry name="marketing" maturity="planning">Campañas, branding</industry>
-    </target_industries>
-    
-    <use_cases>
-      <use_case priority="high">Automatización de procesamiento RFX</use_case>
-      <use_case priority="high">Evaluación automática de calidad</use_case>
-      <use_case priority="medium">Generación de insights por industria</use_case>
-      <use_case priority="medium">Detección de inconsistencias</use_case>
-      <use_case priority="low">Benchmarking y análisis de tendencias</use_case>
-    </use_cases>
-  </business_context>
-
-  <scalability_framework>
-    <horizontal_scaling>Soporte para 1000+ RFX por hora</horizontal_scaling>
-    <industry_expansion>Framework extensible para nuevos dominios</industry_expansion>
-    <language_support>Preparado para expansión multi-idioma</language_support>
-    <integration_ready>APIs para sistemas empresariales existentes</integration_ready>
-  </scalability_framework>
-</operational_context>
-
-<behavioral_instructions>
-  <processing_workflow>
-    <phase name="document_intake" order="1">
-      <objective>Validar y preparar documento para análisis</objective>
-      <actions>
-        <action>Verificar integridad del texto recibido</action>
-        <action>Identificar formato y estructura del documento</action>
-        <action>Aplicar preprocessing si es necesario</action>
-        <action>Establecer baseline de calidad del documento</action>
-      </actions>
-      <error_handling>
-        <corrupted_text>Procesar texto parcial disponible</corrupted_text>
-        <unreadable_sections>Marcar secciones problemáticas</unreadable_sections>
-        <format_issues>Aplicar parsing alternativo</format_issues>
-      </error_handling>
-      <output>Documento validado y preparado para análisis</output>
-    </phase>
-    
-    <phase name="domain_detection" order="2">
-      <objective>Identificar automáticamente el dominio/industria</objective>
-      <method>Análisis de keywords ponderado con confidence scoring</method>
-      <actions>
-        <action>Extraer keywords relevantes del texto</action>
-        <action>Aplicar pesos específicos por categoría de keyword</action>
-        <action>Calcular scores por dominio candidato</action>
-        <action>Seleccionar dominio con mayor confidence</action>
-      </actions>
-      <validation>
-        <threshold>Confidence mínimo 0.7 para clasificación definitiva</threshold>
-        <fallback>Usar dominio "otro" si confidence <0.5</fallback>
-        <multi_domain>Reportar dominios secundarios si relevantes</multi_domain>
-      </validation>
-      <output>Dominio detectado, confidence score, keywords identificadas</output>
-    </phase>
-    
-    <phase name="structured_extraction" order="3">
-      <objective>Extraer información siguiendo estructura JSON especificada</objective>
-      <method>Aplicar validaciones específicas por campo y dominio</method>
-      <actions>
-        <action>Procesar cada sección de datos sistemáticamente</action>
-        <action>Aplicar validaciones específicas por tipo de campo</action>
-        <action>Realizar validaciones cruzadas entre campos relacionados</action>
-        <action>Documentar evidencia textual para cada extracción</action>
-      </actions>
-      <field_processing>
-        <empresarial>Priorizar información organizacional</empresarial>
-        <personal>Identificar datos de contacto específicos</personal>
-        <productos>Extraer especificaciones detalladas</productos>
-        <requisitos>Distinguir instrucciones de descripciones</requisitos>
-      </field_processing>
-      <output>Datos estructurados con evidencia y confidence scores</output>
-    </phase>
-    
-    <phase name="quality_assessment" order="4">
-      <objective>Evaluar completitud y consistencia de datos extraídos</objective>
-      <method>Métricas multi-dimensionales con scoring adaptativo</method>
-      <dimensions>
-        <completitud weight="0.4">Presencia de campos críticos y opcionales</completitud>
-        <consistencia weight="0.3">Coherencia interna entre campos</consistencia>
-        <especificidad weight="0.3">Nivel de detalle y claridad</especificidad>
-      </dimensions>
-      <domain_adaptation>
-        <catering>Enfoque en productos alimentarios y logística</catering>
-        <construccion>Enfoque en materiales y especificaciones técnicas</construccion>
-        <it_services>Enfoque en tecnologías y funcionalidades</it_services>
-        <eventos>Enfoque en coordinación y capacidad</eventos>
-      </domain_adaptation>
-      <output>Scores consolidados y evaluación por dimensión</output>
-    </phase>
-    
-    <phase name="insight_generation" order="5">
-      <objective>Generar recomendaciones específicas basadas en análisis</objective>
-      <method>Análisis de gaps y generación de recomendaciones contextuales</method>
-      <categories>
-        <critical>Campos faltantes que impiden procesamiento</critical>
-        <important>Mejoras que aumentarían significativamente la calidad</important>
-        <enhancement>Optimizaciones para mejor experiencia</enhancement>
-      </categories>
-      <personalization>
-        <domain_specific>Adaptar recomendaciones según industria</domain_specific>
-        <quality_based>Priorizar según nivel de calidad detectado</quality_based>
-        <actionable>Proporcionar pasos específicos y realizables</actionable>
-      </personalization>
-      <output>Recomendaciones priorizadas y nivel de procesabilidad</output>
-    </phase>
-  </processing_workflow>
 
   <data_extraction_rules>
     <information_hierarchy>
@@ -1653,376 +1234,11 @@ class RFXProcessorService:
         <range_checking>Aplicar rangos razonables por dominio</range_checking>
       </quantity_validation>
     </validation_protocols>
-
-    <consistency_checks>
-      <temporal>Coherencia entre fechas, horarios y timeline</temporal>
-      <quantitative>Coherencia entre cantidades, personas y presupuesto</quantitative>
-      <contextual>Coherencia entre tipo de servicio y especificaciones</contextual>
-      <geographic>Coherencia entre ubicación y disponibilidad de servicios</geographic>
-    </consistency_checks>
   </data_extraction_rules>
-
-  <error_recovery_strategies>
-    <partial_extraction>
-      <strategy>Continuar procesamiento aunque algunos campos fallen</strategy>
-      <documentation>Documentar campos problemáticos en insights</documentation>
-      <confidence_adjustment>Reducir confidence global proporcionalmente</confidence_adjustment>
-    </partial_extraction>
-    
-    <ambiguity_handling>
-      <strategy>Reportar múltiples interpretaciones posibles</strategy>
-      <evidence>Incluir fragmento ambiguo en evidencia</evidence>
-      <recommendation>Sugerir clarificación específica</recommendation>
-    </ambiguity_handling>
-    
-    <missing_information>
-      <strategy>Usar null explícitamente, no asumir valores</strategy>
-      <prioritization>Identificar campos críticos faltantes</prioritization>
-      <guidance>Proporcionar recomendaciones específicas para completar</guidance>
-    </missing_information>
-  </error_recovery_strategies>
-</behavioral_instructions>
-
-<success_criteria>
-  <performance_metrics>
-    <accuracy>
-      <domain_detection>95%+ precisión en clasificación de industria</domain_detection>
-      <data_extraction>90%+ precisión en extracción de campos críticos</data_extraction>
-      <quality_assessment>85%+ correlación con evaluación humana experta</quality_assessment>
-    </accuracy>
-    
-    <efficiency>
-      <processing_time>Máximo 3ms por evaluación individual</processing_time>
-      <system_overhead>Máximo 5% overhead total del sistema</system_overhead>
-      <throughput>Mínimo 1000 RFX procesados por hora</throughput>
-    </efficiency>
-    
-    <reliability>
-      <uptime>99.9% disponibilidad del sistema</uptime>
-      <error_rate>Máximo 2% de fallos en procesamiento</error_rate>
-      <graceful_degradation>100% de documentos procesables parcialmente</graceful_degradation>
-    </reliability>
-  </performance_metrics>
-
-  <quality_standards>
-    <completeness_evaluation>
-      <excellent>Score 0.90-1.00 - Información completa y detallada</excellent>
-      <good>Score 0.75-0.89 - Información principal presente</good>
-      <acceptable>Score 0.60-0.74 - Información mínima viable</acceptable>
-      <needs_improvement>Score 0.40-0.59 - Información insuficiente</needs_improvement>
-      <poor>Score 0.00-0.39 - Información crítica faltante</poor>
-    </completeness_evaluation>
-    
-    <consistency_validation>
-      <temporal>Fechas futuras y timeline realista</temporal>
-      <quantitative>Cantidades coherentes con contexto</quantitative>
-      <contextual>Especificaciones alineadas con tipo de servicio</contextual>
-      <geographic>Ubicación accesible y serviceable</geographic>
-    </consistency_validation>
-    
-    <specificity_assessment>
-      <high>Productos específicos con detalles técnicos</high>
-      <medium>Productos identificados con especificaciones básicas</medium>
-      <low>Descripciones genéricas o vagas</low>
-    </specificity_assessment>
-  </quality_standards>
-
-  <business_outcomes>
-    <automation_efficiency>
-      <manual_reduction>80%+ reducción en procesamiento manual</manual_reduction>
-      <time_savings>70%+ reducción en tiempo de análisis</time_savings>
-      <error_reduction>60%+ reducción en errores humanos</error_reduction>
-    </automation_efficiency>
-    
-    <quality_improvement>
-      <standardization>100% de RFX evaluados con criterios consistentes</standardization>
-      <insight_generation>90%+ de RFX reciben recomendaciones accionables</insight_generation>
-      <process_optimization>50%+ mejora en identificación de gaps</process_optimization>
-    </quality_improvement>
-    
-    <scalability_achievement>
-      <industry_coverage>6+ industrias soportadas automáticamente</industry_coverage>
-      <volume_handling>1000+ documentos procesables por hora</volume_handling>
-      <expansion_readiness>Framework preparado para nuevas industrias</expansion_readiness>
-    </scalability_achievement>
-  </business_outcomes>
-
-  <user_experience_targets>
-    <response_quality>
-      <relevance>95%+ de insights considerados útiles por usuarios</relevance>
-      <actionability>90%+ de recomendaciones implementables</actionability>
-      <clarity>85%+ de usuarios comprenden resultados sin explicación adicional</clarity>
-    </response_quality>
-    
-    <system_usability>
-      <ease_of_use>Procesamiento automático sin configuración manual</ease_of_use>
-      <transparency>Evidencia textual clara para cada extracción</transparency>
-      <reliability>Funcionamiento consistente con documentos diversos</reliability>
-    </system_usability>
-  </user_experience_targets>
-</success_criteria>
-
-<performance_examples>
-  <example_1 domain="catering" complexity="medium">
-    <input_scenario>
-      <document_type>PDF de evento corporativo</document_type>
-      <content_quality>Información completa con algunos detalles técnicos</content_quality>
-      <challenges>Múltiples productos, restricciones dietéticas</challenges>
-    </input_scenario>
-    
-    <expected_processing>
-      <domain_detection>
-        <result>catering</result>
-        <confidence>0.92</confidence>
-        <keywords>["evento", "catering", "tequeños", "personas", "hotel"]</keywords>
-      </domain_detection>
-      
-      <quality_scores>
-        <completitud>0.85</completitud>
-        <consistencia>0.90</consistencia>
-        <especificidad>0.80</especificidad>
-        <consolidado>0.85</consolidado>
-      </quality_scores>
-      
-      <insights_generated>
-        <critical>[]</critical>
-        <important>["Especificar horario exacto de servicio"]</important>
-        <enhancement>["Considerar opciones vegetarianas adicionales"]</enhancement>
-      </insights_generated>
-    </expected_processing>
-    
-    <success_indicators>
-      <processing_time>2.1ms</processing_time>
-      <confidence_global>0.87</confidence_global>
-      <nivel_procesabilidad>bueno</nivel_procesabilidad>
-    </success_indicators>
-  </example_1>
-
-  <example_2 domain="construccion" complexity="high">
-    <input_scenario>
-      <document_type>Excel con especificaciones técnicas</document_type>
-      <content_quality>Información técnica detallada pero incompleta</content_quality>
-      <challenges>Terminología técnica, múltiples materiales, presupuesto complejo</challenges>
-    </input_scenario>
-    
-    <expected_processing>
-      <domain_detection>
-        <result>construccion</result>
-        <confidence>0.88</confidence>
-        <keywords>["remodelación", "materiales", "m2", "instalación", "pintura"]</keywords>
-      </domain_detection>
-      
-      <quality_scores>
-        <completitud>0.70</completitud>
-        <consistencia>0.75</consistencia>
-        <especificidad>0.85</especificidad>
-        <consolidado>0.75</consolidado>
-      </quality_scores>
-      
-      <insights_generated>
-        <critical>["Falta información de contacto del solicitante"]</critical>
-        <important>["Especificar timeline detallado", "Incluir presupuesto estimado"]</important>
-        <enhancement>["Considerar permisos municipales requeridos"]</enhancement>
-      </insights_generated>
-    </expected_processing>
-    
-    <success_indicators>
-      <processing_time>2.8ms</processing_time>
-      <confidence_global>0.78</confidence_global>
-      <nivel_procesabilidad>aceptable</nivel_procesabilidad>
-    </success_indicators>
-  </example_2>
-
-  <example_3 domain="it_services" complexity="high">
-    <input_scenario>
-      <document_type>Word con especificaciones de software</document_type>
-      <content_quality>Información técnica muy específica</content_quality>
-      <challenges>Tecnologías múltiples, integraciones complejas, timeline ajustado</challenges>
-    </input_scenario>
-    
-    <expected_processing>
-      <domain_detection>
-        <result>it_services</result>
-        <confidence>0.94</confidence>
-        <keywords>["software", "desarrollo", "API", "base de datos", "aplicación"]</keywords>
-      </domain_detection>
-      
-      <quality_scores>
-        <completitud>0.90</completitud>
-        <consistencia>0.85</consistencia>
-        <especificidad>0.95</especificidad>
-        <consolidado>0.90</consolidado>
-      </quality_scores>
-      
-      <insights_generated>
-        <critical>[]</critical>
-        <important>["Timeline puede ser optimista para complejidad requerida"]</important>
-        <enhancement>["Excelente especificación técnica", "Considerar fase de testing adicional"]</enhancement>
-      </insights_generated>
-    </expected_processing>
-    
-    <success_indicators>
-      <processing_time>2.5ms</processing_time>
-      <confidence_global>0.91</confidence_global>
-      <nivel_procesabilidad>excelente</nivel_procesabilidad>
-    </success_indicators>
-  </example_3>
-
-  <example_4 domain="otro" complexity="low">
-    <input_scenario>
-      <document_type>PDF con información básica</document_type>
-      <content_quality>Información mínima, dominio no claro</content_quality>
-      <challenges>Falta de keywords específicas, información genérica</challenges>
-    </input_scenario>
-    
-    <expected_processing>
-      <domain_detection>
-        <result>otro</result>
-        <confidence>0.45</confidence>
-        <keywords>["servicio", "empresa", "solicitud"]</keywords>
-      </domain_detection>
-      
-      <quality_scores>
-        <completitud>0.50</completitud>
-        <consistencia>0.60</consistencia>
-        <especificidad>0.30</especificidad>
-        <consolidado>0.47</consolidado>
-      </quality_scores>
-      
-      <insights_generated>
-        <critical>["Especificar tipo de servicio requerido", "Incluir información de contacto"]</critical>
-        <important>["Definir productos/servicios específicos", "Establecer timeline claro"]</important>
-        <enhancement>["Documento requiere reestructuración completa"]</enhancement>
-      </insights_generated>
-    </expected_processing>
-    
-    <success_indicators>
-      <processing_time>1.8ms</processing_time>
-      <confidence_global>0.52</confidence_global>
-      <nivel_procesabilidad>requiere_mejoras</nivel_procesabilidad>
-    </success_indicators>
-  </example_4>
-</performance_examples>
-
-<multi_language_support>
-  <language_detection>
-    <primary_languages>
-      <language code="es">Español (default)</language>
-      <language code="en">English</language>
-      <language code="pt">Português</language>
-    </primary_languages>
-    
-    <detection_method>
-      <approach>Análisis de caracteres y patrones lingüísticos</approach>
-      <confidence_threshold>0.8</confidence_threshold>
-      <fallback>Asumir español si confidence <0.8</fallback>
-    </detection_method>
-  </language_detection>
-
-  <keyword_adaptation>
-    <spanish_keywords>
-      <catering>["catering", "evento", "comida", "banquete", "tequeño", "empanada"]</catering>
-      <construccion>["construcción", "obra", "material", "cemento", "pintura"]</construccion>
-      <it_services>["software", "sistema", "desarrollo", "aplicación", "tecnología"]</it_services>
-    </spanish_keywords>
-    
-    <english_keywords>
-      <catering>["catering", "event", "food", "banquet", "appetizer", "snack"]</catering>
-      <construction>["construction", "building", "material", "cement", "paint"]</construction>
-      <it_services>["software", "system", "development", "application", "technology"]</it_services>
-    </english_keywords>
-    
-    <portuguese_keywords>
-      <catering>["catering", "evento", "comida", "banquete", "aperitivo", "lanche"]</catering>
-      <construction>["construção", "obra", "material", "cimento", "tinta"]</construction>
-      <it_services>["software", "sistema", "desenvolvimento", "aplicação", "tecnologia"]</it_services>
-    </portuguese_keywords>
-  </keyword_adaptation>
-
-  <output_localization>
-    <field_names>
-      <spanish>Mantener nombres de campos en español</spanish>
-      <english>Traducir nombres de campos críticos</english>
-      <portuguese>Adaptar nombres de campos principales</portuguese>
-    </field_names>
-    
-    <insights_language>
-      <rule>Generar insights en el idioma detectado del documento</rule>
-      <fallback>Usar español como idioma por defecto</fallback>
-    </insights_language>
-  </output_localization>
-</multi_language_support>
-
-<industry_expansion_framework>
-  <new_domain_template>
-    <domain_definition>
-      <name>nombre_industria</name>
-      <confidence_threshold>0.7</confidence_threshold>
-      <maturity_level>planning|development|production</maturity_level>
-    </domain_definition>
-    
-    <keyword_structure>
-      <primary_keywords weight="3.0">
-        <!-- Keywords principales que definen la industria -->
-      </primary_keywords>
-      <product_keywords weight="2.0">
-        <!-- Productos/servicios específicos de la industria -->
-      </product_keywords>
-      <service_keywords weight="1.5">
-        <!-- Servicios y actividades relacionadas -->
-      </service_keywords>
-      <venue_keywords weight="1.0">
-        <!-- Ubicaciones y contextos típicos -->
-      </venue_keywords>
-    </keyword_structure>
-    
-    <evaluation_criteria>
-      <domain_specific_fields>
-        <!-- Campos específicos importantes para esta industria -->
-      </domain_specific_fields>
-      <quality_thresholds>
-        <!-- Thresholds específicos para evaluación de calidad -->
-      </quality_thresholds>
-      <consistency_rules>
-        <!-- Reglas de consistencia específicas del dominio -->
-      </consistency_rules>
-    </evaluation_criteria>
-  </new_domain_template>
-
-  <expansion_candidates>
-    <healthcare>
-      <priority>high</priority>
-      <keywords>["médico", "hospital", "salud", "paciente", "medicamento"]</keywords>
-      <complexity>high</complexity>
-      <regulatory_requirements>extensive</regulatory_requirements>
-    </healthcare>
-    
-    <education>
-      <priority>medium</priority>
-      <keywords>["educativo", "universidad", "curso", "capacitación", "material didáctico"]</keywords>
-      <complexity>medium</complexity>
-      <regulatory_requirements>moderate</regulatory_requirements>
-    </education>
-    
-    <legal_services>
-      <priority>low</priority>
-      <keywords>["legal", "abogado", "contrato", "asesoría", "jurídico"]</keywords>
-      <complexity>high</complexity>
-      <regulatory_requirements>extensive</regulatory_requirements>
-    </legal_services>
-  </expansion_candidates>
-
-  <implementation_process>
-    <step_1>Definir keywords y patrones específicos de la industria</step_1>
-    <step_2>Establecer criterios de evaluación específicos</step_2>
-    <step_3>Crear casos de prueba representativos</step_3>
-    <step_4>Implementar y validar con documentos reales</step_4>
-    <step_5>Ajustar thresholds y criterios basado en performance</step_5>
-    <step_6>Documentar y desplegar en producción</step_6>
-  </implementation_process>
-</industry_expansion_framework>"""
+</rfx_analysis_system>"""
         
-        user_prompt = f"""Analiza cuidadosamente este texto de un documento de catering/evento y extrae la siguiente información en formato JSON:
+            # 🎯 USER PROMPT con el documento a analizar
+            user_prompt = f"""Analiza cuidadosamente este texto de un documento de catering/evento y extrae la siguiente información en formato JSON:
 
         {{
         "nombre_empresa": "EMPRESA: nombre de la compañía/organización (ej: Chevron, Microsoft). Si solo hay email como juan@chevron.com, extrae 'Chevron' del dominio (null si no se encuentra)",
@@ -2050,73 +1266,27 @@ class RFXProcessorService:
         }}
 
         ═══════════════════════════════════════════════════════════════════════════════════
-        🎯 INSTRUCCIONES CRÍTICAS PARA REQUIREMENTS
+🎯 INSTRUCCIONES CRÍTICAS PARA COMPLETITUD DE PRODUCTOS
         ═══════════════════════════════════════════════════════════════════════════════════
 
-        **QUÉ SON REQUIREMENTS (Buscar estas frases/patrones):**
-        ✅ Instrucciones específicas: "Necesito que...", "Debe incluir...", "Es importante que..."
-        ✅ Preferencias explícitas: "Prefiero...", "Me gustaría...", "Sería ideal..."
-        ✅ Restricciones: "No queremos...", "Evitar...", "Sin...", "Prohibido..."
-        ✅ Condiciones especiales: "Solo si...", "Siempre que...", "Mientras..."
-        ✅ Experiencia/calificaciones: "Con experiencia de...", "Certificado en...", "Que tenga..."
-        ✅ Presupuesto/calidad: "Económico", "Premium", "Máximo $...", "Presupuesto de..."
-        ✅ Timing específico: "Antes de las...", "Exactamente a...", "No después de..."
-        ✅ Especificaciones técnicas: "Vegetariano", "Sin gluten", "Halal", "Orgánico"
-        ✅ Requisitos de servicio: "Con meseros", "Auto-servicio", "Servicio completo"
-        ✅ Logística específica: "Montaje 2 horas antes", "Incluir vajilla", "Desmontaje incluido"
+**REGLAS ABSOLUTAS PARA PRODUCTOS:**
+✅ BUSCA Y EXTRAE **TODOS** LOS PRODUCTOS/SERVICIOS MENCIONADOS SIN EXCEPCIÓN
+✅ Si ves secciones con emojis (🥗, 🍽️, 🍰, ☕, 🥂), extrae TODO lo que aparece bajo cada sección
+✅ Si ves listas numeradas o con viñetas, extrae TODOS los ítems de la lista completa
+✅ Incluye TODAS las entradas, platos principales, postres, bebidas, servicios, extras
+✅ NO te detengas en los primeros productos - busca por TODO el documento
+✅ Cada línea con comida/bebida/servicio = un producto en la lista
 
-        **QUÉ NO SON REQUIREMENTS (No incluir):**
-        ❌ Descripción general: "Necesitamos catering" (esto es tipo_solicitud)
-        ❌ Información básica: "Para 50 personas" (esto va en productos)
-        ❌ Datos de contacto: "Llamar a Juan" (esto va en otros campos)
-        ❌ Ubicación básica: "En nuestra oficina" (esto va en lugar)
-        ❌ Fecha/hora estándar: "El viernes 15" (esto va en fecha)
-
-        **EJEMPLOS PRÁCTICOS:**
-
-        📋 **EJEMPLO 1 - CATERING CORPORATIVO:**
-        Texto: "Necesitamos catering para 60 personas el viernes. Queremos opciones vegetarianas y que no incluya frutos secos por alergias. Preferimos meseros uniformados y montaje 2 horas antes del evento."
-
-        ✅ CORRECTO requirements: "Opciones vegetarianas, no incluir frutos secos por alergias, meseros uniformados, montaje 2 horas antes del evento"
-        ❌ INCORRECTO: "Catering para 60 personas el viernes" (eso va en productos, cantidad, fecha)
-
-        📋 **EJEMPLO 2 - EVENTO CORPORATIVO:**
-        Texto: "Organizamos evento de fin de año para 100 empleados. El presupuesto es máximo $2000. Solo proveedores con más de 5 años de experiencia."
-
-        ✅ CORRECTO requirements: "Presupuesto máximo $2000, solo proveedores con más de 5 años de experiencia"
-        ❌ INCORRECTO: "Evento de fin de año para 100 empleados" (eso va en tipo_solicitud y productos)
-
-        📋 **EJEMPLO 3 - SIN REQUIREMENTS ESPECÍFICOS:**
-        Texto: "Hola, necesitamos catering para reunión de 30 personas mañana a las 12pm en sala de juntas."
-
-        ✅ CORRECTO requirements: null (solo información básica, sin instrucciones específicas)
-
-        ═══════════════════════════════════════════════════════════════════════════════════
-        🔍 VALIDACIÓN DE CONTEXTO PARA REQUIREMENTS
-        ═══════════════════════════════════════════════════════════════════════════════════
-
-        **ANTES DE INCLUIR COMO REQUIREMENT, PREGÚNTATE:**
-        1. ¿Es esto una instrucción específica del cliente?
-        2. ¿Va más allá de la información básica del servicio?
-        3. ¿Afecta cómo debe ejecutarse el servicio?
-        4. ¿Es una preferencia, restricción o condición especial?
-
-        **SI RESPONDES SÍ A ALGUNA → ES REQUIREMENT**
-        **SI TODAS SON NO → NO ES REQUIREMENT**
-
-        ═══════════════════════════════════════════════════════════════════════════════════
+**EJEMPLOS DE PRODUCTOS A BUSCAR:**
+- Comida: tequeños, empanadas, canapés, brochetas, ceviche, pollo, res, lasaña
+- Bebidas: jugos, agua, café, té, refrescos 
+- Servicios: meseros, montaje, coordinación, transporte
+- Extras: mantelería, copas, vajilla, decoración
 
         REGLAS CRÍTICAS PARA EMPRESA vs SOLICITANTE:
         - EMPRESA = compañía/organización que solicita el servicio
         - SOLICITANTE = persona individual dentro de la empresa
         - Si ves "sofia.elena@chevron.com" → nombre_empresa="Chevron", email_solicitante="sofia.elena@chevron.com"
-
-        REGLAS CRÍTICAS PARA MONEDA:
-        - Buscar símbolos: $ (puede ser USD o MXN según contexto), €, £, CAD$, USD$
-        - Buscar menciones: "dólares" = USD, "euros" = EUR, "pesos" = MXN, "libras" = GBP
-        - Buscar códigos explícitos: USD, EUR, MXN, CAD, GBP
-        - Si hay precios con $ sin contexto adicional → usar USD como predeterminado
-        - Si NO hay ninguna mención de moneda → usar USD como predeterminado
 
         INSTRUCCIONES ESPECÍFICAS PARA PRODUCTOS:
         - Busca CUALQUIER tipo de comida, bebida o servicio de catering
@@ -2132,150 +1302,320 @@ class RFXProcessorService:
         - 0.0-0.2: Información muy incierta o extrapolada
 
         TEXTO A ANALIZAR:
-        {chunk}
+{text}
 
-        Responde SOLO con el JSON solicitado:"""
-        
-        try:
-            # 🔍 DEBUG: Log the chunk being processed
-            logger.info(f"🤖 Processing chunk of {len(chunk)} characters")
-            logger.debug(f"📄 Chunk content preview: {chunk[:200]}...")
+Responde SOLO con el JSON solicitado - asegúrate de haber encontrado TODOS los productos mencionados:"""
+
+            # 🚀 Llamada única a OpenAI con JSON MODE (elimina markdown fences)
+            logger.info(f"🤖 Sending to OpenAI: System prompt ({len(system_prompt)} chars), User prompt ({len(user_prompt)} chars)")
+            logger.info(f"🔧 Using JSON mode to prevent markdown fences")
             
-            # Retry logic with exponential backoff
-            response = self._call_openai_with_retry(
-                model=self.openai_config.model,
+            response = self.openai_client.chat.completions.create(
+                model=self.openai_config.model,  # GPT-4o
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=self.openai_config.temperature,
                 max_tokens=self.openai_config.max_tokens,
-                timeout=30  # 30s timeout as specified
+                response_format={"type": "json_object"},  # 🆕 JSON MODE: Elimina ```json fences
+                timeout=45  # Increased timeout for single call
             )
             
             output = response.choices[0].message.content.strip()
+            logger.info(f"🤖 OpenAI raw response length: {len(output)} characters")
             
-            # 🔍 DEBUG: Log AI response
-            logger.info(f"🤖 AI Response received: {len(output)} characters")
-            logger.debug(f"📝 AI Response preview: {output[:300]}...")
+            # Log first 500 chars of response for debugging
+            response_preview = output[:500].replace('\n', ' ')
+            logger.info(f"📝 OpenAI response preview: {response_preview}...")
             
-            # Extract JSON from response
-            json_start = output.find('{')
-            json_end = output.rfind('}') + 1
+            # Check if response is empty
+            if not output:
+                logger.error(f"❌ OpenAI returned empty response!")
+                return self._get_empty_extraction_result()
             
-            if json_start >= 0 and json_end > json_start:
-                json_str = output[json_start:json_end]
+            # Parse JSON response with robust handling (backup for JSON mode)
+            try:
+                # JSON mode should return clean JSON, but apply robust cleaning as backup
+                json_str = self._robust_json_clean(output)
+                logger.info(f"🧹 Cleaned JSON string length: {len(json_str)} characters")
                 
-                # Try to parse JSON with retries
-                for attempt in range(max_retries):
-                    try:
-                        parsed_data = json.loads(json_str)
-                        
-                        # 🔍 DEBUG: Log successfully parsed data
-                        logger.info(f"✅ Successfully parsed AI response on attempt {attempt + 1}")
-                        logger.debug(f"📦 Parsed data: {parsed_data}")
-                        
-                        return parsed_data
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"⚠️ JSON parse attempt {attempt + 1} failed: {e}")
-                        if attempt < max_retries - 1:
-                            json_str = clean_json_string(json_str)
-                            logger.info(f"🔄 Retrying with cleaned JSON...")
-                        else:
-                            logger.error(f"❌ Failed to parse JSON after {max_retries} attempts")
-                            logger.error(f"🔍 Raw JSON: {json_str}")
-                            break
-            else:
-                logger.error(f"❌ No valid JSON structure found in AI response")
-                logger.error(f"🔍 Full response: {output}")
-            
-            # Return empty structure if parsing fails
-            logger.warning(f"⚠️ Returning empty result due to parsing failure")
+                if not json_str.strip():
+                    logger.error(f"❌ Cleaned JSON string is empty!")
+                    logger.error(f"🔍 Original output: {output[:1000]}")
+                    return self._get_empty_extraction_result()
+                
+                result = json.loads(json_str)
+                logger.info(f"✅ JSON parsing successful with JSON mode")
+                logger.info(f"📦 Products found: {len(result.get('productos', []))}")
+                
+                # Log key extracted fields for debugging
+                logger.info(f"🏢 Company: {result.get('nombre_empresa', 'Not found')}")
+                logger.info(f"👤 Requester: {result.get('nombre_solicitante', 'Not found')}")
+                logger.info(f"📧 Email: {result.get('email_solicitante', 'Not found')}")
+                logger.info(f"📍 Location: {result.get('lugar', 'Not found')}")
+                logger.info(f"📅 Date: {result.get('fecha', 'Not found')}")
+                
+                return result
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ JSON parsing failed even with JSON mode and robust cleaning: {e}")
+                logger.error(f"🔍 Raw output (first 1000 chars): {output[:1000]}")
+                logger.error(f"🔍 Cleaned JSON (first 1000 chars): {json_str[:1000]}")
             return self._get_empty_extraction_result()
             
         except Exception as e:
-            logger.error(f"❌ OpenAI API call failed: {e}")
+            logger.error(f"❌ Complete AI extraction failed: {e}")
+            # Return empty result for fallback
             return self._get_empty_extraction_result()
     
-    def _combine_chunk_results_legacy(self, chunk_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """🔧 LEGACY: Combine results from multiple text chunks into a single data structure"""
-        combined = {
-            "email": "",
-            "nombre_solicitante": "",
+    def _robust_json_clean(self, raw_output: str) -> str:
+        """🔧 Limpieza robusta de JSON que maneja markdown fences correctamente"""
+        if not raw_output:
+            return ""
+        
+        # Paso 1: Quitar markdown fences de cualquier tipo
+        text = raw_output.strip()
+        
+        # Remover fences comunes: ```json, ```JSON, ```Json, etc.
+        import re
+        text = re.sub(r'^```(?:json|JSON|Json)?\s*', '', text, flags=re.MULTILINE)
+        text = re.sub(r'\s*```\s*$', '', text, flags=re.MULTILINE)
+        
+        # Paso 2: Buscar el JSON válido más largo
+        # Encuentra el primer { y el último } balanceado
+        first_brace = text.find('{')
+        if first_brace == -1:
+            return text  # No JSON encontrado, devolver como está
+        
+        # Contar llaves para encontrar el cierre balanceado
+        brace_count = 0
+        last_brace = -1
+        
+        for i in range(first_brace, len(text)):
+            if text[i] == '{':
+                brace_count += 1
+            elif text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    last_brace = i
+                    break
+        
+        if last_brace == -1:
+            # No se encontró cierre balanceado, usar hasta el final
+            json_str = text[first_brace:]
+        else:
+            json_str = text[first_brace:last_brace + 1]
+        
+        # Paso 3: Limpiar caracteres problemáticos comunes
+        json_str = json_str.strip()
+        
+        # Remover texto antes del primer { si hay
+        if json_str.startswith('JSON:') or json_str.startswith('json:'):
+            json_str = json_str[5:].strip()
+        
+        logger.debug(f"🧹 JSON cleaning: {len(raw_output)} chars → {len(json_str)} chars")
+        return json_str
+    
+    def _convert_function_calling_to_legacy_format(self, db_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        🔄 Convierte resultado de function calling a formato legacy esperado por el sistema
+        
+        Args:
+            db_result: Resultado estructurado de function calling con formato BD v2.2
+            
+        Returns:
+            Dict en formato legacy compatible con el resto del sistema
+        """
+        try:
+            rfx_data = db_result.get('rfx_data', {})
+            products_data = db_result.get('products_data', [])
+            company_data = db_result.get('company_data', {})
+            requester_data = db_result.get('requester_data', {})
+            
+            # Mapear a formato legacy
+            legacy_result = {
+                # Información básica
+                "titulo": rfx_data.get('title', ''),
+                "descripcion": rfx_data.get('description', ''),
+                "requirements": rfx_data.get('requirements', ''),
+                
+                # Fechas
+                "fecha": rfx_data.get('project_start_date', ''),
+                "fecha_entrega": rfx_data.get('project_start_date', ''),
+                "hora_entrega": "",  # Function calling no extrae hora específica, usar default
+                
+                # Ubicación
+                "lugar": rfx_data.get('event_location', ''),
+                "ciudad": rfx_data.get('event_city', ''),
+                "pais": rfx_data.get('event_country', 'Mexico'),
+                
+                # Moneda y presupuesto
+                "currency": rfx_data.get('currency', 'USD'),
+                "presupuesto_min": rfx_data.get('budget_range_min'),
+                "presupuesto_max": rfx_data.get('budget_range_max'),
+                
+                # Información de empresa
+                "nombre_empresa": company_data.get('company_name', ''),
+                "email_empresa": company_data.get('company_email', ''),
+                "telefono_empresa": company_data.get('phone', ''),
+                "direccion_empresa": company_data.get('address', ''),
+                
+                # Información de solicitante
+                "nombre_solicitante": requester_data.get('name', ''),
+                "email_solicitante": requester_data.get('email', ''),
+                "telefono_solicitante": requester_data.get('phone', ''),
+                "cargo_solicitante": requester_data.get('position', ''),
+                "departamento_solicitante": requester_data.get('department', ''),
+                
+                # Productos (conversión crítica)
             "productos": [],
-            "hora_entrega": "",
-            "fecha": "",
-            "lugar": "",
-            "currency": "USD",
-            "texto_original_relevante": "",
-            # 🆕 MVP: Requirements fields for compatibility
-            "requirements": None,
-            "requirements_confidence": 0.0
-        }
-        
-        # 🔍 DEBUG: Log chunk combination process
-        logger.info(f"🔄 Combining results from {len(chunk_results)} chunks")
-        
-        texto_fragments = []
-        
-        for i, result in enumerate(chunk_results):
-            logger.debug(f"📦 Processing chunk {i+1} result: {result}")
+                
+                # Metadatos
+                "extraction_method": "function_calling",
+                "confidence_scores": rfx_data.get('metadata_json', {}).get('extraction_confidence', {}),
+                "texto_original_relevante": rfx_data.get('metadata_json', {}).get('additional_metadata', {}).get('original_text_sample', '')
+            }
             
-            # Take the first non-empty value for each field
-            if result.get("email") and not combined["email"]:
-                combined["email"] = result["email"]
-                logger.debug(f"📧 Found email in chunk {i+1}: {result['email']}")
-                
-            if result.get("nombre_solicitante") and not combined["nombre_solicitante"]:
-                combined["nombre_solicitante"] = result["nombre_solicitante"]
-                logger.debug(f"👤 Found solicitante in chunk {i+1}: {result['nombre_solicitante']}")
-                
-            if result.get("hora_entrega") and not combined["hora_entrega"]:
-                combined["hora_entrega"] = result["hora_entrega"]
-                logger.debug(f"🕐 Found hora_entrega in chunk {i+1}: {result['hora_entrega']}")
-                
-            if result.get("fecha") and not combined["fecha"]:
-                combined["fecha"] = result["fecha"]
-                logger.debug(f"📅 Found fecha in chunk {i+1}: {result['fecha']}")
-                
-            if result.get("lugar") and not combined["lugar"]:
-                combined["lugar"] = result["lugar"]
-                logger.debug(f"📍 Found lugar in chunk {i+1}: {result['lugar']}")
-                
-            if result.get("currency") and not combined["currency"]:
-                combined["currency"] = result["currency"]
-                logger.debug(f"💰 Found currency in chunk {i+1}: {result['currency']}")
+            # Convertir productos a formato legacy
+            for i, product in enumerate(products_data, 1):
+                legacy_product = {
+                    "nombre": product.get('product_name', ''),
+                    "descripcion": product.get('description', ''),
+                    "categoria": product.get('category', 'otro'),
+                    "cantidad": product.get('quantity', 1),
+                    "unidad": product.get('unit_of_measure', 'unidades'),
+                    "especificaciones": product.get('specifications', ''),
+                    "es_obligatorio": product.get('is_mandatory', True),
+                    "orden_prioridad": product.get('priority_order', i),
+                    "notas": product.get('notes', '')
+                }
+                legacy_result["productos"].append(legacy_product)
             
-            # 🆕 MVP: Combine requirements from chunks
-            if result.get("requirements") and not combined["requirements"]:
-                combined["requirements"] = result["requirements"]
-                combined["requirements_confidence"] = result.get("requirements_confidence", 0.0)
-                logger.debug(f"📋 Found requirements in chunk {i+1}: {result['requirements'][:100]}...")
+            logger.info(f"🔄 Function calling result converted to legacy format")
+            logger.info(f"📦 Products converted: {len(legacy_result['productos'])}")
+            logger.info(f"🏢 Company: {legacy_result['nombre_empresa']}")
+            logger.info(f"👤 Requester: {legacy_result['nombre_solicitante']}")
             
-            # Combine products from all chunks
-            if result.get("productos"):
-                productos_count = len(result["productos"])
-                combined["productos"].extend(result["productos"])
-                logger.debug(f"📦 Added {productos_count} productos from chunk {i+1}")
+            return legacy_result
             
-            # Collect text fragments
-            if result.get("texto_original_relevante"):
-                texto_fragments.append(f"Chunk {i+1}: {result['texto_original_relevante']}")
-        
-        # Combine text fragments
-        if texto_fragments:
-            combined["texto_original_relevante"] = " | ".join(texto_fragments)
-        
-        # 🔍 DEBUG: Log final combined result
-        logger.info(f"✅ Combined result: {len(combined['productos'])} productos total")
-        logger.debug(f"📦 Final combined data: {combined}")
-        
-        return combined
+        except Exception as e:
+            logger.error(f"❌ Error converting function calling result to legacy format: {e}")
+            raise
     
-    # ============================================================================
-    # 🆕 MVP: FUNCIONES DE VALIDACIÓN DE REQUIREMENTS
-    # ============================================================================
+    def _validate_product_completeness(self, extracted_data: Dict[str, Any], original_text: str) -> Dict[str, Any]:
+        """🔍 NUEVA FUNCIÓN: Valida que se extrajeron todos los productos usando heurísticas"""
+        try:
+            productos_found = len(extracted_data.get('productos', []))
+            
+            # Simple heuristics to estimate expected products
+            text_lower = original_text.lower()
+            
+            # Count potential food/service indicators
+            food_indicators = ['tequeños', 'empanadas', 'canapés', 'brochetas', 'ceviche', 'pollo', 'res', 'lasaña', 'tortas', 'cheesecake', 'frutas']
+            service_indicators = ['meseros', 'montaje', 'agua', 'jugos', 'café', 'té', 'refrescos']
+            
+            estimated_products = 0
+            for indicator in food_indicators + service_indicators:
+                if indicator in text_lower:
+                    estimated_products += 1
+            
+            completeness_ratio = productos_found / max(estimated_products, 1) if estimated_products > 0 else 1.0
+            
+            validation_result = {
+                'products_found': productos_found,
+                'estimated_products': estimated_products,
+                'completeness_ratio': min(completeness_ratio, 1.0),
+                'validation_status': 'complete' if completeness_ratio >= 0.8 else 'partial'
+            }
+            
+            logger.info(f"🔍 Completeness validation: Found {productos_found}, Estimated {estimated_products}, Ratio {completeness_ratio:.2f}")
+            
+            return validation_result
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Completeness validation failed: {e}")
+            return {'validation_status': 'unknown', 'products_found': 0}
     
+    def _process_with_ai_chunked_fallback(self, text: str) -> Dict[str, Any]:
+        """🔄 FALLBACK: Sistema de chunking solo cuando es absolutamente necesario"""
+        logger.warning(f"🔄 Using chunked fallback processing")
+        
+        try:
+            # Very simple fallback - try to extract at least basic info
+            logger.warning(f"⚠️ Implementing simple fallback extraction")
+            return self._process_with_ai_legacy(text)
+            
+        except Exception as e:
+            logger.error(f"❌ Even fallback processing failed: {e}")
+            return self._get_empty_extraction_result()
+    
+    def _process_with_ai_legacy(self, text: str) -> Dict[str, Any]:
+        """🔧 SIMPLIFIED FALLBACK: No chunking, basic extraction only"""
+        logger.warning(f"⚠️ Using SIMPLIFIED LEGACY fallback - no chunking")
+        
+        try:
+            # Very basic extraction with JSON mode compatible prompt
+            system_prompt = """Eres un extractor de datos básico. Responde ÚNICAMENTE en formato JSON válido sin markdown fences."""
+            
+            user_prompt = f"""Extrae información básica de este texto de catering en formato JSON:
+
+Estructura requerida:
+{{
+    "nombre_empresa": "nombre de la empresa si se encuentra",
+    "nombre_solicitante": "nombre de la persona que solicita",
+    "email": "email encontrado", 
+    "productos": [
+        {{"nombre": "producto", "cantidad": 1, "unidad": "unidades"}}
+    ],
+    "fecha": "fecha si se encuentra",
+    "lugar": "ubicación si se encuentra",
+    "currency": "USD"
+}}
+
+TEXTO: {text[:5000]}"""
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",  # Use simpler model for fallback
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=1000,
+                response_format={"type": "json_object"},  # 🆕 JSON MODE: Fallback legacy
+                timeout=30
+            )
+            
+            output = response.choices[0].message.content.strip()
+            json_str = self._robust_json_clean(output)
+            result = json.loads(json_str)
+            
+            # Map to expected format
+            return {
+                "email": result.get("email", ""),
+                "nombre_solicitante": result.get("nombre_solicitante", ""),
+                "nombre_empresa": result.get("nombre_empresa", ""), 
+                "productos": result.get("productos", []),
+                "fecha": result.get("fecha", ""),
+                "lugar": result.get("lugar", ""),
+                "currency": "USD",
+                "texto_original_relevante": text[:500] if text else "",
+                "processing_error": "Used simplified fallback"
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Legacy fallback failed: {e}")
+            return {
+                "email": "",
+                "nombre_solicitante": "",
+                "productos": [],
+                "fecha": "",
+                "lugar": "",
+                "currency": "USD",
+                "texto_original_relevante": text[:500] if text else "",
+                "processing_error": f"Legacy fallback failed: {str(e)}"
+            }
     
     def _safe_get_requirements(self, validated_data: Dict[str, Any]) -> tuple:
         """Safely get requirements with fallback"""
@@ -2291,7 +1631,6 @@ class RFXProcessorService:
         except Exception as e:
             logger.warning(f"⚠️ Requirements extraction failed: {e}")
             return None, 0.0
-    
     
     def _validate_basic_requirements(self, requirements: str, confidence: float) -> Dict[str, Any]:
         """Validación mínima para MVP de requirements"""
