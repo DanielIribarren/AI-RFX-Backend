@@ -205,7 +205,8 @@ def start_backend():
         env['FLASK_ENV'] = 'development'
         env['FLASK_DEBUG'] = '1'
         env['PYTHONUNBUFFERED'] = '1'  # Force Python to not buffer output
-        env['PORT'] = '5001'  # Configure Flask to use port 5001
+        env['PORT'] = '5001'  # Configure Flask to use port 5001 for local development
+        env['ENVIRONMENT'] = 'development'  # Ensure development environment
         
         # 🔥 FIX: Add current directory to PYTHONPATH so Python can find 'backend' module
         current_dir = os.path.abspath(".")

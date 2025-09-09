@@ -1096,7 +1096,7 @@ class RFXProcessorService:
                 logger.warning(f"🔄 Falling back to legacy extraction...")
                 extracted_data = self._process_with_ai_chunked_fallback(text)
             
-            # 🔍 Validate completeness automatically
+            # 🔍 Validate completeness automatically (for metrics only)
             completeness_result = self._validate_product_completeness(extracted_data, text)
             
             # Calculate processing metrics
@@ -1132,7 +1132,19 @@ class RFXProcessorService:
             
             # Fallback to chunking only as last resort
             logger.warning(f"🔄 Fallback to chunked processing due to error")
-            return self._process_with_ai_chunked_fallback(text)
+            
+            # Return minimal structure instead of None to prevent downstream errors
+            return {
+                "productos": [],
+                "email": "",
+                "fecha_entrega": "",
+                "hora_entrega": "",
+                "lugar": "",
+                "nombre_solicitante": "",
+                "currency": "USD",
+                "processing_error": True,
+                "error_message": str(e)
+            }
     
     def _extract_complete_with_ai(self, text: str) -> Dict[str, Any]:
         """🎯 NUEVA FUNCIÓN: Extrae datos con una sola llamada a IA - SIN CHUNKING"""
@@ -1441,9 +1453,9 @@ Responde SOLO con el JSON solicitado - asegúrate de haber encontrado TODOS los 
                 "requirements": rfx_data.get('requirements', ''),
                 
                 # Fechas
-                "fecha": rfx_data.get('project_start_date', ''),
-                "fecha_entrega": rfx_data.get('project_start_date', ''),
-                "hora_entrega": "",  # Function calling no extrae hora específica, usar default
+                "fecha": rfx_data.get('delivery_date', ''),
+                "fecha_entrega": rfx_data.get('delivery_date', ''),
+                "hora_entrega": rfx_data.get('delivery_time', ''),
                 
                 # Ubicación
                 "lugar": rfx_data.get('event_location', ''),
@@ -1503,6 +1515,81 @@ Responde SOLO con el JSON solicitado - asegúrate de haber encontrado TODOS los 
             logger.error(f"❌ Error converting function calling result to legacy format: {e}")
             raise
     
+    def _is_input_incomplete(self, extracted_data: Dict[str, Any], original_text: str, completeness_result: Dict[str, Any]) -> bool:
+        """🚨 NUEVA FUNCIÓN: Determina si el input es incompleto y requiere más información del usuario"""
+        
+        logger.info(f"🔍 DEBUGGING COMPLETENESS CHECK:")
+        logger.info(f"📊 Extracted data keys: {list(extracted_data.keys()) if extracted_data else 'None'}")
+        
+        if not extracted_data:
+            logger.warning(f"❌ INCOMPLETE: No data extracted")
+            return True
+        
+        productos = extracted_data.get('productos', [])
+        logger.info(f"📦 Products to validate: {len(productos)}")
+        
+        # 1. NO PRODUCTS FOUND
+        if not productos:
+            logger.warning(f"❌ INCOMPLETE: No products found")
+            return True
+        
+        # 2. GENERIC/VAGUE PRODUCTS - STRICTER VALIDATION
+        generic_terms = ['material', 'producto', 'servicio', 'item', 'artículo', 'elemento', 'pop']
+        vague_products = []
+        
+        for i, producto in enumerate(productos):
+            nombre = producto.get('nombre', '').lower()
+            descripcion = producto.get('descripcion', '').lower()
+            cantidad = producto.get('cantidad', 0)
+            
+            logger.info(f"📦 Product {i+1}: '{nombre}' - Qty: {cantidad} - Desc: '{descripcion[:50]}...'")
+            
+            # Check if product name is too generic
+            is_generic = any(term in nombre for term in generic_terms)
+            
+            # Check if missing critical information
+            has_no_quantity = not cantidad or cantidad == 0
+            has_no_description = not descripcion or len(descripcion.strip()) < 10
+            
+            # More strict: Consider vague if generic OR lacks details
+            is_vague = is_generic or has_no_quantity or has_no_description
+            
+            if is_vague:
+                vague_products.append(nombre)
+                logger.warning(f"❌ VAGUE PRODUCT: '{nombre}' - Generic: {is_generic}, No quantity: {has_no_quantity}, No description: {has_no_description}")
+        
+        # If ANY product is vague, consider incomplete
+        if vague_products:
+            logger.warning(f"❌ INCOMPLETE: {len(vague_products)}/{len(productos)} products are vague: {vague_products}")
+            return True
+        
+        # 3. MISSING ESSENTIAL INFORMATION
+        essential_fields = ['nombre_solicitante', 'fecha_entrega']
+        missing_fields = []
+        
+        for field in essential_fields:
+            value = extracted_data.get(field, '')
+            if not value or (isinstance(value, str) and value.strip() == ''):
+                missing_fields.append(field)
+        
+        if missing_fields:
+            logger.warning(f"❌ INCOMPLETE: Missing essential fields: {missing_fields}")
+            return True
+        
+        # 4. COMPLETENESS RATIO TOO LOW - More strict
+        completeness_ratio = completeness_result.get('completeness_ratio', 0)
+        if completeness_ratio < 0.7:  # Increased from 30% to 70%
+            logger.warning(f"❌ INCOMPLETE: Completeness ratio too low: {completeness_ratio:.2f}")
+            return True
+        
+        # 5. TEXT TOO SHORT (likely incomplete description)
+        if len(original_text.strip()) < 200:  # Increased from 100 to 200 characters
+            logger.warning(f"❌ INCOMPLETE: Input text too short: {len(original_text)} characters")
+            return True
+        
+        logger.info(f"✅ INPUT COMPLETE: All validation checks passed")
+        return False
+
     def _validate_product_completeness(self, extracted_data: Dict[str, Any], original_text: str) -> Dict[str, Any]:
         """🔍 NUEVA FUNCIÓN: Valida que se extrajeron todos los productos usando heurísticas"""
         try:
@@ -1728,11 +1815,11 @@ TEXTO: {text[:5000]}"""
         # TODO: En el futuro, guardar en tabla de logs para análisis
         # self.requirements_logs.insert(log_data)
     
-    def _validate_and_normalize_currency(self, currency: str) -> str:
+    def _validate_and_normalize_currency(self, currency: str) -> str | None:
         """🆕 Valida y normaliza códigos de moneda ISO 4217"""
         if not currency or currency.lower() in ["null", "none", "", "undefined"]:
-            logger.debug(f"💰 No currency provided, using default: USD")
-            return "USD"
+            logger.info(f"📝 No currency provided - left as null for user completion")
+            return None
         
         # Lista de monedas válidas más comunes en el contexto de negocio
         valid_currencies = {
@@ -1810,15 +1897,28 @@ TEXTO: {text[:5000]}"""
                 logger.debug(f"💰 Currency extracted from text: {currency} → {valid_code}")
                 return valid_code
         
-        # Si no se puede validar, usar USD por defecto
-        logger.warning(f"⚠️ Invalid currency '{currency}', using default: USD")
-        return "USD"
+        # Si no se puede validar, preservar para revisión manual
+        logger.warning(f"⚠️ Unrecognized currency '{currency}' - preserved for manual review")
+        return currency
     
     def _validate_and_clean_data(self, raw_data: Dict[str, Any], rfx_id: str) -> Dict[str, Any]:
         """Validate and clean extracted data with fallbacks for invalid values"""
         # 🔍 DEBUG: Log validation process
         logger.info(f"🔍 Starting validation for RFX: {rfx_id}")
         logger.debug(f"📦 Raw data to validate: {raw_data}")
+        
+        # 🛡️ SAFETY CHECK: Handle None raw_data - Create minimal structure
+        if raw_data is None:
+            logger.warning(f"⚠️ raw_data is None for RFX: {rfx_id} - Creating minimal structure")
+            raw_data = {
+                "productos": [],
+                "email": None,
+                "fecha_entrega": None,
+                "hora_entrega": None,
+                "lugar": None,
+                "nombre_solicitante": None,
+                "currency": None
+            }
         
         cleaned_data = raw_data.copy()
         validation_status = {
@@ -1829,7 +1929,8 @@ TEXTO: {text[:5000]}"""
         }
         
         # Validate and clean email - PRESERVE original even if invalid
-        email = raw_data.get("email", "").strip()
+        email = raw_data.get("email", "") or ""
+        email = email.strip() if email else ""
         if email:
             if self.email_validator.validate(email):
                 cleaned_data["email"] = email
@@ -1841,14 +1942,15 @@ TEXTO: {text[:5000]}"""
                 validation_status["email_valid"] = False
                 logger.warning(f"⚠️ Email format invalid but preserved: {email}")
         else:
-            # Only use fallback if completely empty
-            cleaned_data["email"] = "cliente@example.com"
+            # Leave as null - user will complete in interface
+            cleaned_data["email"] = None
             validation_status["email_valid"] = False
             validation_status["has_original_data"] = False
-            logger.warning(f"⚠️ No email found, using fallback")
+            logger.info(f"📝 No email found - left as null for user completion")
         
                 # Validate and clean date - NORMALIZE before validation 
-        fecha = raw_data.get("fecha", "").strip()
+        fecha = raw_data.get("fecha", "") or ""
+        fecha = fecha.strip() if fecha else ""
         # Clean AI null responses
         if fecha in ["null", "None", "", "undefined"]:
             fecha = ""
@@ -1866,13 +1968,14 @@ TEXTO: {text[:5000]}"""
                 validation_status["fecha_valid"] = False
                 logger.warning(f"⚠️ Date format may be invalid but normalized: {fecha} → {fecha_normalized}")
         else:
-            # Only use fallback if completely empty
-            cleaned_data["fecha"] = datetime.now().strftime('%Y-%m-%d')
+            # Leave as null - user will complete in interface
+            cleaned_data["fecha"] = None
             validation_status["fecha_valid"] = False
-            logger.warning(f"⚠️ No date found, using current date")
+            logger.info(f"📝 No date found - left as null for user completion")
         
         # Validate and clean time - NORMALIZE format for Pydantic
-        hora = raw_data.get("hora_entrega", "").strip()
+        hora = raw_data.get("hora_entrega", "") or ""
+        hora = hora.strip() if hora else ""
         # Clean AI null responses
         if hora in ["null", "None", "", "undefined"]:
             hora = ""
@@ -1890,32 +1993,37 @@ TEXTO: {text[:5000]}"""
                 validation_status["hora_valid"] = False
                 logger.warning(f"⚠️ Time format may be invalid but preserved: {hora} → {hora_normalized}")
         else:
-            # Only use fallback if completely empty
-            cleaned_data["hora_entrega"] = "12:00"
+            # Leave as null - user will complete in interface
+            cleaned_data["hora_entrega"] = None
             validation_status["hora_valid"] = False
-            logger.warning(f"⚠️ No time found, using default")
+            logger.info(f"📝 No time found - left as null for user completion")
         
         # Clean and validate client name - MORE PERMISSIVE
-        nombre_solicitante = raw_data.get("nombre_solicitante", "").strip()
+        nombre_solicitante = raw_data.get("nombre_solicitante", "") or ""
+        nombre_solicitante = nombre_solicitante.strip() if nombre_solicitante else ""
         if nombre_solicitante and nombre_solicitante.lower() not in ["null", "none", ""]:
             cleaned_data["nombre_solicitante"] = nombre_solicitante.title()
             logger.info(f"✅ Solicitante name processed: {nombre_solicitante}")
         else:
-            cleaned_data["nombre_solicitante"] = f"Solicitante-{rfx_id}"
+            # Leave as null - user will complete in interface
+            cleaned_data["nombre_solicitante"] = None
             validation_status["has_original_data"] = False
-            logger.warning(f"⚠️ No client name found, using fallback")
+            logger.info(f"📝 No client name found - left as null for user completion")
         
         # Clean place - MORE PERMISSIVE
-        lugar = raw_data.get("lugar", "").strip()
+        lugar = raw_data.get("lugar", "") or ""
+        lugar = lugar.strip() if lugar else ""
         if lugar and lugar.lower() not in ["null", "none", ""]:
             cleaned_data["lugar"] = lugar
             logger.info(f"✅ Location preserved: {lugar}")
         else:
-            cleaned_data["lugar"] = "Ubicación por definir"
-            logger.warning(f"⚠️ No location found, using fallback")
+            # Leave as null - user will complete in interface
+            cleaned_data["lugar"] = None
+            logger.info(f"📝 No location found - left as null for user completion")
         
         # 🆕 Currency validation and normalization
-        currency = raw_data.get("currency", "").strip().upper()
+        currency = raw_data.get("currency", "") or ""
+        currency = currency.strip().upper() if currency else ""
         cleaned_data["currency"] = self._validate_and_normalize_currency(currency)
         logger.info(f"💰 Currency processed: '{raw_data.get('currency', '')}' → '{cleaned_data['currency']}'")
         
@@ -2742,6 +2850,19 @@ TEXTO: {text[:5000]}"""
         logger.info(f"🤖 SENDING TO AI: {len(combined_text)} characters of combined text")
         raw_data = self._process_with_ai(combined_text)
         
+        # 🛡️ SAFETY CHECK: Handle None raw_data before accessing
+        if raw_data is None:
+            logger.warning(f"⚠️ raw_data is None, creating minimal structure")
+            raw_data = {
+                "productos": [],
+                "email": None,
+                "fecha_entrega": None,
+                "hora_entrega": None,
+                "lugar": None,
+                "nombre_solicitante": None,
+                "currency": None
+            }
+        
         # Log AI results
         ai_products_count = len(raw_data.get("productos", []))
         logger.info(f"🤖 AI EXTRACTION RESULTS: {ai_products_count} products found")
@@ -2753,6 +2874,7 @@ TEXTO: {text[:5000]}"""
             logger.info(f"📊 USING AI extracted products: {ai_products_count} items")
 
         validated_data = self._validate_and_clean_data(raw_data, rfx_input.id)
+        
         evaluation_metadata = self._evaluate_rfx_intelligently(validated_data, rfx_input.id)
         rfx_processed = self._create_rfx_processed(validated_data, rfx_input, evaluation_metadata)
         self._save_rfx_to_database(rfx_processed)
@@ -2884,6 +3006,28 @@ TEXTO: {text[:5000]}"""
             return datetime.now().strftime('%Y-%m-%d')
         
         date_str = date_str.strip()
+        logger.info(f"🔍 PARSING DATE: '{date_str}'")
+        
+        # Handle ISO 8601 formats (e.g., "2025-09-06T00:00:00Z", "2025-09-06T00:00:00")
+        iso_match = re.match(r'^(\d{4}-\d{1,2}-\d{1,2})T.*$', date_str)
+        if iso_match:
+            iso_date = iso_match.group(1)
+            logger.info(f"📅 EXTRACTED ISO DATE: '{iso_date}' from '{date_str}'")
+            try:
+                parts = iso_date.split('-')
+                year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ ISO DATE NORMALIZED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse ISO date '{iso_date}': {e}")
+        
+        # Handle natural language dates in Spanish
+        date_natural = self._parse_natural_language_date(date_str)
+        if date_natural:
+            logger.info(f"✅ NATURAL LANGUAGE DATE: '{date_str}' → '{date_natural}'")
+            return date_natural
         
         # Handle DD/MM/YYYY format
         if re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', date_str):
@@ -2891,9 +3035,11 @@ TEXTO: {text[:5000]}"""
                 parts = date_str.split('/')
                 day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
                 if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
-                    return f"{year:04d}-{month:02d}-{day:02d}"
-            except:
-                pass
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ DD/MM/YYYY NORMALIZED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse DD/MM/YYYY date '{date_str}': {e}")
         
         # Handle DD-MM-YYYY format
         if re.match(r'^\d{1,2}-\d{1,2}-\d{4}$', date_str):
@@ -2901,9 +3047,11 @@ TEXTO: {text[:5000]}"""
                 parts = date_str.split('-')
                 day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
                 if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
-                    return f"{year:04d}-{month:02d}-{day:02d}"
-            except:
-                pass
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ DD-MM-YYYY NORMALIZED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse DD-MM-YYYY date '{date_str}': {e}")
         
         # Handle YYYY/MM/DD format
         if re.match(r'^\d{4}/\d{1,2}/\d{1,2}$', date_str):
@@ -2911,9 +3059,11 @@ TEXTO: {text[:5000]}"""
                 parts = date_str.split('/')
                 year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
                 if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
-                    return f"{year:04d}-{month:02d}-{day:02d}"
-            except:
-                pass
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ YYYY/MM/DD NORMALIZED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse YYYY/MM/DD date '{date_str}': {e}")
         
         # If already in YYYY-MM-DD format, validate and return
         if re.match(r'^\d{4}-\d{1,2}-\d{1,2}$', date_str):
@@ -2921,21 +3071,102 @@ TEXTO: {text[:5000]}"""
                 parts = date_str.split('-')
                 year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
                 if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
-                    return f"{year:04d}-{month:02d}-{day:02d}"
-            except:
-                pass
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ YYYY-MM-DD VALIDATED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to validate YYYY-MM-DD date '{date_str}': {e}")
         
         # Handle relative dates like "mañana", "today", etc.
         date_str_lower = date_str.lower()
         if date_str_lower in ["hoy", "today"]:
-            return datetime.now().strftime('%Y-%m-%d')
+            normalized = datetime.now().strftime('%Y-%m-%d')
+            logger.info(f"✅ RELATIVE DATE: '{date_str}' → '{normalized}' (today)")
+            return normalized
         elif date_str_lower in ["mañana", "tomorrow"]:
             from datetime import timedelta
-            return (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+            normalized = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+            logger.info(f"✅ RELATIVE DATE: '{date_str}' → '{normalized}' (tomorrow)")
+            return normalized
         
         # Fallback to current date
-        logger.warning(f"⚠️ Could not parse date format '{date_str}', using current date")
-        return datetime.now().strftime('%Y-%m-%d')
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        logger.error(f"❌ COULD NOT PARSE DATE: '{date_str}' - Using current date: {current_date}")
+        return current_date
+
+    def _parse_natural_language_date(self, date_str: str) -> str:
+        """Parse natural language dates in Spanish like 'octubre 6', '6 de octubre', etc."""
+        date_str_lower = date_str.lower().strip()
+        
+        # Spanish month mapping
+        spanish_months = {
+            'enero': 1, 'ene': 1,
+            'febrero': 2, 'feb': 2,
+            'marzo': 3, 'mar': 3,
+            'abril': 4, 'abr': 4,
+            'mayo': 5, 'may': 5,
+            'junio': 6, 'jun': 6,
+            'julio': 7, 'jul': 7,
+            'agosto': 8, 'ago': 8,
+            'septiembre': 9, 'sep': 9, 'sept': 9,
+            'octubre': 10, 'oct': 10,
+            'noviembre': 11, 'nov': 11,
+            'diciembre': 12, 'dic': 12
+        }
+        
+        # English month mapping
+        english_months = {
+            'january': 1, 'jan': 1,
+            'february': 2, 'feb': 2,
+            'march': 3, 'mar': 3,
+            'april': 4, 'apr': 4,
+            'may': 5,
+            'june': 6, 'jun': 6,
+            'july': 7, 'jul': 7,
+            'august': 8, 'aug': 8,
+            'september': 9, 'sep': 9, 'sept': 9,
+            'october': 10, 'oct': 10,
+            'november': 11, 'nov': 11,
+            'december': 12, 'dec': 12
+        }
+        
+        # Combine both mappings
+        month_mapping = {**spanish_months, **english_months}
+        
+        current_year = datetime.now().year
+        
+        # Pattern: "octubre 6", "6 octubre", "octubre 6, 2025", "6 de octubre"
+        for month_name, month_num in month_mapping.items():
+            if month_name in date_str_lower:
+                # Look for day numbers near the month
+                words = date_str_lower.replace(',', ' ').replace('de', ' ').split()
+                day = None
+                year = current_year
+                
+                # Find day number
+                for word in words:
+                    if word.isdigit():
+                        num = int(word)
+                        if 1 <= num <= 31:  # Could be a day
+                            day = num
+                        elif num > 1900:  # Could be a year
+                            year = num
+                
+                if day:
+                    try:
+                        # Validate the date
+                        import calendar
+                        if day <= calendar.monthrange(year, month_num)[1]:
+                            result = f"{year:04d}-{month_num:02d}-{day:02d}"
+                            logger.info(f"🗓️ PARSED NATURAL DATE: '{date_str}' → month='{month_name}'({month_num}), day={day}, year={year} → '{result}'")
+                            return result
+                        else:
+                            logger.warning(f"⚠️ Invalid day {day} for month {month_num} year {year}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error validating natural date: {e}")
+                break
+        
+        return None
 
     def _normalize_time_format(self, time_str: str) -> str:
         """Normalize time formats for Pydantic validation"""

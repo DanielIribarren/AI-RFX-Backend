@@ -107,9 +107,18 @@ RFX_EXTRACTION_FUNCTION = {
                     "description": "Fecha de inicio del proyecto (formato ISO 8601)"
                 },
                 "project_end_date": {
-                    "type": "string",
+                    "type": "string", 
                     "format": "date-time",
                     "description": "Fecha de finalización del proyecto (formato ISO 8601)"
+                },
+                "delivery_date": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "Fecha de entrega del evento/servicio (formato YYYY-MM-DD). Usar mapeo correcto: enero=01, febrero=02, marzo=03, abril=04, mayo=05, junio=06, julio=07, agosto=08, septiembre=09, octubre=10, noviembre=11, diciembre=12"
+                },
+                "delivery_time": {
+                    "type": "string",
+                    "description": "Hora de entrega del evento/servicio (formato HH:MM)"
                 },
                 
                 # ============================================================================
@@ -494,6 +503,8 @@ class RFXFunctionResult(BaseModel):
     expected_decision_date: Optional[str] = None
     project_start_date: Optional[str] = None
     project_end_date: Optional[str] = None
+    delivery_date: Optional[str] = None
+    delivery_time: Optional[str] = None
     
     # Presupuesto
     budget_range_min: Optional[float] = Field(None, ge=0)
@@ -582,6 +593,8 @@ def function_result_to_db_dict(result: RFXFunctionResult) -> Dict[str, Any]:
         "expected_decision_date": result.expected_decision_date,
         "project_start_date": result.project_start_date,
         "project_end_date": result.project_end_date,
+        "delivery_date": result.delivery_date,
+        "delivery_time": result.delivery_time,
         
         # Presupuesto
         "budget_range_min": result.budget_range_min,

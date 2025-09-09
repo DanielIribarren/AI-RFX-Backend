@@ -145,8 +145,8 @@ create_logs_dir() {
 # Function to start development server
 start_dev() {
     print_info "Iniciando servidor de desarrollo..."
-    pm2 start ecosystem.config.js --only ai-rfx-backend-dev
-    print_status "Servidor de desarrollo iniciado"
+    pm2 start ecosystem.dev.config.js
+    print_status "Servidor de desarrollo iniciado (Ubuntu)"
     print_info "🌐 Servidor disponible en: http://localhost:3186"
     print_info "💚 Health check: http://localhost:3186/health"
     print_info "📄 Health detallado: http://localhost:3186/health/detailed"
@@ -171,11 +171,11 @@ start_prod() {
         ./venv/bin/pip install gunicorn
     fi
     
-    pm2 start ecosystem.config.js --only ai-rfx-backend-prod --env production
-    print_status "Servidor de producción iniciado con Gunicorn"
-    print_info "🌐 Servidor disponible en: http://localhost:3186"
-    print_info "💚 Health check: http://localhost:3186/health"
-    print_info "📄 Health detallado: http://localhost:3186/health/detailed"
+    pm2 start ecosystem.prod.config.js
+    print_status "Servidor de producción iniciado con Gunicorn (Ubuntu)"
+    print_info "🌐 Servidor disponible en: http://localhost:3187"
+    print_info "💚 Health check: http://localhost:3187/health"
+    print_info "📄 Health detallado: http://localhost:3187/health/detailed"
     print_info "📊 Gunicorn workers: 2 (configurables en ecosystem.config.js)"
     print_info "⚠️  Recuerda cambiar SECRET_KEY para producción"
 }
@@ -183,12 +183,13 @@ start_prod() {
 # Function to start staging server
 start_staging() {
     print_info "Iniciando servidor de staging..."
-    pm2 start ecosystem.config.js --only ai-rfx-backend-staging --env staging
-    print_status "Servidor de staging iniciado"
+    print_warning "⚠️  Staging usa la configuración de desarrollo con puerto 3186"
+    print_info "💡 Para staging real, considera crear ecosystem.staging.config.js"
+    pm2 start ecosystem.dev.config.js
+    print_status "Servidor de staging iniciado (usando config dev)"
     print_info "🌐 Servidor disponible en: http://localhost:3186"
     print_info "💚 Health check: http://localhost:3186/health"
-    print_info "🧪 Testing: ENABLE_META_PROMPTING activado para pruebas"
-    print_info "🔍 Watch mode: archivos se reinician automáticamente"
+    print_info "🧪 Testing: ENABLE_EVALS y EVAL_DEBUG_MODE activados"
 }
 
 # Function to show status
@@ -224,6 +225,9 @@ restart_app() {
 # Function to test AI-RFX endpoints
 test_endpoints() {
     print_info "Probando endpoints AI-RFX..."
+    print_warning "💡 Testing en Ubuntu Dev (puerto 3186)"
+    print_info "   Para Local Dev usar: http://localhost:5001"
+    print_info "   Para Ubuntu Prod usar: http://localhost:3187"
     
     # Test health check
     print_info "1. Health Check Básico:"
@@ -254,18 +258,22 @@ show_ai_logs() {
 # Main menu
 show_menu() {
     echo ""
+    echo "🚀 AI-RFX Backend - Gestión PM2 (Ubuntu Server)"
+    echo "================================================"
     echo "Selecciona una opción:"
-    echo "1) Iniciar desarrollo (Python directo)"
-    echo "2) Iniciar producción (Gunicorn)"
-    echo "3) Iniciar staging"
-    echo "4) Ver estado"
-    echo "5) Ver logs"
-    echo "6) Ver logs AI-RFX específicos"
-    echo "7) Test endpoints AI-RFX"
-    echo "8) Reiniciar aplicación"
-    echo "9) Detener todo"
-    echo "10) Monitor PM2"
-    echo "11) Salir"
+    echo "1) 🖥️  Iniciar Ubuntu Development (puerto 3186)"
+    echo "2) 🏭 Iniciar Ubuntu Production (puerto 3187)"
+    echo "3) 🧪 Iniciar Staging (puerto 3186)"
+    echo "4) 📊 Ver estado"
+    echo "5) 📋 Ver logs"
+    echo "6) 🔍 Ver logs AI-RFX específicos"
+    echo "7) 🧪 Test endpoints AI-RFX"
+    echo "8) 🔄 Reiniciar aplicación"
+    echo "9) ⏹️  Detener todo"
+    echo "10) 📱 Monitor PM2"
+    echo "11) 👋 Salir"
+    echo ""
+    echo "💡 Para desarrollo local usar: python3 start_backend.py (puerto 5001)"
     echo ""
 }
 
@@ -343,9 +351,10 @@ case "${1:-}" in
         echo "  $0 logs ai-rfx-backend-prod - Ver logs de producción"
         echo ""
         echo "🔗 Endpoints principales:"
-        echo "  http://localhost:3186/health          - Health check"
-        echo "  http://localhost:3186/api/rfx/process - Procesar RFX"
-        echo "  http://localhost:3186/api/pricing/*   - APIs de pricing"
+        echo "  🏠 Local Dev:     http://localhost:5001/health          - Local development"
+        echo "  🖥️ Ubuntu Dev:     http://localhost:3186/health          - Ubuntu development" 
+        echo "  🏭 Ubuntu Prod:    http://localhost:3187/health          - Ubuntu production"
+        echo "  📡 APIs:          /api/rfx/process, /api/pricing/*      - Main endpoints"
         exit 0
         ;;
 esac

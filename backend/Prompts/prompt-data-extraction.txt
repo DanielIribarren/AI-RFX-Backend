@@ -1505,7 +1505,7 @@ Copy code
             "unidad": "unidades/personas/kg/litros/etc"
             }}
         ],
-        "fecha": "fecha de entrega en formato YYYY-MM-DD (null si no se encuentra)",
+        "fecha": "fecha de entrega en formato YYYY-MM-DD. MAPEO MESES: enero=01, febrero=02, marzo=03, abril=04, mayo=05, junio=06, julio=07, agosto=08, septiembre=09, octubre=10, noviembre=11, diciembre=12. (null si no se encuentra)",
         "hora_entrega": "hora de entrega en formato HH:MM (null si no se encuentra)",
         "lugar": "dirección completa o ubicación del evento (null si no se encuentra)",
         "currency": "MONEDA: código de moneda ISO 4217 de 3 letras mencionada en el documento (ej: USD, EUR, MXN, CAD). Buscar símbolos como $, €, £, CAD$, USD$, menciones de 'dólares', 'euros', 'pesos', etc. Si no se encuentra específicamente, usar 'USD' como predeterminado",

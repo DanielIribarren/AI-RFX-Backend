@@ -163,13 +163,48 @@ Sigue esta metodología paso a paso para extraer TODOS los campos del esquema JS
 - **REQUIREMENTS**: Requerimientos técnicos, funcionales y restricciones específicas del cliente (NO descripciones generales)
 - **REQUIREMENTS_CONFIDENCE**: Score 0.0-1.0 sobre la extracción de requirements
 
-**PASO 3: PROCESAMIENTO COMPLETO DE FECHAS**
-- **SUBMISSION_DEADLINE**: Fecha límite para envío de propuestas (formato ISO 8601: YYYY-MM-DDTHH:MM:SS)
-- **EXPECTED_DECISION_DATE**: Fecha esperada de decisión (formato ISO 8601)
-- **PROJECT_START_DATE**: Fecha de inicio del proyecto (formato ISO 8601)
-- **PROJECT_END_DATE**: Fecha de finalización del proyecto (formato ISO 8601)
-- **DELIVERY_DATE**: Fecha de entrega del evento/servicio (formato YYYY-MM-DD)
-- **DELIVERY_TIME**: Hora de entrega (formato HH:MM)
+**PASO 3: PROCESAMIENTO ROBUSTO DE FECHAS EN ESPAÑOL**
+
+⚠️ **MAPEO CRÍTICO DE MESES EN ESPAÑOL**:
+```
+enero = 01      febrero = 02    marzo = 03      abril = 04
+mayo = 05       junio = 06      julio = 07      agosto = 08  
+septiembre = 09 octubre = 10    noviembre = 11  diciembre = 12
+```
+
+**REGLAS DE PARSING UNIVERSALES**:
+1. **Identificar mes**: Buscar cualquier nombre de mes en español
+2. **Extraer día**: Número entre 1-31 cerca del mes  
+3. **Determinar año**: Si no se especifica, usar 2025
+4. **Formatear**: Siempre YYYY-MM-DD
+
+**CAMPOS DE FECHA A EXTRAER**:
+- **SUBMISSION_DEADLINE**: Fecha límite propuestas (ISO 8601: YYYY-MM-DDTHH:MM:SS)
+- **EXPECTED_DECISION_DATE**: Fecha decisión (ISO 8601)
+- **PROJECT_START_DATE**: Fecha inicio proyecto (ISO 8601)
+- **PROJECT_END_DATE**: Fecha fin proyecto (ISO 8601)
+- **DELIVERY_DATE**: Fecha entrega evento/servicio (YYYY-MM-DD)
+- **DELIVERY_TIME**: Hora entrega (HH:MM)
+
+📋 **EJEMPLOS SISTEMÁTICOS**:
+  - "enero 15" → "2025-01-15"
+  - "febrero 28" → "2025-02-28"
+  - "marzo 10" → "2025-03-10"
+  - "abril 5" → "2025-04-05"
+  - "mayo 20" → "2025-05-20"
+  - "junio 12" → "2025-06-12"
+  - "julio 8" → "2025-07-08"
+  - "agosto 25" → "2025-08-25"
+  - "septiembre 3" → "2025-09-03"
+  - "octubre 6" → "2025-10-06"
+  - "noviembre 18" → "2025-11-18"
+  - "diciembre 31" → "2025-12-31"
+
+**VARIACIONES COMUNES**:
+  - "15 de marzo" → "2025-03-15"
+  - "el 10 de julio" → "2025-07-10"
+  - "para agosto 5" → "2025-08-05"
+  - "entrega septiembre 20" → "2025-09-20"
 
 **PASO 4: EXTRACCIÓN DE PRESUPUESTO Y MONEDA**
 - **BUDGET_RANGE_MIN**: Presupuesto mínimo mencionado

@@ -5,6 +5,10 @@ Unified entry point for the cleaned architecture
 """
 import os
 import sys
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Add the project root to Python path
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -14,8 +18,15 @@ sys.path.insert(0, project_root)
 from backend.app import app
 
 if __name__ == "__main__":
+    # Get configuration from environment variables
+    port = int(os.getenv('PORT', '3186'))
+    host = os.getenv('HOST', '0.0.0.0')
+    debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
+    environment = os.getenv('ENVIRONMENT', 'development')
+    
     print("🚀 Starting AI-RFX Backend (Unified Architecture)")
-    print("📡 API available at: http://localhost:3186")
+    print(f"🌍 Environment: {environment}")
+    print(f"📡 API available at: http://{host}:{port}")
     print("🔧 Endpoints:")
     print("   - POST /api/rfx/process")
     print("   - POST /api/proposals/generate")
@@ -23,5 +34,5 @@ if __name__ == "__main__":
     print("   - GET  /health/detailed")
     print("=" * 50)
     
-    # Start the application
-    app.run(host='0.0.0.0', port=3186, debug=True)
+    # Start the application with environment configuration
+    app.run(host=host, port=port, debug=debug)
