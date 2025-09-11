@@ -210,6 +210,34 @@ class DatabaseClient:
             logger.error(f"❌ Failed to get RFX history: {e}")
             raise
     
+    def get_latest_rfx(self, limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get latest RFX ordered by creation date with optimized query for load-more pattern"""
+        try:
+            # Use created_at as primary sort, fallback to received_at if needed
+            response = self.client.table("rfx_v2")\
+                .select("*, companies(*), requesters(*)")\
+                .order("created_at", desc=True)\
+                .range(offset, offset + limit - 1)\
+                .execute()
+            
+            logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} latest RFX (offset: {offset}, limit: {limit})")
+            return response.data or []
+        except Exception as e:
+            # Fallback to received_at if created_at doesn't work
+            logger.warning(f"⚠️ Primary query failed, trying fallback: {e}")
+            try:
+                response = self.client.table("rfx_v2")\
+                    .select("*, companies(*), requesters(*)")\
+                    .order("received_at", desc=True)\
+                    .range(offset, offset + limit - 1)\
+                    .execute()
+                
+                logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} latest RFX via fallback")
+                return response.data or []
+            except Exception as fallback_error:
+                logger.error(f"❌ Both queries failed: {fallback_error}")
+                raise
+    
     def update_rfx_status(self, rfx_id: Union[str, UUID], status: str) -> bool:
         """Update RFX status"""
         try:

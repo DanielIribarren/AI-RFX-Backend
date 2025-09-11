@@ -391,6 +391,54 @@ class SupplierEvaluation(BaseModel):
 
 
 # ========================
+# PAGINATION MODELS
+# ========================
+
+class PaginationInfo(BaseModel):
+    """Pagination information for API responses"""
+    page: Optional[int] = None
+    limit: int = 10
+    offset: int = 0
+    total_items: int = 0
+    has_more: bool = False
+    next_offset: Optional[int] = None
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
+
+
+class RFXListResponse(BaseModel):
+    """Response model for RFX list endpoints with pagination"""
+    status: str = Field(..., pattern=r'^(success|error)$')
+    message: str
+    data: List[RFXHistoryItem] = Field(default_factory=list)
+    pagination: PaginationInfo
+    timestamp: datetime = Field(default_factory=datetime.now)
+    
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            date: lambda v: v.isoformat(),
+            time: lambda v: v.isoformat(),
+            UUID: lambda v: str(v)
+        }
+
+
+class LoadMoreRequest(BaseModel):
+    """Request model for load-more pagination"""
+    offset: int = Field(default=0, ge=0, description="Number of items to skip")
+    limit: int = Field(default=10, ge=1, le=50, description="Number of items to retrieve")
+    
+    @validator('limit')
+    def validate_limit(cls, v):
+        if v > 50:
+            raise ValueError('Limit cannot exceed 50 items')
+        return v
+
+
+# ========================
 # LEGACY COMPATIBILITY
 # ========================
 

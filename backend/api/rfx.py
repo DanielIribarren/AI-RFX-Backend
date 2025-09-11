@@ -13,6 +13,7 @@ from datetime import datetime
 
 from backend.models.rfx_models import (
     RFXInput, RFXResponse, RFXType, RFXHistoryItem,
+    PaginationInfo, RFXListResponse, LoadMoreRequest,
     # Legacy aliases
     TipoRFX
 )
@@ -1235,4 +1236,293 @@ def update_rfx_product(rfx_id: str, product_id: str):
             "status": "error",
             "message": "Internal server error",
             "error": str(e)
+        }), 500
+
+
+@rfx_bp.route("/latest", methods=["GET"])
+def get_latest_rfx():
+    """
+    🎯 Get the latest 10 RFX records ordered by creation date (most recent first)
+    
+    This endpoint returns the first 10 most recent RFX records with optimized 
+    load-more pagination information for infinite scroll UI patterns.
+    
+    Query Parameters:
+    - limit (optional): Number of items to return (default: 10, max: 50)
+    
+    Response:
+    - data: Array of RFX records
+    - pagination: Load-more pagination info with next_offset
+    """
+    try:
+        # Get and validate limit parameter
+        limit = int(request.args.get('limit', 10))
+        if limit < 1 or limit > 50:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid limit parameter",
+                "error": "Limit must be between 1 and 50"
+            }), 400
+        
+        logger.info(f"🎯 Getting latest {limit} RFX records")
+        
+        # Get data from database using optimized method
+        from ..core.database import get_database_client
+        db_client = get_database_client()
+        
+        rfx_records = db_client.get_latest_rfx(limit=limit, offset=0)
+        
+        # Format response data with consistent structure
+        latest_items = []
+        for record in rfx_records:
+            # Extract company and requester data from V2.0 schema
+            company_data = record.get("companies", {}) or {}
+            requester_data = record.get("requesters", {}) or {}
+            metadata = record.get("metadata_json", {}) or {}
+            
+            # Map V2.0 status to frontend format
+            rfx_status = record.get("status", "in_progress")
+            display_status = "completed" if rfx_status == "completed" else "In progress"
+            
+            # Get structured products count
+            structured_products = db_client.get_rfx_products(record["id"])
+            products_count = len(structured_products) if structured_products else len(record.get("requested_products", []))
+            
+            latest_item = {
+                # Core RFX data
+                "id": record["id"],
+                "rfxId": record["id"],  # Legacy compatibility
+                "title": record.get("title", f"RFX: {company_data.get('name', 'Unknown Company')}"),
+                "description": record.get("description"),
+                
+                # Company and requester info
+                "client": requester_data.get("name", metadata.get("requester_name", "Unknown Requester")),
+                "company_name": company_data.get("name", metadata.get("company_name", "Unknown Company")),
+                "requester_name": requester_data.get("name", metadata.get("requester_name", "Unknown Requester")),
+                "requester_email": requester_data.get("email", metadata.get("email", "")),
+                
+                # Status and classification
+                "status": display_status,
+                "rfx_status": rfx_status,  # Raw status
+                "tipo": record.get("rfx_type", "catering"),
+                "priority": record.get("priority", "medium"),
+                
+                # Financial data
+                "estimated_budget": record.get("estimated_budget", 0.0) or 0.0,
+                "actual_cost": record.get("actual_cost", 0.0) or 0.0,
+                "costo_total": record.get("actual_cost", 0.0) or 0.0,  # Legacy compatibility
+                "currency": record.get("currency", "MXN"),
+                
+                # Location and logistics
+                "location": record.get("location") or record.get("event_location", ""),
+                "event_city": record.get("event_city"),
+                "event_state": record.get("event_state"),
+                
+                # Products info
+                "numero_productos": products_count,
+                "products_count": products_count,
+                
+                # Dates
+                "date": record.get("created_at"),
+                "created_at": record.get("created_at"),
+                "received_at": record.get("received_at"),
+                "delivery_date": record.get("delivery_date"),
+                "submission_deadline": record.get("submission_deadline"),
+                
+                # Additional metadata
+                "requirements": record.get("requirements"),
+                "requirements_confidence": record.get("requirements_confidence")
+            }
+            latest_items.append(latest_item)
+        
+        # Build pagination info for load-more pattern
+        pagination_info = {
+            "offset": 0,
+            "limit": limit,
+            "total_items": len(latest_items),
+            "has_more": len(latest_items) == limit,  # If we got exactly limit items, there might be more
+            "next_offset": limit if len(latest_items) == limit else None
+        }
+        
+        response = {
+            "status": "success",
+            "message": f"Retrieved {len(latest_items)} latest RFX records",
+            "data": latest_items,
+            "pagination": pagination_info,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        logger.info(f"✅ Successfully retrieved {len(latest_items)} latest RFX records")
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting latest RFX: {e}")
+        import traceback
+        logger.error(f"❌ Full traceback: {traceback.format_exc()}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to retrieve latest RFX records",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
+
+
+@rfx_bp.route("/load-more", methods=["GET"])
+def load_more_rfx():
+    """
+    ⏩ Load more RFX records for infinite scroll pagination
+    
+    This endpoint loads additional RFX records starting from a given offset,
+    perfect for "Load More" button functionality in the frontend.
+    
+    Query Parameters:
+    - offset (required): Number of items to skip
+    - limit (optional): Number of items to return (default: 10, max: 50)
+    
+    Response:
+    - data: Array of RFX records
+    - pagination: Updated pagination info with next_offset
+    """
+    try:
+        # Get and validate parameters
+        offset = int(request.args.get('offset', 0))
+        limit = int(request.args.get('limit', 10))
+        
+        # Validate parameters
+        if offset < 0:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid offset parameter",
+                "error": "Offset must be >= 0"
+            }), 400
+        
+        if limit < 1 or limit > 50:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid limit parameter", 
+                "error": "Limit must be between 1 and 50"
+            }), 400
+        
+        logger.info(f"⏩ Loading more RFX records: offset={offset}, limit={limit}")
+        
+        # Get data from database
+        from ..core.database import get_database_client
+        db_client = get_database_client()
+        
+        rfx_records = db_client.get_latest_rfx(limit=limit, offset=offset)
+        
+        if not rfx_records:
+            logger.info(f"📄 No more RFX records found at offset {offset}")
+            return jsonify({
+                "status": "success",
+                "message": "No more records available",
+                "data": [],
+                "pagination": {
+                    "offset": offset,
+                    "limit": limit,
+                    "total_items": 0,
+                    "has_more": False,
+                    "next_offset": None
+                },
+                "timestamp": datetime.now().isoformat()
+            }), 200
+        
+        # Format response data (same format as /latest endpoint)
+        more_items = []
+        for record in rfx_records:
+            company_data = record.get("companies", {}) or {}
+            requester_data = record.get("requesters", {}) or {}
+            metadata = record.get("metadata_json", {}) or {}
+            
+            rfx_status = record.get("status", "in_progress")
+            display_status = "completed" if rfx_status == "completed" else "In progress"
+            
+            structured_products = db_client.get_rfx_products(record["id"])
+            products_count = len(structured_products) if structured_products else len(record.get("requested_products", []))
+            
+            more_item = {
+                # Core RFX data
+                "id": record["id"],
+                "rfxId": record["id"],
+                "title": record.get("title", f"RFX: {company_data.get('name', 'Unknown Company')}"),
+                "description": record.get("description"),
+                
+                # Company and requester info  
+                "client": requester_data.get("name", metadata.get("requester_name", "Unknown Requester")),
+                "company_name": company_data.get("name", metadata.get("company_name", "Unknown Company")),
+                "requester_name": requester_data.get("name", metadata.get("requester_name", "Unknown Requester")),
+                "requester_email": requester_data.get("email", metadata.get("email", "")),
+                
+                # Status and classification
+                "status": display_status,
+                "rfx_status": rfx_status,
+                "tipo": record.get("rfx_type", "catering"),
+                "priority": record.get("priority", "medium"),
+                
+                # Financial data
+                "estimated_budget": record.get("estimated_budget", 0.0) or 0.0,
+                "actual_cost": record.get("actual_cost", 0.0) or 0.0,
+                "costo_total": record.get("actual_cost", 0.0) or 0.0,
+                "currency": record.get("currency", "MXN"),
+                
+                # Location and logistics
+                "location": record.get("location") or record.get("event_location", ""),
+                "event_city": record.get("event_city"),
+                "event_state": record.get("event_state"),
+                
+                # Products info
+                "numero_productos": products_count,
+                "products_count": products_count,
+                
+                # Dates
+                "date": record.get("created_at"),
+                "created_at": record.get("created_at"),
+                "received_at": record.get("received_at"),
+                "delivery_date": record.get("delivery_date"),
+                "submission_deadline": record.get("submission_deadline"),
+                
+                # Additional metadata
+                "requirements": record.get("requirements"),
+                "requirements_confidence": record.get("requirements_confidence")
+            }
+            more_items.append(more_item)
+        
+        # Build updated pagination info
+        pagination_info = {
+            "offset": offset,
+            "limit": limit,
+            "total_items": len(more_items),
+            "has_more": len(more_items) == limit,  # If we got exactly limit items, there might be more
+            "next_offset": offset + limit if len(more_items) == limit else None
+        }
+        
+        response = {
+            "status": "success",
+            "message": f"Retrieved {len(more_items)} more RFX records",
+            "data": more_items,
+            "pagination": pagination_info,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        logger.info(f"✅ Successfully retrieved {len(more_items)} more RFX records (offset: {offset})")
+        return jsonify(response), 200
+        
+    except ValueError as ve:
+        logger.error(f"❌ Parameter validation error: {ve}")
+        return jsonify({
+            "status": "error", 
+            "message": "Invalid parameters",
+            "error": str(ve),
+            "timestamp": datetime.now().isoformat()
+        }), 400
+        
+    except Exception as e:
+        logger.error(f"❌ Error loading more RFX records: {e}")
+        import traceback
+        logger.error(f"❌ Full traceback: {traceback.format_exc()}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to load more RFX records",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
         }), 500
