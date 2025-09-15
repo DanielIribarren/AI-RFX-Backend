@@ -225,3 +225,50 @@ def get_server_config() -> ServerConfig:
 def get_file_upload_config() -> FileUploadConfig:
     """Get file upload configuration"""
     return config.file_upload
+
+
+# 🌍 MULTI-AMBIENTE: Funciones de conveniencia para migración
+def get_database_client():
+    """Obtener cliente de Supabase según ambiente actual"""
+    try:
+        from supabase import create_client, Client
+        
+        db_config = get_database_config()
+        if not db_config.url or not db_config.anon_key:
+            raise ValueError(f"Credenciales Supabase faltantes para ambiente: {config.environment}")
+        
+        client: Client = create_client(db_config.url, db_config.anon_key)
+        print(f"✅ Cliente Supabase conectado ({config.environment})")
+        return client
+        
+    except ImportError:
+        raise ImportError("Supabase client no instalado: pip install supabase")
+    except Exception as e:
+        print(f"❌ Error conectando a Supabase ({config.environment}): {str(e)}")
+        raise
+
+
+def get_environment() -> str:
+    """Obtener ambiente actual"""
+    return config.environment.value
+
+
+def is_development() -> bool:
+    """Verificar si estamos en desarrollo"""
+    return config.is_development
+
+
+def is_production() -> bool:
+    """Verificar si estamos en producción"""  
+    return config.is_production
+
+
+def print_environment_info():
+    """Imprimir información del ambiente actual para debugging"""
+    db_config = get_database_config()
+    openai_config = get_openai_config()
+    
+    print(f"🌍 AMBIENTE ACTUAL: {config.environment.value}")
+    print(f"🗄️ Supabase URL: {db_config.url[:30]}..." if db_config.url else "❌ Supabase URL no configurada")
+    print(f"🤖 OpenAI configurado: {'✅' if openai_config.api_key else '❌'}")
+    print(f"🐛 Debug mode: {'✅' if config.server.debug else '❌'}")
