@@ -49,6 +49,35 @@ class DocumentType(str, Enum):
 
 
 # ========================
+# 🚀 SAAS GENERAL ENUMS (DÍA 2)
+# ========================
+
+class IndustryType(str, Enum):
+    """Industry categories for SaaS general capabilities"""
+    GENERAL = "general"           # Default for generic services
+    CATERING = "catering"         # Current specialty
+    EVENTS = "events"             # Current specialty
+    TECHNOLOGY = "technology"     # New - IT services, software
+    HEALTHCARE = "healthcare"     # New - medical supplies, services
+    CONSTRUCTION = "construction" # Current - already in RFXType
+    SERVICES = "services"         # Current - already in RFXType
+    EDUCATION = "education"       # New - educational supplies/services
+    RETAIL = "retail"             # New - retail supplies, inventory
+
+
+class ServiceCategory(str, Enum):
+    """Service categories for granular classification"""
+    GENERAL = "general"           # Default category
+    CATERING = "catering"         # Food & beverage services
+    SUPPLY_CHAIN = "supply_chain" # Logistics, procurement
+    CONSULTING = "consulting"     # Professional services
+    MAINTENANCE = "maintenance"   # Current - facility, equipment
+    TECHNOLOGY = "technology"     # IT support, software dev
+    DESIGN = "design"             # Creative, architectural
+    TRAINING = "training"         # Educational services
+
+
+# ========================
 # CORE ENTITY MODELS
 # ========================
 
@@ -181,12 +210,43 @@ class RFXProductRequest(BaseModel):
 
 class RFXInput(BaseModel):
     """Input data for processing an RFX"""
+    # ========================
+    # 📋 CAMPOS ACTUALES (NO TOCAR - BACKWARD COMPATIBILITY)
+    # ========================
     id: str = Field(..., min_length=1)
     rfx_type: RFXType = RFXType.CATERING
     pdf_url: Optional[str] = None
     extracted_content: Optional[str] = None
-    # 🆕 MVP: Campo opcional para requirements específicos del cliente
     requirements: Optional[str] = Field(None, max_length=2000, description="Specific client requirements or instructions")
+    
+    # ========================
+    # 🚀 NUEVOS CAMPOS SAAS GENERAL (DÍA 2 - 100% OPCIONALES)
+    # ========================
+    industry_type: Optional[IndustryType] = Field(
+        IndustryType.GENERAL, 
+        description="Industry category for specialized AI processing"
+    )
+    complexity_score: Optional[float] = Field(
+        None, 
+        ge=0.0, 
+        le=1.0, 
+        description="AI-calculated complexity score (0.0=simple, 1.0=complex)"
+    )
+    context_analysis: Optional[Dict[str, Any]] = Field(
+        default_factory=dict, 
+        description="AI context analysis and insights"
+    )
+    service_category: Optional[ServiceCategory] = Field(
+        ServiceCategory.GENERAL, 
+        description="Granular service classification"
+    )
+
+    @validator('complexity_score')
+    def validate_complexity_score(cls, v):
+        """Ensure complexity score is within valid range"""
+        if v is not None and (v < 0.0 or v > 1.0):
+            raise ValueError('Complexity score must be between 0.0 and 1.0')
+        return v
 
     class Config:
         use_enum_values = True
@@ -460,3 +520,21 @@ LEGACY_FIELD_MAPPING = {
     'fecha_recepcion': 'received_at',
     'metadatos': 'metadata_json'
 }
+
+
+# ========================
+# 🚀 SAAS GENERAL ALIASES (DÍA 2)
+# ========================
+
+# Aliases for future SaaS general capabilities
+ProjectInput = RFXInput  # Conceptual alias for general project requests
+GeneralServiceInput = RFXInput  # Alias for non-RFX service requests
+RequestInput = RFXInput  # Generic request input alias
+
+# Enum aliases for broader scope
+Industry = IndustryType  # Shorter alias
+Category = ServiceCategory  # Shorter alias
+
+# Type hints for SaaS general usage
+ProjectRequest = RFXInput
+ServiceRequest = RFXInput

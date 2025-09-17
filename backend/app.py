@@ -15,6 +15,7 @@ load_dotenv()
 from backend.core.config import config, get_server_config
 from backend.core.database import get_database_client
 from backend.api.rfx import rfx_bp
+from backend.api.projects import projects_bp  # New modern project management API
 from backend.api.proposals import proposals_bp
 from backend.api.download import download_bp
 from backend.api.pricing import pricing_bp
@@ -69,7 +70,8 @@ def _register_blueprints(app: Flask) -> None:
     """Register all application blueprints"""
     
     # New architecture API endpoints
-    app.register_blueprint(rfx_bp)
+    app.register_blueprint(rfx_bp)  # Legacy RFX API (backward compatibility)
+    app.register_blueprint(projects_bp)  # Modern project management API
     app.register_blueprint(proposals_bp)
     app.register_blueprint(download_bp)
     app.register_blueprint(pricing_bp)

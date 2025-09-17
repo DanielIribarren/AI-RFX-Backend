@@ -1,75 +1,100 @@
 """
-📄 Proposal Data Models V2.0 - English Schema Compatible
-Updated for new normalized database structure
+📄 Proposal/Quote Data Models V3.0 - Budy AI Schema Compatible
+Updated for new budy-ai-schema.sql structure with quotes and templates tables
 """
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, validator
 from enum import Enum
 from uuid import UUID
-from .rfx_models import DocumentType
+from .project_models import ProjectTypeEnum, CurrencyEnum
 
 
 # ========================
-# ENUMS (English)
+# ENUMS (Aligned with budy-ai-schema.sql)
 # ========================
+
+class QuoteStatusEnum(str, Enum):
+    """Quote status stages (from budy-ai-schema.sql)"""
+    DRAFT = "draft"
+    GENERATED = "generated"
+    REVIEWED = "reviewed"
+    SENT = "sent"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
+class TemplateTypeEnum(str, Enum):
+    """Template types (from budy-ai-schema.sql)"""
+    QUOTE = "quote"
+    PROPOSAL = "proposal"
+    INVOICE = "invoice"
+    CONTRACT = "contract"
+
+
+class GenerationMethodEnum(str, Enum):
+    """Quote generation methods"""
+    AI_ASSISTED = "ai_assisted"
+    MANUAL = "manual"
+    TEMPLATE_BASED = "template_based"
+    HYBRID = "hybrid"
+
 
 class ServiceModality(str, Enum):
-    """Service delivery modalities"""
+    """Service delivery modalities (legacy support)"""
     BUFFET = "buffet"
     FULL_SERVICE = "full_service"
     SELF_SERVICE = "self_service"
     SIMPLE_DELIVERY = "simple_delivery"
 
 
-class ProposalStatus(str, Enum):
-    """Proposal status stages"""
-    DRAFT = "draft"
-    GENERATED = "generated"
-    SENT = "sent"
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-
-
 # ========================
-# PROPOSAL COMPONENTS
+# QUOTE COMPONENTS (UPDATED FROM PROPOSAL)
 # ========================
 
-class ProposalNotes(BaseModel):
-    """Additional notes for proposal customization"""
-    modality: ServiceModality = ServiceModality.BUFFET
+class QuoteNotes(BaseModel):
+    """Additional notes for quote customization"""
+    service_modality: ServiceModality = ServiceModality.BUFFET
     modality_description: str = Field(default="", max_length=500)
-    coordination: str = Field(default="", max_length=500)
+    coordination_notes: str = Field(default="", max_length=500)
+    payment_terms: str = Field(default="", max_length=1000)
+    terms_and_conditions: str = Field(default="", max_length=2000)
     additional_notes: str = Field(default="", max_length=1000)
 
     class Config:
         use_enum_values = True
 
 
-class ProductCost(BaseModel):
-    """Individual product cost in proposal"""
-    product_name: str = Field(..., min_length=1)
-    quantity: int = Field(..., ge=1)
+class ItemizedCost(BaseModel):
+    """Individual item cost in quote (updated from ProductCost)"""
+    item_name: str = Field(..., min_length=1, max_length=255)
+    quantity: float = Field(..., gt=0)
     unit_price: float = Field(..., ge=0)
-    subtotal: float = Field(..., ge=0)
+    total_price: float = Field(..., ge=0)
     
-    # New fields for V2.0
-    unit: Optional[str] = "piece"
-    category: Optional[str] = None
-    supplier_name: Optional[str] = None
+    # Additional fields aligned with project_items
+    unit_of_measure: str = Field("pieces", max_length=50)
+    category: Optional[str] = Field(None, max_length=100)
+    subcategory: Optional[str] = Field(None, max_length=100)
+    description: Optional[str] = None
     notes: Optional[str] = None
+    
+    # Source information
+    is_optional: bool = False
+    extracted_from_ai: bool = False
 
-    @validator('subtotal')
-    def validate_subtotal(cls, v, values):
+    @validator('total_price')
+    def validate_total_price(cls, v, values):
         if 'quantity' in values and 'unit_price' in values:
             expected = values['quantity'] * values['unit_price']
             if abs(v - expected) > 0.01:  # 1 cent tolerance
-                raise ValueError('Subtotal does not match quantity × unit price')
+                raise ValueError('Total price does not match quantity × unit price')
         return v
 
-    @validator('product_name')
-    def validate_product_name(cls, v):
-        return v.strip()
+    @validator('item_name')
+    def validate_item_name(cls, v):
+        return v.strip() if v else v
 
     class Config:
         use_enum_values = True
@@ -79,69 +104,129 @@ class ProductCost(BaseModel):
 # REQUEST MODELS
 # ========================
 
-class ProposalRequest(BaseModel):
-    """Request to generate a proposal"""
-    rfx_id: str = Field(..., min_length=1)
-    costs: List[float] = Field(..., min_items=1)
-    history: str = Field(default="", max_length=2000)
-    notes: Optional[ProposalNotes] = Field(default_factory=ProposalNotes)
-    custom_template: Optional[str] = Field(None, max_length=5000)
+class QuoteRequest(BaseModel):
+    """Request to generate a quote (updated from ProposalRequest)"""
+    project_id: str = Field(..., min_length=1, description="Project ID (updated from rfx_id)")
+    organization_id: Optional[str] = Field(None, min_length=1, description="Organization ID")
+    template_id: Optional[str] = Field(None, description="Template ID to use")
     
-    # New V2.0 fields
-    document_type: DocumentType = DocumentType.PROPOSAL
+    # Quote content
+    title: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=2000)
+    
+    # Cost information
+    itemized_costs: List[ItemizedCost] = Field(default_factory=list)
+    subtotal: float = Field(..., ge=0)
+    coordination_amount: float = Field(0.0, ge=0)
+    tax_amount: float = Field(0.0, ge=0)
+    discount_amount: float = Field(0.0, ge=0)
+    total_amount: float = Field(..., ge=0)
+    currency: CurrencyEnum = CurrencyEnum.USD
+    
+    # Quote metadata
+    notes: Optional[QuoteNotes] = Field(default_factory=QuoteNotes)
+    generation_method: GenerationMethodEnum = GenerationMethodEnum.AI_ASSISTED
     version: int = 1
+    
+    # Business terms
+    payment_terms: Optional[str] = Field(None, max_length=1000)
+    terms_and_conditions: Optional[str] = Field(None, max_length=2000)
+    valid_until: Optional[datetime] = None
+    
+    # Generation options
     include_itemized_costs: bool = True
     include_terms_conditions: bool = True
+    custom_template_content: Optional[str] = Field(None, max_length=10000)
 
-    @validator('costs')
-    def validate_costs(cls, v):
-        if any(cost < 0 for cost in v):
-            raise ValueError('Costs must be positive')
+    @validator('total_amount')
+    def validate_total_amount(cls, v, values):
+        if 'subtotal' in values and 'coordination_amount' in values and 'tax_amount' in values and 'discount_amount' in values:
+            expected = values['subtotal'] + values['coordination_amount'] + values['tax_amount'] - values['discount_amount']
+            if abs(v - expected) > 0.01:  # 1 cent tolerance
+                raise ValueError('Total amount does not match calculated total')
         return v
+
+    @validator('title')
+    def validate_title(cls, v):
+        return v.strip() if v else v
 
     class Config:
         use_enum_values = True
 
 
 # ========================
-# RESPONSE MODELS
+# MAIN QUOTE MODEL (UPDATED FROM GENERATED PROPOSAL)
 # ========================
 
-class GeneratedProposal(BaseModel):
-    """Generated proposal with V2.0 architecture - HTML is primary"""
-    id: UUID
-    rfx_id: UUID
-    document_type: DocumentType = DocumentType.PROPOSAL
+class QuoteModel(BaseModel):
+    """Main quote model aligned with budy-ai-schema.sql quotes table"""
+    id: Optional[UUID] = None
+    project_id: UUID = Field(..., description="Project ID (updated from rfx_id)")
+    organization_id: UUID = Field(..., description="Organization ID")
+    template_id: Optional[UUID] = Field(None, description="Template used")
+    
+    # Quote identification
+    quote_number: str = Field(..., min_length=1, max_length=50, pattern=r'^[A-Z0-9-]+$')
+    title: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    status: QuoteStatusEnum = QuoteStatusEnum.DRAFT
     version: int = 1
-    title: Optional[str] = None
     
-    # Content (HTML is primary)
-    content_html: str = Field(..., min_length=1)
-    content_markdown: Optional[str] = None  # Optional, legacy support
+    # Financial information
+    subtotal: float = Field(..., ge=0)
+    coordination_amount: float = Field(0.0, ge=0)
+    tax_amount: float = Field(0.0, ge=0)
+    discount_amount: float = Field(0.0, ge=0)
+    total_amount: float = Field(..., ge=0)
+    currency: CurrencyEnum = CurrencyEnum.USD
     
-    # Cost breakdown
-    itemized_costs: Optional[List[ProductCost]] = Field(default_factory=list)
-    subtotal: Optional[float] = Field(None, ge=0)
-    tax_amount: Optional[float] = Field(None, ge=0)
-    total_cost: float = Field(default=0.0, ge=0)
+    # Snapshots for audit trail
+    pricing_config_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    items_snapshot: List[Dict[str, Any]] = Field(default_factory=list)
     
-    # Proposal metadata
-    notes: Optional[ProposalNotes] = Field(default_factory=ProposalNotes)
-    status: ProposalStatus = ProposalStatus.GENERATED
-    template_used: Optional[str] = None
-
+    # Generated content
+    html_content: Optional[str] = None
+    pdf_url: Optional[str] = None
+    pdf_size_bytes: Optional[int] = Field(None, gt=0)
     
-    # File handling
-    file_url: Optional[str] = None
-    file_path: Optional[str] = None
-    pdf_url: Optional[str] = None  # Legacy compatibility
+    # Generation metadata
+    generation_method: GenerationMethodEnum = GenerationMethodEnum.AI_ASSISTED
+    quality_score: Optional[float] = Field(None, ge=0, le=1)
+    generation_duration_seconds: Optional[int] = Field(None, gt=0)
+    tokens_used: int = 0
     
-    # Timestamps
+    # Business terms
+    valid_until: Optional[datetime] = None
+    payment_terms: Optional[str] = None
+    terms_and_conditions: Optional[str] = None
+    
+    # Interaction tracking
+    sent_at: Optional[datetime] = None
+    viewed_at: Optional[datetime] = None
+    responded_at: Optional[datetime] = None
+    
+    # Control
+    created_by: UUID = Field(..., description="User ID who created the quote")
+    sent_by: Optional[UUID] = Field(None, description="User ID who sent the quote")
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
-    
-    # Additional metadata
-    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+    @validator('quote_number')
+    def validate_quote_number(cls, v):
+        return v.strip().upper() if v else v
+
+    @validator('title')
+    def validate_title(cls, v):
+        return v.strip() if v else v
+
+    @validator('total_amount')
+    def validate_total_amount(cls, v, values):
+        # Verify total matches components
+        if all(key in values for key in ['subtotal', 'coordination_amount', 'tax_amount', 'discount_amount']):
+            expected = values['subtotal'] + values['coordination_amount'] + values['tax_amount'] - values['discount_amount']
+            if abs(v - expected) > 0.01:  # 1 cent tolerance
+                raise ValueError('Total amount does not match calculated total')
+        return v
 
     class Config:
         use_enum_values = True
@@ -151,13 +236,32 @@ class GeneratedProposal(BaseModel):
         }
 
 
-class ProposalResponse(BaseModel):
-    """Standard response for proposal endpoints"""
+class QuoteResponse(BaseModel):
+    """Standard response for quote endpoints (updated from ProposalResponse)"""
     status: str = Field(..., pattern=r'^(success|error)$')
     message: str
-    document_id: Optional[UUID] = None
+    quote_id: Optional[UUID] = None
+    quote_number: Optional[str] = None
     pdf_url: Optional[str] = None
-    proposal: Optional[GeneratedProposal] = None
+    quote: Optional[QuoteModel] = None
+    error: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            UUID: lambda v: str(v)
+        }
+
+
+class QuoteListResponse(BaseModel):
+    """Response for quote list endpoints"""
+    status: str = Field(..., pattern=r'^(success|error)$')
+    message: str
+    quotes: List[QuoteModel] = Field(default_factory=list)
+    total_count: int = 0
+    page: int = 1
+    limit: int = 50
     error: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.now)
 
@@ -206,71 +310,103 @@ class GeneratedDocument(BaseModel):
 
 
 # ========================
-# COST CALCULATION MODELS
+# COST CALCULATION MODELS (DEPRECATED)
 # ========================
 
-class CostBreakdown(BaseModel):
-    """Detailed cost breakdown for proposals"""
-    products: List[ProductCost] = Field(default_factory=list)
-    subtotal: float = Field(0.0, ge=0)
-    
-    # Tax and fees
-    tax_rate: float = Field(0.0, ge=0, le=1)  # As decimal (e.g., 0.16 for 16%)
-    tax_amount: float = Field(0.0, ge=0)
-    service_fee: float = Field(0.0, ge=0)
-    delivery_fee: float = Field(0.0, ge=0)
-    
-    # Discounts
-    discount_percentage: float = Field(0.0, ge=0, le=1)
-    discount_amount: float = Field(0.0, ge=0)
-    
-    # Final totals
-    total_before_tax: float = Field(0.0, ge=0)
-    total_cost: float = Field(0.0, ge=0)
-    
-    # Additional info
-    currency: str = "USD"
-    notes: Optional[str] = None
-
-    @validator('tax_amount')
-    def validate_tax_amount(cls, v, values):
-        if 'subtotal' in values and 'tax_rate' in values:
-            expected = values['subtotal'] * values['tax_rate']
-            if abs(v - expected) > 0.01:
-                raise ValueError('Tax amount does not match subtotal × tax rate')
-        return v
-
-    class Config:
-        use_enum_values = True
+# NOTE: CostBreakdown removed - its functionality is now covered by 
+# PricingCalculationModel in pricing_models.py for better separation of concerns
 
 
 # ========================
-# TEMPLATE MODELS
+# TEMPLATE MODELS (ALIGNED WITH BUDY-AI-SCHEMA)
 # ========================
 
-class ProposalTemplate(BaseModel):
-    """Proposal template definition"""
-    id: UUID
-    name: str = Field(..., min_length=1, max_length=100)
+class TemplateModel(BaseModel):
+    """Template model aligned with budy-ai-schema.sql templates table"""
+    id: Optional[UUID] = None
+    organization_id: UUID = Field(..., description="Organization ID")
+    
+    # Template information
+    name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    template_html: str = Field(..., min_length=1)
-    template_variables: List[str] = Field(default_factory=list)
+    template_type: TemplateTypeEnum = TemplateTypeEnum.QUOTE
     
-    # Template metadata
-    category: Optional[str] = None  # e.g., "catering", "events"
-    is_active: bool = True
+    # Configuration
+    project_types: List[ProjectTypeEnum] = Field(default_factory=list, description="Applicable project types")
     is_default: bool = False
+    is_active: bool = True
+    
+    # Content
+    html_content: str = Field(..., min_length=1, description="Template HTML content")
+    css_styles: Optional[str] = None
+    javascript_code: Optional[str] = None
+    
+    # Layout and design
+    layout_structure: Dict[str, Any] = Field(default_factory=dict)
+    design_settings: Dict[str, Any] = Field(default_factory=dict)
+    responsive_settings: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Customization
+    custom_fields: Dict[str, Any] = Field(default_factory=dict)
+    branding_options: Dict[str, Any] = Field(default_factory=dict)
+    color_scheme: Dict[str, Any] = Field(default_factory=dict)
     
     # Usage tracking
     usage_count: int = 0
-    last_used: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
     
+    # Control
+    created_by: UUID = Field(..., description="User ID who created the template")
+    updated_by: Optional[UUID] = Field(None, description="User ID who last updated the template")
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
     @validator('name')
     def validate_name(cls, v):
-        return v.strip()
+        return v.strip() if v else v
+
+    class Config:
+        use_enum_values = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            UUID: lambda v: str(v)
+        }
+
+
+class TemplateRequest(BaseModel):
+    """Request to create or update a template"""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    template_type: TemplateTypeEnum = TemplateTypeEnum.QUOTE
+    
+    # Content
+    html_content: str = Field(..., min_length=1)
+    css_styles: Optional[str] = None
+    
+    # Configuration
+    project_types: List[ProjectTypeEnum] = Field(default_factory=list)
+    is_default: bool = False
+    is_active: bool = True
+    
+    # Customization
+    branding_options: Dict[str, Any] = Field(default_factory=dict)
+    color_scheme: Dict[str, Any] = Field(default_factory=dict)
+
+    @validator('name')
+    def validate_name(cls, v):
+        return v.strip() if v else v
+
+    class Config:
+        use_enum_values = True
+
+
+class TemplateResponse(BaseModel):
+    """Response for template endpoints"""
+    status: str = Field(..., pattern=r'^(success|error)$')
+    message: str
+    template: Optional[TemplateModel] = None
+    error: Optional[str] = None
+    timestamp: datetime = Field(default_factory=datetime.now)
 
     class Config:
         json_encoders = {
@@ -280,38 +416,112 @@ class ProposalTemplate(BaseModel):
 
 
 # ========================
-# LEGACY COMPATIBILITY
+# LEGACY COMPATIBILITY & ALIASES
 # ========================
 
-# Keep legacy aliases for backwards compatibility
-TipoModalidad = ServiceModality
-EstadoPropuesta = ProposalStatus
-NotasPropuesta = ProposalNotes
-CostoProducto = ProductCost
-PropuestaGenerada = GeneratedProposal
-DocumentoGenerado = GeneratedDocument
+# IMPORTANT: Legacy aliases for backward compatibility during migration
+# These ensure existing code continues working with new models
 
-# Legacy field mappings
-LEGACY_PROPOSAL_MAPPING = {
-    'modalidad': 'modality',
-    'descripcion_modalidad': 'modality_description',
-    'coordinacion': 'coordination',
-    'notas_adicionales': 'additional_notes',
-    'producto_nombre': 'product_name',
-    'precio_unitario': 'unit_price',
-    'contenido_html': 'content_html',
-    'contenido_markdown': 'content_markdown',
-    'costos_desglosados': 'itemized_costs',
-    'costo_total': 'total_cost',
-    'fecha_creacion': 'created_at',
-    'fecha_actualizacion': 'updated_at',
-    'url_pdf': 'pdf_url',
-    'metadatos': 'metadata',
-    'documento_id': 'document_id',
-    'nombre_archivo': 'file_name',
-    'url_descarga': 'download_url',
-    'tamaño_bytes': 'file_size_bytes',
-    'fecha_expiracion': 'expiration_date',
-    'descargado': 'downloaded',
-    'numero_descargas': 'download_count'
-}
+# Direct model aliases (new -> old mappings for external use)
+ProposalRequest = QuoteRequest
+GeneratedProposal = QuoteModel
+ProposalResponse = QuoteResponse
+ProductCost = ItemizedCost
+ProposalNotes = QuoteNotes
+ProposalStatus = QuoteStatusEnum
+ProposalTemplate = TemplateModel
+
+# Legacy Spanish names for backward compatibility (common in existing codebase)
+TipoModalidad = ServiceModality  # Spanish for ServiceModality
+EstadoPropuesta = QuoteStatusEnum  # Spanish for QuoteStatusEnum
+NotasPropuesta = QuoteNotes   # Spanish for QuoteNotes
+CostoProducto = ItemizedCost      # Spanish for ItemizedCost
+PropuestaGenerada = QuoteModel  # Spanish for QuoteModel
+SolicitudPropuesta = QuoteRequest  # Spanish for QuoteRequest
+RespuestaPropuesta = QuoteResponse  # Spanish for QuoteResponse
+DocumentoGenerado = QuoteModel  # Spanish for QuoteModel (old GeneratedDocument concept now in QuoteModel)
+
+
+# Helper function to map legacy proposal status values
+def map_legacy_proposal_status(status_value: str) -> QuoteStatusEnum:
+    """Map legacy Spanish status values to new enum values"""
+    legacy_mapping = {
+        'borrador': QuoteStatusEnum.DRAFT,
+        'generada': QuoteStatusEnum.GENERATED,
+        'enviada': QuoteStatusEnum.SENT,
+        'vista': QuoteStatusEnum.VIEWED,
+        'aceptada': QuoteStatusEnum.ACCEPTED,
+        'rechazada': QuoteStatusEnum.REJECTED,
+        'expirada': QuoteStatusEnum.EXPIRED,
+        'cancelada': QuoteStatusEnum.CANCELLED,
+        # English mappings too
+        'draft': QuoteStatusEnum.DRAFT,
+        'generated': QuoteStatusEnum.GENERATED,
+        'sent': QuoteStatusEnum.SENT,
+        'viewed': QuoteStatusEnum.VIEWED,
+        'accepted': QuoteStatusEnum.ACCEPTED,
+        'rejected': QuoteStatusEnum.REJECTED,
+        'expired': QuoteStatusEnum.EXPIRED,
+        'cancelled': QuoteStatusEnum.CANCELLED
+    }
+    return legacy_mapping.get(status_value.lower(), QuoteStatusEnum.DRAFT)
+
+
+def map_legacy_quote_request(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Map legacy proposal request data to new quote request format"""
+    mapped_data = {}
+    
+    # Handle RFX -> Project mapping
+    if 'rfx_id' in legacy_data:
+        mapped_data['project_id'] = legacy_data['rfx_id']
+    
+    # Handle company -> organization mapping
+    if 'company_id' in legacy_data:
+        mapped_data['organization_id'] = legacy_data['company_id']
+    
+    # Handle status mapping
+    if 'estado' in legacy_data:
+        mapped_data['status'] = map_legacy_proposal_status(legacy_data['estado'])
+    elif 'status' in legacy_data:
+        mapped_data['status'] = map_legacy_proposal_status(legacy_data['status'])
+    
+    # Handle products -> items mapping
+    if 'products' in legacy_data:
+        mapped_data['itemized_costs'] = []
+        for product in legacy_data['products']:
+            item_cost = {
+                'item_name': product.get('name', product.get('nombre', '')),
+                'description': product.get('description', product.get('descripcion', '')),
+                'unit_of_measure': product.get('unit', product.get('unidad', 'unidad')),
+                'quantity': product.get('quantity', product.get('cantidad', 1)),
+                'unit_price': product.get('unit_price', product.get('precio_unitario', 0)),
+                'total_price': product.get('total_cost', product.get('costo_total', 0))
+            }
+            mapped_data['itemized_costs'].append(item_cost)
+    
+    # Legacy field mappings for Spanish -> English
+    field_mapping = {
+        'modalidad': 'service_modality',
+        'notas_adicionales': 'notes',
+        'costo_total': 'total_amount',
+        'fecha_validez': 'valid_until',
+        'terminos_pago': 'payment_terms',
+        'terminos_condiciones': 'terms_and_conditions'
+    }
+    
+    for old_field, new_field in field_mapping.items():
+        if old_field in legacy_data:
+            mapped_data[new_field] = legacy_data[old_field]
+    
+    # Copy other fields as-is
+    common_fields = [
+        'notes', 'service_modality', 'subtotal', 'coordination_amount',
+        'tax_amount', 'discount_amount', 'total_amount', 'currency',
+        'valid_until', 'payment_terms', 'terms_and_conditions'
+    ]
+    
+    for field in common_fields:
+        if field in legacy_data:
+            mapped_data[field] = legacy_data[field]
+    
+    return mapped_data

@@ -1,4 +1,5 @@
-# 🚀 PLAN DE IMPLEMENTACIÓN: RFX → SAAS GENERAL 
+# 🚀 PLAN DE IMPLEMENTACIÓN: RFX → SAAS GENERAL
+
 ## Backend First - 7 Días de Desarrollo
 
 ---
@@ -15,20 +16,24 @@
 ## 🗓️ CRONOGRAMA DETALLADO
 
 ### **DÍA 1: PREPARACIÓN Y BACKUP** 📦
+
 **Tiempo estimado:** 4-6 horas
 
 #### **🔧 Tareas Técnicas:**
+
 1. **Backup completo del sistema**
+
    ```bash
    # Base de datos
    pg_dump -h tu-supabase-host -U postgres tu_bd > backup_rfx_$(date +%Y%m%d).sql
-   
-   # Código fuente  
+
+   # Código fuente
    git checkout -b saas-migration
    git tag v2.2-rfx-original
    ```
 
 2. **Análisis de dependencias**
+
    ```bash
    # Identificar todos los archivos que usan "rfx" en el nombre
    find . -name "*rfx*" -type f
@@ -43,14 +48,16 @@
    ```
 
 #### **📄 Deliverables:**
+
 - ✅ Backup completo verificado
 - ✅ Lista de archivos a modificar
-- ✅ Branch `saas-migration` creado
+- ✅ Branch `saas-app` creado
 - ✅ Documento de rollback plan
 
 ---
 
 ### **DÍA 2: MIGRACIÓN DE ESQUEMA DE BD** 🗄️
+
 **Tiempo estimado:** 6-8 horas
 
 #### **🔧 Script Principal de Migración:**
@@ -66,21 +73,21 @@ CREATE TYPE project_status_enum AS ENUM (
 
 CREATE TYPE project_type_enum AS ENUM (
     'quote_request',      -- era 'rfq'
-    'proposal_request',   -- era 'rfp'  
+    'proposal_request',   -- era 'rfp'
     'information_request', -- era 'rfi'
     'service_booking',    -- nuevo
     'consultation'        -- nuevo
 );
 
 CREATE TYPE industry_type_enum AS ENUM (
-    'catering', 'construction', 'it_services', 'consulting', 
+    'catering', 'construction', 'it_services', 'consulting',
     'events', 'marketing', 'logistics', 'healthcare', 'general'
 );
 
 -- 2. CREAR TABLA PRINCIPAL GENERALIZADA
 CREATE TABLE projects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    
+
     -- INFORMACIÓN BÁSICA (mejorada)
     title TEXT NOT NULL,
     description TEXT,
@@ -89,47 +96,47 @@ CREATE TABLE projects (
     complexity_score DECIMAL(5,4) CHECK (complexity_score >= 0 AND complexity_score <= 1),
     status project_status_enum DEFAULT 'in_progress',
     priority priority_level DEFAULT 'medium',
-    
+
     -- REFERENCIAS
     company_id UUID NOT NULL REFERENCES companies(id),
     requester_id UUID NOT NULL REFERENCES requesters(id),
-    
+
     -- FECHAS GENERALIZADAS
     proposal_deadline TIMESTAMPTZ,
     decision_deadline TIMESTAMPTZ,
     service_start_date TIMESTAMPTZ,
     service_end_date TIMESTAMPTZ,
-    
+
     -- PRESUPUESTO
     budget_range_min DECIMAL(15,2),
     budget_range_max DECIMAL(15,2),
     currency TEXT DEFAULT 'USD',
-    
+
     -- LOCALIZACIÓN DEL SERVICIO
     service_location TEXT,
     service_city TEXT,
     service_state TEXT,
     service_country TEXT DEFAULT 'Mexico',
-    
+
     -- NUEVOS CAMPOS SAAS
     service_category TEXT,           -- 'catering', 'web_development', etc.
     target_audience TEXT,            -- 'corporate', 'personal', 'public'
     estimated_scope_size INTEGER,   -- participantes, horas, productos, etc.
     scope_unit TEXT DEFAULT 'units', -- 'people', 'hours', 'products', 'projects'
-    
+
     -- REQUIREMENTS Y CONTEXTO
     requirements TEXT,
     requirements_confidence DECIMAL(5,4),
     context_analysis JSONB DEFAULT '{}',
-    
+
     -- METADATOS
     evaluation_criteria JSONB,
     metadata_json JSONB DEFAULT '{}',
-    
+
     -- TIMESTAMPS
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    
+
     -- CONSTRAINTS
     CONSTRAINT valid_budget_range CHECK (budget_range_min <= budget_range_max),
     CONSTRAINT valid_scope CHECK (estimated_scope_size > 0)
@@ -145,11 +152,11 @@ INSERT INTO projects (
     requirements, requirements_confidence, evaluation_criteria, metadata_json,
     created_at, updated_at
 )
-SELECT 
-    id, 
+SELECT
+    id,
     COALESCE(title, 'Imported Project') as title,
     description,
-    CASE rfx_type 
+    CASE rfx_type
         WHEN 'rfq' THEN 'quote_request'::project_type_enum
         WHEN 'rfp' THEN 'proposal_request'::project_type_enum
         WHEN 'rfi' THEN 'information_request'::project_type_enum
@@ -169,37 +176,37 @@ FROM rfx_v2;
 -- project_items (era rfx_products)
 CREATE TABLE project_items AS TABLE rfx_products;
 ALTER TABLE project_items ADD CONSTRAINT project_items_pkey PRIMARY KEY (id);
-ALTER TABLE project_items ADD CONSTRAINT project_items_project_fk 
+ALTER TABLE project_items ADD CONSTRAINT project_items_project_fk
     FOREIGN KEY (rfx_id) REFERENCES projects(id);
 
--- project_history (era rfx_history)  
+-- project_history (era rfx_history)
 CREATE TABLE project_history AS TABLE rfx_history;
 ALTER TABLE project_history ADD CONSTRAINT project_history_pkey PRIMARY KEY (id);
-ALTER TABLE project_history ADD CONSTRAINT project_history_project_fk 
+ALTER TABLE project_history ADD CONSTRAINT project_history_project_fk
     FOREIGN KEY (rfx_id) REFERENCES projects(id);
 
 -- service_providers (era suppliers)
 CREATE TABLE service_providers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     company_id UUID NOT NULL REFERENCES companies(id),
-    
+
     -- INFORMACIÓN GENERALIZADA
     provider_type TEXT DEFAULT 'company' CHECK (provider_type IN ('freelancer', 'company', 'agency')),
     service_categories JSONB DEFAULT '[]',
     industry_focus JSONB DEFAULT '[]',
     capabilities JSONB DEFAULT '{}',
-    
+
     -- CAMPOS ORIGINALES ACTUALIZADOS
     specialty TEXT,
     certification_level TEXT,
     rating DECIMAL(3,2) CHECK (rating >= 0 AND rating <= 5),
     is_preferred BOOLEAN DEFAULT false,
-    
+
     -- NUEVOS CAMPOS
     geographic_coverage JSONB DEFAULT '[]',
     pricing_model TEXT DEFAULT 'project_based',
     min_project_size DECIMAL(10,2),
-    
+
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -208,7 +215,7 @@ CREATE TABLE service_providers (
 INSERT INTO service_providers (
     id, company_id, specialty, certification_level, rating, is_preferred, created_at, updated_at
 )
-SELECT 
+SELECT
     id, company_id, specialty, certification_level, rating, is_preferred, created_at, updated_at
 FROM suppliers;
 
@@ -216,6 +223,7 @@ COMMIT;
 ```
 
 #### **📄 Deliverables Día 2:**
+
 - ✅ Script de migración ejecutado
 - ✅ Tabla `projects` creada y poblada
 - ✅ Verificación: `SELECT COUNT(*) FROM projects;`
@@ -224,11 +232,13 @@ COMMIT;
 ---
 
 ### **DÍA 3: ACTUALIZAR MODELOS BACKEND** 🐍
+
 **Tiempo estimado:** 6-8 horas
 
 #### **🔧 Archivos a Crear/Modificar:**
 
 **1. Nuevo archivo: `models/project_models.py`**
+
 ```python
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Dict, Any
@@ -238,7 +248,7 @@ from datetime import datetime
 
 class ProjectType(str, Enum):
     quote_request = "quote_request"
-    proposal_request = "proposal_request"  
+    proposal_request = "proposal_request"
     information_request = "information_request"
     service_booking = "service_booking"
     consultation = "consultation"
@@ -270,31 +280,31 @@ class ProjectInput(BaseModel):
     target_audience: Optional[str] = None
     company_id: UUID
     requester_id: UUID
-    
+
     # Fechas
     proposal_deadline: Optional[datetime] = None
     decision_deadline: Optional[datetime] = None
     service_start_date: Optional[datetime] = None
     service_end_date: Optional[datetime] = None
-    
+
     # Presupuesto
     budget_range_min: Optional[float] = Field(None, ge=0)
     budget_range_max: Optional[float] = Field(None, ge=0)
     currency: str = "USD"
-    
+
     # Ubicación
     service_location: Optional[str] = None
     service_city: Optional[str] = None
     service_state: Optional[str] = None
     service_country: str = "Mexico"
-    
+
     # Alcance
     estimated_scope_size: Optional[int] = Field(None, gt=0)
     scope_unit: str = "units"
-    
+
     # Requirements
     requirements: Optional[str] = None
-    
+
     @validator('budget_range_max')
     def validate_budget_range(cls, v, values):
         if v is not None and 'budget_range_min' in values and values['budget_range_min'] is not None:
@@ -311,35 +321,35 @@ class ProjectResponse(BaseModel):
     complexity_score: Optional[float]
     status: ProjectStatus
     priority: str
-    
+
     # Información calculada
     estimated_scope_size: Optional[int]
     scope_unit: str
     service_category: Optional[str]
     target_audience: Optional[str]
-    
+
     # Fechas
     proposal_deadline: Optional[datetime]
     service_start_date: Optional[datetime]
-    
+
     # Presupuesto
     budget_range_min: Optional[float]
     budget_range_max: Optional[float]
     currency: str
-    
+
     # Ubicación
     service_location: Optional[str]
     service_city: Optional[str]
-    
+
     # Análisis
     requirements: Optional[str]
     requirements_confidence: Optional[float]
     context_analysis: Dict[str, Any] = {}
-    
+
     # Metadatos
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -354,6 +364,7 @@ class RFXResponse(ProjectResponse):
 ```
 
 **2. Actualizar: `services/project_processor.py` (era rfx_processor.py)**
+
 ```python
 # Renombrar archivo y actualizar imports
 import logging
@@ -367,18 +378,18 @@ class ProjectProcessorService:
     Servicio generalizado para procesamiento de proyectos
     (anteriormente RFXProcessorService)
     """
-    
+
     def __init__(self):
         self.industry_prompts = {
             IndustryType.catering: "prompts/catering-extraction.txt",
-            IndustryType.construction: "prompts/construction-extraction.txt", 
+            IndustryType.construction: "prompts/construction-extraction.txt",
             IndustryType.it_services: "prompts/it-services-extraction.txt",
             IndustryType.general: "prompts/general-extraction.txt"
         }
-    
+
     async def process_project_documents(
-        self, 
-        project_input: ProjectInput, 
+        self,
+        project_input: ProjectInput,
         files: List[Any]
     ) -> ProjectResponse:
         """
@@ -386,19 +397,19 @@ class ProjectProcessorService:
         """
         logger.info(f"🚀 Processing project: {project_input.title}")
         logger.info(f"📊 Industry: {project_input.industry_type}")
-        
+
         # 1. Análisis contextual automático
         context_analysis = await self._analyze_project_context(project_input)
-        
+
         # 2. Seleccionar estrategia de extracción según industria
         extraction_strategy = self._get_extraction_strategy(project_input.industry_type)
-        
+
         # 3. Procesar documentos con contexto
         extracted_data = await self._extract_with_context(files, extraction_strategy, context_analysis)
-        
+
         # 4. Generar respuesta estructurada
         return self._build_project_response(project_input, extracted_data, context_analysis)
-    
+
     async def _analyze_project_context(self, project_input: ProjectInput) -> Dict[str, Any]:
         """Análisis contextual automático del proyecto"""
         context = {
@@ -407,10 +418,10 @@ class ProjectProcessorService:
             "recommended_fields": self._get_recommended_fields(project_input.industry_type),
             "analysis_timestamp": datetime.utcnow().isoformat()
         }
-        
+
         logger.info(f"🧠 Context analysis completed for industry: {project_input.industry_type}")
         return context
-    
+
     def _get_extraction_strategy(self, industry: IndustryType) -> Dict[str, Any]:
         """Obtiene estrategia de extracción específica por industria"""
         strategies = {
@@ -421,7 +432,7 @@ class ProjectProcessorService:
             },
             IndustryType.construction: {
                 "focus_fields": ["materials", "labor_requirements", "timeline"],
-                "scope_unit": "square_meters", 
+                "scope_unit": "square_meters",
                 "critical_dates": ["project_start_date", "project_end_date"]
             },
             IndustryType.it_services: {
@@ -430,7 +441,7 @@ class ProjectProcessorService:
                 "critical_dates": ["project_start_date", "delivery_deadline"]
             }
         }
-        
+
         return strategies.get(industry, strategies[IndustryType.general])
 
 # Mantener backward compatibility
@@ -438,19 +449,22 @@ RFXProcessorService = ProjectProcessorService
 ```
 
 #### **📄 Deliverables Día 3:**
+
 - ✅ `models/project_models.py` creado
-- ✅ `services/project_processor.py` actualizado  
+- ✅ `services/project_processor.py` actualizado
 - ✅ Backward compatibility mantenida
 - ✅ Tests unitarios básicos funcionando
 
 ---
 
-### **DÍA 4: ACTUALIZAR APIs** 🌐  
+### **DÍA 4: ACTUALIZAR APIs** 🌐
+
 **Tiempo estimado:** 6-8 horas
 
 #### **🔧 Archivos a Modificar:**
 
 **1. Nuevo archivo: `api/projects.py`**
+
 ```python
 from flask import Blueprint, request, jsonify
 from ..services.project_processor import ProjectProcessorService
@@ -471,31 +485,31 @@ def create_project():
         # Obtener datos del request
         data = request.get_json()
         files = request.files.getlist('files') if request.files else []
-        
+
         # Validar input
         project_input = ProjectInput(**data)
-        
+
         # Procesar proyecto
         processor = ProjectProcessorService()
         project_response = await processor.process_project_documents(project_input, files)
-        
+
         # Guardar en BD
         db = get_db_client()
         project_id = await _save_project_to_db(db, project_response)
-        
+
         logger.info(f"✅ Project created successfully: {project_id}")
-        
+
         return jsonify({
             "status": "success",
             "message": "Project created and processed successfully",
             "data": project_response.dict(),
             "project_id": str(project_id)
         }), 201
-        
+
     except Exception as e:
         logger.error(f"❌ Error creating project: {str(e)}")
         return jsonify({
-            "status": "error", 
+            "status": "error",
             "message": str(e)
         }), 400
 
@@ -504,21 +518,21 @@ def get_project(project_id):
     """Obtener proyecto específico"""
     try:
         db = get_db_client()
-        
+
         # Query con nueva tabla
         result = db.table('projects').select('*').eq('id', project_id).execute()
-        
+
         if not result.data:
             return jsonify({"status": "error", "message": "Project not found"}), 404
-            
+
         project_data = result.data[0]
         project_response = ProjectResponse(**project_data)
-        
+
         return jsonify({
             "status": "success",
             "data": project_response.dict()
         })
-        
+
     except Exception as e:
         logger.error(f"❌ Error getting project: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -530,21 +544,21 @@ def analyze_project_context(project_id):
     """
     try:
         db = get_db_client()
-        
+
         # Obtener proyecto
         project_result = db.table('projects').select('*').eq('id', project_id).execute()
         if not project_result.data:
             return jsonify({"status": "error", "message": "Project not found"}), 404
-            
+
         project = project_result.data[0]
-        
+
         # Análisis contextual con IA
         processor = ProjectProcessorService()
         context_analysis = await processor._analyze_project_context(ProjectInput(**project))
-        
+
         # Guardar análisis
         await _save_context_analysis(db, project_id, context_analysis)
-        
+
         return jsonify({
             "status": "success",
             "message": "Context analysis completed",
@@ -554,20 +568,20 @@ def analyze_project_context(project_id):
                 "recommendations": _generate_recommendations(context_analysis)
             }
         })
-        
+
     except Exception as e:
         logger.error(f"❌ Error in context analysis: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # 🔄 MANTENER BACKWARD COMPATIBILITY
-@projects_bp.route('/api/rfx', methods=['POST']) 
+@projects_bp.route('/api/rfx', methods=['POST'])
 def create_rfx_legacy():
     """Legacy endpoint - redirige a create_project"""
     return create_project()
 
 @projects_bp.route('/api/rfx/<rfx_id>', methods=['GET'])
 def get_rfx_legacy(rfx_id):
-    """Legacy endpoint - redirige a get_project"""  
+    """Legacy endpoint - redirige a get_project"""
     return get_project(rfx_id)
 
 async def _save_project_to_db(db, project_response: ProjectResponse) -> str:
@@ -588,7 +602,7 @@ async def _save_context_analysis(db, project_id: str, analysis: dict):
 def _generate_recommendations(context_analysis: dict) -> dict:
     """Generar recomendaciones basadas en análisis contextual"""
     industry = context_analysis.get("industry_type", "general")
-    
+
     recommendations = {
         "catering": {
             "key_questions": ["¿Restricciones dietéticas?", "¿Estilo de servicio?", "¿Equipamiento incluido?"],
@@ -602,23 +616,25 @@ def _generate_recommendations(context_analysis: dict) -> dict:
         },
         "it_services": {
             "key_questions": ["¿Stack tecnológico?", "¿Metodología?", "¿Equipo dedicado?"],
-            "pricing_strategy": "time_and_materials", 
+            "pricing_strategy": "time_and_materials",
             "critical_factors": ["technology_requirements", "team_size", "timeline"]
         }
     }
-    
+
     return recommendations.get(industry, recommendations["general"])
 ```
 
 #### **📄 Deliverables Día 4:**
+
 - ✅ `api/projects.py` creado
-- ✅ Endpoints legacy mantenidos  
+- ✅ Endpoints legacy mantenidos
 - ✅ Nueva funcionalidad de análisis contextual
 - ✅ Tests de API funcionando
 
 ---
 
 ### **DÍA 5: AGREGAR TABLAS DE IA CONTEXTUAL** 🧠
+
 **Tiempo estimado:** 6-8 horas
 
 #### **🔧 Crear 4 Tablas Nuevas:**
@@ -630,29 +646,29 @@ def _generate_recommendations(context_analysis: dict) -> dict:
 CREATE TABLE project_context_analysis (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    
+
     -- ANÁLISIS AUTOMÁTICO
     detected_industry industry_type_enum,
     detected_complexity DECIMAL(5,4) CHECK (detected_complexity >= 0 AND detected_complexity <= 1),
     detected_service_category TEXT,
     confidence_score DECIMAL(5,4) CHECK (confidence_score >= 0 AND confidence_score <= 1),
-    
+
     -- CONTEXTO INFERIDO
     market_context JSONB DEFAULT '{}',
     typical_scope_patterns JSONB DEFAULT '{}',
     risk_factors JSONB DEFAULT '[]',
-    
+
     -- RECOMENDACIONES
     recommended_pricing_strategy TEXT,
     suggested_questions JSONB DEFAULT '[]',
     critical_success_factors JSONB DEFAULT '[]',
-    
+
     -- METADATOS DE ANÁLISIS
     analysis_model TEXT DEFAULT 'gpt-4o',
     analysis_tokens_used INTEGER DEFAULT 0,
     analysis_timestamp TIMESTAMPTZ DEFAULT NOW(),
     analysis_version TEXT DEFAULT 'v1.0',
-    
+
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -661,37 +677,37 @@ CREATE TABLE project_context_analysis (
 CREATE TABLE workflow_steps (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    
+
     -- INFORMACIÓN DEL PASO
     step_number INTEGER NOT NULL,
     step_name TEXT NOT NULL,
     step_type TEXT NOT NULL CHECK (step_type IN ('data_extraction', 'context_analysis', 'human_review', 'pricing_config', 'proposal_generation')),
     status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'skipped', 'error')),
-    
+
     -- CONFIGURACIÓN DEL PASO
     step_config JSONB DEFAULT '{}',
     input_data JSONB DEFAULT '{}',
     output_data JSONB DEFAULT '{}',
-    
+
     -- IA Y AUTOMACIÓN
     requires_human_input BOOLEAN DEFAULT false,
     ai_confidence DECIMAL(5,4),
     auto_proceed BOOLEAN DEFAULT false,
-    
+
     -- TIEMPO Y EJECUCIÓN
     estimated_duration_minutes INTEGER,
     actual_duration_minutes INTEGER,
     started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
-    
+
     -- METADATOS
     error_message TEXT,
     retry_count INTEGER DEFAULT 0,
     assigned_to TEXT,
-    
+
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    
+
     -- CONSTRAINTS
     UNIQUE(project_id, step_number),
     CONSTRAINT valid_confidence CHECK (ai_confidence IS NULL OR (ai_confidence >= 0 AND ai_confidence <= 1))
@@ -700,43 +716,43 @@ CREATE TABLE workflow_steps (
 -- 3. CONFIGURACIONES POR INDUSTRIA
 CREATE TABLE industry_configurations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    
+
     -- IDENTIFICACIÓN
     industry_type industry_type_enum NOT NULL,
     configuration_name TEXT NOT NULL,
     is_default BOOLEAN DEFAULT false,
     is_active BOOLEAN DEFAULT true,
-    
+
     -- CONFIGURACIÓN DE EXTRACCIÓN
     extraction_prompt_template TEXT,
     focus_fields JSONB DEFAULT '[]',
     required_fields JSONB DEFAULT '[]',
     optional_fields JSONB DEFAULT '[]',
-    
+
     -- CONFIGURACIÓN DE PRICING
     default_pricing_strategy TEXT,
     typical_cost_structure JSONB DEFAULT '{}',
     coordination_default_rate DECIMAL(5,4) DEFAULT 0.18,
     cost_per_unit_enabled BOOLEAN DEFAULT true,
     default_scope_unit TEXT DEFAULT 'units',
-    
+
     -- CONFIGURACIÓN DE WORKFLOW
     workflow_template JSONB DEFAULT '[]',
     auto_approve_threshold DECIMAL(5,4) DEFAULT 0.85,
     human_review_required BOOLEAN DEFAULT true,
-    
+
     -- VALIDACIONES Y REGLAS
     validation_rules JSONB DEFAULT '{}',
     business_rules JSONB DEFAULT '{}',
-    
+
     -- METADATOS
     created_by TEXT,
     updated_by TEXT,
     version TEXT DEFAULT 'v1.0',
-    
+
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    
+
     -- CONSTRAINTS
     UNIQUE(industry_type, configuration_name),
     CONSTRAINT one_default_per_industry EXCLUDE (industry_type WITH =) WHERE (is_default = true)
@@ -746,35 +762,35 @@ CREATE TABLE industry_configurations (
 CREATE TABLE ai_analysis_history (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    
+
     -- INFORMACIÓN DE LA DECISIÓN
     analysis_type TEXT NOT NULL CHECK (analysis_type IN ('context_analysis', 'data_extraction', 'pricing_recommendation', 'workflow_routing')),
     decision_point TEXT NOT NULL,
     ai_recommendation TEXT,
     ai_confidence DECIMAL(5,4) CHECK (ai_confidence >= 0 AND ai_confidence <= 1),
-    
+
     -- CONTEXTO DE LA DECISIÓN
     input_data JSONB DEFAULT '{}',
     output_data JSONB DEFAULT '{}',
     reasoning TEXT,
     alternative_options JSONB DEFAULT '[]',
-    
+
     -- RESULTADO
     human_override BOOLEAN DEFAULT false,
     final_decision TEXT,
     decision_outcome TEXT,
     effectiveness_score DECIMAL(5,4), -- evaluación posterior
-    
+
     -- METADATOS TÉCNICOS
     model_used TEXT DEFAULT 'gpt-4o',
     tokens_used INTEGER DEFAULT 0,
     processing_time_ms INTEGER,
     api_cost_usd DECIMAL(8,4),
-    
+
     -- TRACKING
     decided_by TEXT,
     decision_timestamp TIMESTAMPTZ DEFAULT NOW(),
-    
+
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -798,7 +814,7 @@ CREATE INDEX idx_ai_analysis_history_confidence ON ai_analysis_history(ai_confid
 
 -- VISTAS ÚTILES
 CREATE VIEW active_project_workflows AS
-SELECT 
+SELECT
     p.id as project_id,
     p.title,
     p.industry_type,
@@ -813,7 +829,7 @@ WHERE p.status IN ('in_progress', 'draft')
 ORDER BY p.created_at DESC, ws.step_number;
 
 CREATE VIEW project_context_summary AS
-SELECT 
+SELECT
     p.id as project_id,
     p.title,
     p.industry_type,
@@ -826,11 +842,12 @@ SELECT
 FROM projects p
 LEFT JOIN project_context_analysis pca ON p.id = pca.project_id
 LEFT JOIN workflow_steps ws ON p.id = ws.project_id
-GROUP BY p.id, p.title, p.industry_type, p.service_category, 
+GROUP BY p.id, p.title, p.industry_type, p.service_category,
          pca.detected_complexity, pca.confidence_score, pca.recommended_pricing_strategy;
 ```
 
 #### **📄 Deliverables Día 5:**
+
 - ✅ 4 tablas nuevas creadas y pobladas
 - ✅ Índices y vistas optimizados
 - ✅ Configuraciones por defecto insertadas
@@ -839,6 +856,7 @@ GROUP BY p.id, p.title, p.industry_type, p.service_category,
 ---
 
 ### **DÍA 6: SERVICIOS DE IA CONTEXTUAL** 🤖
+
 **Tiempo estimado:** 8 horas
 
 #### **🔧 Nuevo archivo: `services/ai_context_service.py`**
@@ -858,33 +876,33 @@ class AIContextService:
     """
     Servicio de análisis contextual inteligente
     """
-    
+
     def __init__(self):
         self.openai_client = AsyncOpenAI()
         self.db = get_db_client()
         self.industry_prompts = self._load_industry_prompts()
-    
+
     async def analyze_project_context(
-        self, 
-        project: ProjectInput, 
+        self,
+        project: ProjectInput,
         documents_text: str = ""
     ) -> Dict[str, Any]:
         """
         Análisis contextual completo del proyecto
         """
         logger.info(f"🧠 Starting context analysis for project: {project.title}")
-        
+
         # 1. Análisis de industria y complejidad
         industry_analysis = await self._analyze_industry_context(project, documents_text)
-        
+
         # 2. Análisis de complejidad
         complexity_analysis = await self._analyze_complexity(project, documents_text)
-        
+
         # 3. Recomendaciones de estrategia
         strategy_recommendations = await self._generate_strategy_recommendations(
             industry_analysis, complexity_analysis
         )
-        
+
         # 4. Consolidar análisis
         context_analysis = {
             "industry_analysis": industry_analysis,
@@ -898,34 +916,34 @@ class AIContextService:
                 )
             }
         }
-        
+
         # 5. Guardar en BD
         await self._save_context_analysis(project.id if hasattr(project, 'id') else None, context_analysis)
-        
+
         logger.info(f"✅ Context analysis completed with confidence: {context_analysis['analysis_metadata']['confidence_score']}")
-        
+
         return context_analysis
-    
+
     async def _analyze_industry_context(
-        self, 
-        project: ProjectInput, 
+        self,
+        project: ProjectInput,
         documents_text: str
     ) -> Dict[str, Any]:
         """Análisis específico de industria"""
-        
+
         prompt = f"""
         Analiza este proyecto y determina:
-        
+
         INFORMACIÓN DEL PROYECTO:
         - Título: {project.title}
         - Descripción: {project.description or 'No proporcionada'}
         - Industria declarada: {project.industry_type.value}
         - Categoría de servicio: {project.service_category or 'No especificada'}
         - Ubicación: {project.service_location or 'No especificada'}
-        
+
         DOCUMENTOS ADJUNTOS:
         {documents_text[:2000] if documents_text else 'No hay documentos adjuntos'}
-        
+
         Responde en JSON con:
         {{
             "detected_industry": "industria_detectada",
@@ -940,7 +958,7 @@ class AIContextService:
             "reasoning": "explicación del análisis"
         }}
         """
-        
+
         try:
             response = await self.openai_client.chat.completions.create(
                 model="gpt-4o",
@@ -948,23 +966,23 @@ class AIContextService:
                 response_format={"type": "json_object"},
                 temperature=0.3
             )
-            
+
             result = json.loads(response.choices[0].message.content)
             logger.info(f"🎯 Industry detected: {result.get('detected_industry')} (confidence: {result.get('confidence_score')})")
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"❌ Error in industry analysis: {str(e)}")
             return self._get_fallback_industry_analysis(project)
-    
+
     async def _analyze_complexity(
-        self, 
-        project: ProjectInput, 
+        self,
+        project: ProjectInput,
         documents_text: str
     ) -> Dict[str, Any]:
         """Análisis de complejidad del proyecto"""
-        
+
         complexity_factors = {
             "scope_size": project.estimated_scope_size or 0,
             "budget_range": (project.budget_range_max or 0) - (project.budget_range_min or 0),
@@ -972,10 +990,10 @@ class AIContextService:
             "location_complexity": self._assess_location_complexity(project),
             "requirements_complexity": len(project.requirements.split('.')) if project.requirements else 0
         }
-        
+
         # Calcular score de complejidad
         complexity_score = self._calculate_complexity_score(complexity_factors)
-        
+
         return {
             "complexity_score": complexity_score,
             "complexity_level": self._get_complexity_level(complexity_score),
@@ -983,35 +1001,35 @@ class AIContextService:
             "risk_assessment": self._assess_project_risks(project, complexity_score),
             "recommended_approach": self._recommend_approach(complexity_score)
         }
-    
+
     async def generate_workflow_steps(
-        self, 
-        project_id: str, 
+        self,
+        project_id: str,
         context_analysis: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
         Genera pasos de workflow inteligente basado en contexto
         """
         logger.info(f"🔄 Generating intelligent workflow for project: {project_id}")
-        
+
         industry = context_analysis.get("industry_analysis", {}).get("detected_industry", "general")
         complexity = context_analysis.get("complexity_analysis", {}).get("complexity_score", 0.5)
-        
+
         # Obtener template base por industria
         workflow_template = await self._get_industry_workflow_template(industry)
-        
+
         # Ajustar steps según complejidad
         workflow_steps = self._adjust_workflow_for_complexity(workflow_template, complexity)
-        
+
         # Guardar steps en BD
         await self._save_workflow_steps(project_id, workflow_steps)
-        
+
         logger.info(f"✅ Generated {len(workflow_steps)} workflow steps")
         return workflow_steps
-    
+
     async def _get_industry_workflow_template(self, industry: str) -> List[Dict[str, Any]]:
         """Obtiene template de workflow por industria"""
-        
+
         # Buscar en configuraciones de industria
         config_result = self.db.table('industry_configurations')\
             .select('workflow_template')\
@@ -1019,10 +1037,10 @@ class AIContextService:
             .eq('is_default', True)\
             .eq('is_active', True)\
             .execute()
-        
+
         if config_result.data:
             return config_result.data[0]['workflow_template']
-        
+
         # Fallback: workflow genérico
         return [
             {
@@ -1035,7 +1053,7 @@ class AIContextService:
             },
             {
                 "step_number": 2,
-                "step_name": "Context Analysis", 
+                "step_name": "Context Analysis",
                 "step_type": "context_analysis",
                 "requires_human_input": False,
                 "auto_proceed": True,
@@ -1044,7 +1062,7 @@ class AIContextService:
             {
                 "step_number": 3,
                 "step_name": "Human Review",
-                "step_type": "human_review", 
+                "step_type": "human_review",
                 "requires_human_input": True,
                 "auto_proceed": False,
                 "estimated_duration_minutes": 15
@@ -1066,7 +1084,7 @@ class AIContextService:
                 "estimated_duration_minutes": 2
             }
         ]
-    
+
     def _calculate_complexity_score(self, factors: Dict[str, Any]) -> float:
         """Calcula score de complejidad (0-1)"""
         weights = {
@@ -1076,29 +1094,29 @@ class AIContextService:
             "location_complexity": 0.15,
             "requirements_complexity": 0.20
         }
-        
+
         normalized_factors = {}
-        
+
         # Normalizar cada factor a 0-1
         normalized_factors["scope_size"] = min(factors["scope_size"] / 1000, 1.0)
         normalized_factors["budget_range"] = min(factors["budget_range"] / 100000, 1.0)
         normalized_factors["timeline_pressure"] = factors["timeline_pressure"]
         normalized_factors["location_complexity"] = factors["location_complexity"]
         normalized_factors["requirements_complexity"] = min(factors["requirements_complexity"] / 20, 1.0)
-        
+
         # Calcular score ponderado
         complexity_score = sum(
-            normalized_factors[factor] * weights[factor] 
+            normalized_factors[factor] * weights[factor]
             for factor in weights.keys()
         )
-        
+
         return round(complexity_score, 4)
-    
+
     async def _save_context_analysis(self, project_id: str, analysis: Dict[str, Any]):
         """Guardar análisis contextual en BD"""
         if not project_id:
             return
-            
+
         analysis_record = {
             "project_id": project_id,
             "detected_industry": analysis["industry_analysis"].get("detected_industry"),
@@ -1109,7 +1127,7 @@ class AIContextService:
             "analysis_model": "gpt-4o",
             "analysis_timestamp": analysis["analysis_metadata"]["analysis_timestamp"]
         }
-        
+
         self.db.table('project_context_analysis').insert(analysis_record).execute()
         logger.info(f"💾 Context analysis saved for project: {project_id}")
 
@@ -1118,19 +1136,22 @@ ai_context_service = AIContextService()
 ```
 
 #### **📄 Deliverables Día 6:**
+
 - ✅ Servicio de IA contextual funcionando
-- ✅ Análisis automático de industria y complejidad  
+- ✅ Análisis automático de industria y complejidad
 - ✅ Generación de workflow inteligente
 - ✅ Integración con OpenAI GPT-4o
 
 ---
 
 ### **DÍA 7: TESTING E INTEGRACIÓN FINAL** ✅
+
 **Tiempo estimado:** 6-8 horas
 
 #### **🔧 Testing Comprehensivo:**
 
 **1. Tests de Migración de Datos**
+
 ```python
 # tests/test_migration.py
 import pytest
@@ -1139,13 +1160,13 @@ from ..core.database import get_db_client
 def test_data_migration_integrity():
     """Verificar que todos los datos migraron correctamente"""
     db = get_db_client()
-    
+
     # Contar registros originales vs migrados
     rfx_count = db.table('rfx_v2').select('id', count='exact').execute().count
     projects_count = db.table('projects').select('id', count='exact').execute().count
-    
+
     assert rfx_count == projects_count, f"Migration mismatch: {rfx_count} vs {projects_count}"
-    
+
     # Verificar campos críticos
     sample_project = db.table('projects').select('*').limit(1).execute().data[0]
     assert sample_project['title'] is not None
@@ -1157,7 +1178,7 @@ def test_backward_compatibility():
     # Test legacy RFX endpoint
     response = client.get('/api/rfx/test-project-id')
     assert response.status_code == 200
-    
+
     # Test datos mapeados correctamente
     data = response.json()['data']
     assert 'title' in data
@@ -1168,7 +1189,7 @@ def test_new_functionality():
     # Test análisis contextual
     response = client.post('/api/projects/test-id/analyze-context')
     assert response.status_code == 200
-    
+
     analysis = response.json()['data']['context_analysis']
     assert 'industry_analysis' in analysis
     assert 'complexity_analysis' in analysis
@@ -1176,6 +1197,7 @@ def test_new_functionality():
 ```
 
 **2. Tests de Performance**
+
 ```python
 # tests/test_performance.py
 import time
@@ -1184,17 +1206,17 @@ import pytest
 def test_context_analysis_performance():
     """Verificar que análisis contextual es rápido < 10s"""
     start_time = time.time()
-    
+
     # Ejecutar análisis contextual
     response = client.post('/api/projects/test-id/analyze-context', json={
         "title": "Test Project",
         "industry_type": "catering",
         "description": "Large corporate event catering"
     })
-    
+
     end_time = time.time()
     duration = end_time - start_time
-    
+
     assert response.status_code == 200
     assert duration < 10, f"Context analysis too slow: {duration}s"
 
@@ -1202,17 +1224,18 @@ def test_database_queries_optimized():
     """Verificar que queries están optimizadas"""
     # Test query de proyectos con joins
     start_time = time.time()
-    
+
     response = client.get('/api/projects?limit=50')
-    
+
     end_time = time.time()
     duration = end_time - start_time
-    
+
     assert response.status_code == 200
     assert duration < 2, f"Project list query too slow: {duration}s"
 ```
 
 **3. Script de Validación Final**
+
 ```bash
 #!/bin/bash
 # validate_migration.sh
@@ -1249,6 +1272,7 @@ echo "🎉 Validation complete!"
 ```
 
 #### **📄 Deliverables Día 7:**
+
 - ✅ Suite completa de tests funcionando
 - ✅ Performance verificado (< 10s análisis, < 2s queries)
 - ✅ Backward compatibility 100% funcionando
@@ -1260,6 +1284,7 @@ echo "🎉 Validation complete!"
 ## 🎯 CHECKLIST FINAL DE ENTREGA
 
 ### **✅ Base de Datos:**
+
 - [ ] Backup original verificado
 - [ ] Esquema migrado: rfx_v2 → projects
 - [ ] 4 tablas nuevas creadas con datos
@@ -1267,6 +1292,7 @@ echo "🎉 Validation complete!"
 - [ ] Vistas útiles creadas
 
 ### **✅ Backend:**
+
 - [ ] Modelos Pydantic actualizados
 - [ ] APIs generalizadas funcionando
 - [ ] Backward compatibility mantenida
@@ -1274,6 +1300,7 @@ echo "🎉 Validation complete!"
 - [ ] Workflow inteligente implementado
 
 ### **✅ Testing:**
+
 - [ ] Migration integrity tests PASS
 - [ ] API endpoints tests PASS
 - [ ] Performance tests PASS
@@ -1281,6 +1308,7 @@ echo "🎉 Validation complete!"
 - [ ] Backward compatibility tests PASS
 
 ### **✅ Documentación:**
+
 - [ ] Plan de rollback documentado
 - [ ] APIs nuevas documentadas
 - [ ] Guía de migración para frontend
@@ -1311,7 +1339,7 @@ python backend/app.py
 Al final de los 7 días tendrás:
 
 - ✅ **Sistema RFX → SaaS General** completamente funcional
-- ✅ **IA Contextual** analizando proyectos automáticamente  
+- ✅ **IA Contextual** analizando proyectos automáticamente
 - ✅ **Workflow Inteligente** guiando el proceso
 - ✅ **Backward Compatibility** para transición suave
 - ✅ **Performance optimizado** y escalable

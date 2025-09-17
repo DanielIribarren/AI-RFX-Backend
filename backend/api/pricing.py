@@ -1,97 +1,143 @@
 """
-💰 Pricing Configuration API - Endpoints para configuración de pricing
-Permite al usuario configurar coordinación, costo por persona y otras opciones
+💰 Pricing Configuration API - Modern pricing management system
+Aligned with budy-ai-schema.sql (pricing_configurations table)
+Supports both new project-based and legacy RFX-based pricing
 """
 from flask import Blueprint, request, jsonify
 from werkzeug.exceptions import BadRequest
 from pydantic import ValidationError
 import logging
 from datetime import datetime
+from typing import Optional, Dict, Any
+from uuid import UUID
 
+# Updated imports for new schema
 from backend.models.pricing_models import (
-    PricingConfigurationRequest, PricingConfigurationResponse,
-    PricingCalculation
+    PricingConfigurationModel, PricingCalculationModel, PricingPresetModel,
+    # Legacy aliases for backward compatibility
+    PricingConfigurationRequest, PricingConfigurationResponse, PricingCalculation,
+    # Helper functions
+    map_legacy_pricing_request, get_default_presets
 )
-from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
 from backend.core.database import get_database_client
 
 logger = logging.getLogger(__name__)
 
-# Create blueprint
+# Create blueprint with enhanced functionality
 pricing_bp = Blueprint("pricing_api", __name__, url_prefix="/api/pricing")
 
 
-@pricing_bp.route("/config/<rfx_id>", methods=["GET"])
-def get_pricing_configuration(rfx_id: str):
+@pricing_bp.route("/config/<project_id>", methods=["GET"])
+def get_pricing_configuration(project_id: str):
     """
-    📋 Obtener configuración de pricing para un RFX
+    📋 Get pricing configuration for a project
+    Modern endpoint using pricing_configurations table with legacy RFX support
     """
     try:
-        logger.info(f"🔍 Getting pricing configuration for RFX: {rfx_id}")
+        logger.info(f"🔍 Getting pricing configuration for project: {project_id}")
         
-        # 🧠 Smart RFX lookup: Try UUID first, then search by name
         db_client = get_database_client()
-        rfx_record = db_client.find_rfx_by_identifier(rfx_id)
         
-        if not rfx_record:
-            logger.error(f"❌ RFX not found for identifier: {rfx_id}")
+        # Smart lookup: Try new projects table first, then fall back to RFX
+        project_record = None
+        if hasattr(db_client, 'get_project_by_id'):
+            project_record = db_client.get_project_by_id(project_id)
+        
+        # Fallback to legacy RFX lookup
+        if not project_record:
+            if hasattr(db_client, 'find_rfx_by_identifier'):
+                project_record = db_client.find_rfx_by_identifier(project_id)
+                logger.info(f"📚 Using legacy RFX lookup for {project_id}")
+            elif hasattr(db_client, 'get_rfx_by_id'):
+                project_record = db_client.get_rfx_by_id(project_id)
+                logger.info(f"📚 Using legacy RFX direct lookup for {project_id}")
+        
+        if not project_record:
+            logger.error(f"❌ Project/RFX not found for identifier: {project_id}")
             return jsonify({
                 "status": "error",
-                "message": f"RFX not found for identifier: {rfx_id}",
-                "error": "rfx_not_found",
-                "help": "Provide either a valid UUID or the exact requester/company name"
+                "message": f"Project not found for identifier: {project_id}",
+                "error": "project_not_found",
+                "help": "Provide a valid project ID or RFX ID"
             }), 404
         
-        # Extract the actual UUID for subsequent operations
-        actual_rfx_id = str(rfx_record["id"])
+        # Extract the actual UUID
+        actual_project_id = str(project_record["id"])
         
-        # Log the successful lookup
-        try:
-            import uuid as _uuid
-            _ = _uuid.UUID(rfx_id)
-            logger.info(f"✅ Direct UUID lookup successful: {rfx_id}")
-        except (ValueError, TypeError):
-            logger.info(f"✅ Smart lookup successful: '{rfx_id}' → RFX ID: {actual_rfx_id}")
-            logger.info(f"📋 Found RFX: {rfx_record.get('title', 'Unknown')} for {rfx_record.get('requesters', {}).get('name', 'Unknown')} at {rfx_record.get('companies', {}).get('name', 'Unknown')}")
+        # Get pricing configuration from new table
+        pricing_config = None
+        if hasattr(db_client, 'get_pricing_configuration_by_project'):
+            pricing_config = db_client.get_pricing_configuration_by_project(actual_project_id)
         
-        # Use the actual UUID for pricing service
-        pricing_service = PricingConfigurationServiceV2()
-        config = pricing_service.get_rfx_pricing_configuration(actual_rfx_id)
+        # Fallback to legacy pricing service
+        if not pricing_config:
+            try:
+                from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
+                pricing_service = PricingConfigurationServiceV2()
+                legacy_config = pricing_service.get_rfx_pricing_configuration(actual_project_id)
+                
+                if legacy_config:
+                    # Convert legacy config to new format
+                    pricing_config = {
+                        "id": None,
+                        "project_id": actual_project_id,
+                        "pricing_model": "fixed_price",
+                        "coordination_enabled": legacy_config.has_coordination(),
+                        "coordination_rate": legacy_config.get_coordination_rate(),
+                        "cost_per_person_enabled": legacy_config.has_cost_per_person(),
+                        "headcount": legacy_config.get_headcount(),
+                        "tax_enabled": legacy_config.taxes and legacy_config.taxes.is_enabled if hasattr(legacy_config, 'taxes') else False,
+                        "tax_rate": legacy_config.taxes.config_value.tax_rate if hasattr(legacy_config, 'taxes') and legacy_config.taxes else None,
+                        "is_active": True,
+                        "updated_at": legacy_config.updated_at if hasattr(legacy_config, 'updated_at') else None
+                    }
+                    logger.info(f"📚 Using legacy pricing configuration for {actual_project_id}")
+            except ImportError:
+                logger.warning("⚠️ Legacy pricing service not available")
         
-        if not config:
+        if not pricing_config:
             # Return default configuration structure
             response = {
                 "status": "success",
                 "message": "No pricing configuration found, returning defaults",
                 "data": {
-                    "rfx_id": actual_rfx_id,
+                    "project_id": actual_project_id,
+                    "rfx_id": actual_project_id,  # Legacy compatibility
                     "coordination_enabled": False,
-                    "coordination_rate": 0.18,
+                    "coordination_rate": 0.15,
                     "cost_per_person_enabled": False,
                     "headcount": None,
-                    "taxes_enabled": False,
+                    "tax_enabled": False,
+                    "tax_rate": None,
                     "has_configuration": False
                 }
             }
             return jsonify(response), 200
         
-        # Get currency from RFX record  
-        rfx_currency = rfx_record.get("currency", "USD")
+        # Get currency from project record  
+        project_currency = project_record.get("currency", "USD")
         
-        # Convert to response format
+        # Convert to response format (supporting both new and legacy fields)
         response_data = {
-            "rfx_id": str(config.rfx_id),
-            "currency": rfx_currency,  # ✅ Incluir moneda del RFX
-            "coordination_enabled": config.has_coordination(),
-            "coordination_rate": config.get_coordination_rate(),
-            "cost_per_person_enabled": config.has_cost_per_person(),
-            "headcount": config.get_headcount(),
-            "taxes_enabled": config.taxes and config.taxes.is_enabled if config.taxes else False,
-            "tax_rate": config.taxes.config_value.tax_rate if config.taxes and config.taxes.is_enabled else None,
-            "tax_type": config.taxes.config_value.tax_type if config.taxes and config.taxes.is_enabled else None,
+            "project_id": actual_project_id,
+            "rfx_id": actual_project_id,  # Legacy compatibility
+            "currency": project_currency,
+            "pricing_model": pricing_config.get("pricing_model", "fixed_price"),
+            "coordination_enabled": pricing_config.get("coordination_enabled", False),
+            "coordination_rate": pricing_config.get("coordination_rate", 0.0),
+            "coordination_type": pricing_config.get("coordination_type", "percentage"),
+            "cost_per_person_enabled": pricing_config.get("cost_per_person_enabled", False),
+            "headcount": pricing_config.get("headcount"),
+            "tax_enabled": pricing_config.get("tax_enabled", False),
+            "tax_rate": pricing_config.get("tax_rate"),
+            "tax_type": pricing_config.get("tax_type", "percentage"),
+            "discount_enabled": pricing_config.get("discount_enabled", False),
+            "discount_rate": pricing_config.get("discount_rate"),
+            "margin_target": pricing_config.get("margin_target"),
+            "minimum_margin": pricing_config.get("minimum_margin"),
             "has_configuration": True,
-            "last_updated": config.updated_at.isoformat() if config.updated_at else None,
-            "enabled_configs": [cfg.config_type for cfg in config.get_enabled_configs()]
+            "last_updated": pricing_config.get("updated_at"),
+            "is_active": pricing_config.get("is_active", True)
         }
         
         response = {
@@ -100,11 +146,11 @@ def get_pricing_configuration(rfx_id: str):
             "data": response_data
         }
         
-        logger.info(f"✅ Pricing configuration retrieved for RFX {actual_rfx_id}")
+        logger.info(f"✅ Pricing configuration retrieved for project {actual_project_id}")
         return jsonify(response), 200
         
     except Exception as e:
-        logger.error(f"❌ Error getting pricing configuration for RFX {rfx_id}: {e}")
+        logger.error(f"❌ Error getting pricing configuration for project {project_id}: {e}")
         return jsonify({
             "status": "error",
             "message": "Failed to retrieve pricing configuration",
@@ -112,13 +158,14 @@ def get_pricing_configuration(rfx_id: str):
         }), 500
 
 
-@pricing_bp.route("/config/<rfx_id>", methods=["PUT"])
-def update_pricing_configuration(rfx_id: str):
+@pricing_bp.route("/config/<project_id>", methods=["PUT"])
+def update_pricing_configuration(project_id: str):
     """
-    ⚙️ Actualizar configuración de pricing para un RFX
+    ⚙️ Update pricing configuration for a project
+    Modern endpoint using pricing_configurations table with legacy RFX support
     """
     try:
-        logger.info(f"🔄 Updating pricing configuration for RFX: {rfx_id}")
+        logger.info(f"🔄 Updating pricing configuration for project: {project_id}")
         
         # Validate request format
         if not request.is_json:
@@ -129,58 +176,103 @@ def update_pricing_configuration(rfx_id: str):
             }), 400
         
         data = request.get_json()
-        # Log de payload entrante (sanitizado)
-        try:
-            logger.info(f"📡 Received pricing update payload for {rfx_id}: "
-                        f"keys={list(data.keys()) if isinstance(data, dict) else type(data)}")
-        except Exception:
-            pass
+        logger.info(f"📡 Received pricing update payload for {project_id}: "
+                    f"keys={list(data.keys()) if isinstance(data, dict) else type(data)}")
         
-        # 🧠 Smart RFX lookup: Try UUID first, then search by name
         db_client = get_database_client()
-        rfx_record = db_client.find_rfx_by_identifier(rfx_id)
         
-        if not rfx_record:
-            logger.error(f"❌ RFX not found for identifier: {rfx_id}")
+        # Smart lookup: Try new projects table first, then fall back to RFX
+        project_record = None
+        if hasattr(db_client, 'get_project_by_id'):
+            project_record = db_client.get_project_by_id(project_id)
+        
+        # Fallback to legacy RFX lookup
+        if not project_record:
+            if hasattr(db_client, 'find_rfx_by_identifier'):
+                project_record = db_client.find_rfx_by_identifier(project_id)
+                logger.info(f"📚 Using legacy RFX lookup for update: {project_id}")
+            elif hasattr(db_client, 'get_rfx_by_id'):
+                project_record = db_client.get_rfx_by_id(project_id)
+        
+        if not project_record:
+            logger.error(f"❌ Project/RFX not found for identifier: {project_id}")
             return jsonify({
                 "status": "error",
-                "message": f"RFX not found for identifier: {rfx_id}",
-                "error": "rfx_not_found",
-                "help": "Provide either a valid UUID or the exact requester/company name"
+                "message": f"Project not found for identifier: {project_id}",
+                "error": "project_not_found",
+                "help": "Provide a valid project ID or RFX ID"
             }), 404
         
-        # Extract the actual UUID for subsequent operations
-        actual_rfx_id = str(rfx_record["id"])
+        # Extract the actual UUID
+        actual_project_id = str(project_record["id"])
         
-        # If the identifier was not a UUID, log the successful lookup
+        # Handle legacy data format
+        if 'rfx_id' in data:
+            logger.info("🔄 Converting legacy pricing request to project format")
+            data = map_legacy_pricing_request(data)
+        
+        # Add project_id to request data
+        data["project_id"] = actual_project_id
+        
+        # Validate request using new Pydantic model
         try:
-            import uuid as _uuid
-            _ = _uuid.UUID(rfx_id)
-            logger.info(f"✅ Direct UUID lookup successful: {rfx_id}")
-        except (ValueError, TypeError):
-            logger.info(f"✅ Smart lookup successful: '{rfx_id}' → RFX ID: {actual_rfx_id}")
-            logger.info(f"📋 Found RFX: {rfx_record.get('title', 'Unknown')} for {rfx_record.get('requesters', {}).get('name', 'Unknown')} at {rfx_record.get('companies', {}).get('name', 'Unknown')}")
-        
-        # Update rfx_id to use the actual UUID for the rest of the function
-        rfx_id = actual_rfx_id
-
-        # Add rfx_id to request data
-        data["rfx_id"] = rfx_id
-        
-        # Validate request using Pydantic
-        try:
-            pricing_request = PricingConfigurationRequest(**data)
+            pricing_config = PricingConfigurationModel(**data)
         except ValidationError as e:
             logger.error(f"❌ Validation error for pricing configuration: {e}")
-            return jsonify({
-                "status": "error",
-                "message": "Invalid request data",
-                "error": str(e)
-            }), 400
+            
+            # Try legacy validation as fallback
+            try:
+                pricing_request = PricingConfigurationRequest(**data)
+                # Convert legacy request to new format
+                pricing_config = PricingConfigurationModel(
+                    project_id=actual_project_id,
+                    pricing_model=data.get("pricing_model", "fixed_price"),
+                    coordination_enabled=pricing_request.coordination_enabled,
+                    coordination_rate=pricing_request.coordination_rate or 0.0,
+                    headcount=pricing_request.headcount,
+                    tax_enabled=pricing_request.taxes_enabled,
+                    tax_rate=pricing_request.tax_rate,
+                    is_active=True
+                )
+                logger.info("🔄 Using legacy pricing request format")
+            except ValidationError as legacy_e:
+                return jsonify({
+                    "status": "error",
+                    "message": "Invalid request data",
+                    "error": f"New format: {str(e)}, Legacy format: {str(legacy_e)}"
+                }), 400
         
-        # Update configuration
-        pricing_service = PricingConfigurationServiceV2()
-        updated_config = pricing_service.update_rfx_pricing_from_request(pricing_request)
+        # Save/update configuration in new table
+        updated_config = None
+        if hasattr(db_client, 'upsert_pricing_configuration'):
+            updated_config = db_client.upsert_pricing_configuration(pricing_config.model_dump())
+        
+        # Fallback to legacy service
+        if not updated_config:
+            try:
+                from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
+                pricing_service = PricingConfigurationServiceV2()
+                
+                # Create legacy request format
+                legacy_data = {
+                    "rfx_id": actual_project_id,
+                    "coordination_enabled": pricing_config.coordination_enabled,
+                    "coordination_rate": pricing_config.coordination_rate,
+                    "cost_per_person_enabled": pricing_config.headcount is not None,
+                    "headcount": pricing_config.headcount,
+                    "taxes_enabled": pricing_config.tax_enabled,
+                    "tax_rate": pricing_config.tax_rate
+                }
+                legacy_request = PricingConfigurationRequest(**legacy_data)
+                
+                updated_config = pricing_service.update_rfx_pricing_from_request(legacy_request)
+                logger.info("📚 Using legacy pricing service for update")
+            except ImportError:
+                logger.error("❌ Neither new nor legacy pricing service available")
+                return jsonify({
+                    "status": "error",
+                    "message": "Pricing service not available"
+                }), 500
         
         if not updated_config:
             return jsonify({
@@ -189,19 +281,34 @@ def update_pricing_configuration(rfx_id: str):
                 "error": "Configuration update failed"
             }), 500
         
-        # Create response
-        response = PricingConfigurationResponse(
-            status="success",
-            message="Pricing configuration updated successfully",
-            data=updated_config,
-            timestamp=datetime.now()
-        )
+        # Create modern response format
+        response_data = {
+            "project_id": actual_project_id,
+            "rfx_id": actual_project_id,  # Legacy compatibility
+            "pricing_model": pricing_config.pricing_model,
+            "coordination_enabled": pricing_config.coordination_enabled,
+            "coordination_rate": pricing_config.coordination_rate,
+            "headcount": pricing_config.headcount,
+            "tax_enabled": pricing_config.tax_enabled,
+            "tax_rate": pricing_config.tax_rate,
+            "discount_enabled": pricing_config.discount_enabled,
+            "discount_rate": pricing_config.discount_rate,
+            "is_active": pricing_config.is_active,
+            "updated_at": datetime.now().isoformat()
+        }
         
-        logger.info(f"✅ Pricing configuration updated for RFX {rfx_id}")
-        return jsonify(response.model_dump()), 200
+        response = {
+            "status": "success",
+            "message": "Pricing configuration updated successfully",
+            "data": response_data,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        logger.info(f"✅ Pricing configuration updated for project {actual_project_id}")
+        return jsonify(response), 200
         
     except Exception as e:
-        logger.error(f"❌ Error updating pricing configuration for RFX {rfx_id}: {e}")
+        logger.error(f"❌ Error updating pricing configuration for project {project_id}: {e}")
         return jsonify({
             "status": "error",
             "message": "Failed to update pricing configuration",
@@ -209,13 +316,14 @@ def update_pricing_configuration(rfx_id: str):
         }), 500
 
 
-@pricing_bp.route("/calculate/<rfx_id>", methods=["POST"])
-def calculate_pricing(rfx_id: str):
+@pricing_bp.route("/calculate/<project_id>", methods=["POST"])
+def calculate_pricing(project_id: str):
     """
-    🧮 Calcular pricing total para un RFX aplicando configuraciones
+    🧮 Calculate pricing total for a project applying configurations
+    Modern endpoint using pricing_configurations table with legacy RFX support
     """
     try:
-        logger.info(f"🧮 Calculating pricing for RFX: {rfx_id}")
+        logger.info(f"🧮 Calculating pricing for project: {project_id}")
         
         # Validate request format
         if not request.is_json:
@@ -235,40 +343,86 @@ def calculate_pricing(rfx_id: str):
                 "error": "Invalid subtotal value"
             }), 400
         
-        # Calculate pricing
-        pricing_service = PricingConfigurationServiceV2()
-        calculation = pricing_service.calculate_pricing(rfx_id, float(base_subtotal))
-        
-        # Get currency from RFX for display
         db_client = get_database_client()
-        rfx_record = db_client.find_rfx_by_identifier(rfx_id)
-        rfx_currency = rfx_record.get("currency", "USD") if rfx_record else "USD"
+        
+        # Get project record for currency info
+        project_record = None
+        if hasattr(db_client, 'get_project_by_id'):
+            project_record = db_client.get_project_by_id(project_id)
+        
+        # Fallback to legacy RFX lookup
+        if not project_record and hasattr(db_client, 'find_rfx_by_identifier'):
+            project_record = db_client.find_rfx_by_identifier(project_id)
+        
+        project_currency = project_record.get("currency", "USD") if project_record else "USD"
+        
+        # Calculate pricing using modern approach
+        calculation = None
+        
+        # Try new pricing configuration approach
+        if hasattr(db_client, 'get_pricing_configuration_by_project'):
+            pricing_config = db_client.get_pricing_configuration_by_project(project_id)
+            if pricing_config:
+                # Use new PricingConfigurationModel to calculate
+                config_model = PricingConfigurationModel(**pricing_config)
+                calculation = PricingCalculationModel.calculate_from_config(
+                    config_model, float(base_subtotal)
+                )
+        
+        # Fallback to legacy pricing service
+        if not calculation:
+            try:
+                from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
+                pricing_service = PricingConfigurationServiceV2()
+                legacy_calculation = pricing_service.calculate_pricing(project_id, float(base_subtotal))
+                
+                # Convert legacy calculation to new format
+                calculation = PricingCalculationModel(
+                    subtotal=legacy_calculation.subtotal,
+                    coordination_enabled=legacy_calculation.coordination_enabled,
+                    coordination_amount=legacy_calculation.coordination_amount,
+                    coordination_rate=legacy_calculation.coordination_rate,
+                    tax_amount=legacy_calculation.tax_amount,
+                    total_cost=legacy_calculation.total_cost,
+                    cost_per_person=legacy_calculation.cost_per_person,
+                    applied_configs=legacy_calculation.applied_configs
+                )
+                logger.info("📚 Using legacy pricing service for calculation")
+            except ImportError:
+                # Basic calculation without configuration
+                calculation = PricingCalculationModel(
+                    subtotal=float(base_subtotal),
+                    total_cost=float(base_subtotal)
+                )
+                logger.warning("⚠️ No pricing service available, using basic calculation")
         
         # Create response
         response = {
             "status": "success",
             "message": "Pricing calculated successfully",
             "data": {
-                "rfx_id": rfx_id,
-                "currency": rfx_currency,  # ✅ Incluir moneda en cálculos
+                "project_id": project_id,
+                "rfx_id": project_id,  # Legacy compatibility
+                "currency": project_currency,
                 "input_subtotal": base_subtotal,
-                "calculation": calculation.model_dump(),
+                "calculation": calculation.model_dump() if hasattr(calculation, 'model_dump') else calculation,
                 "summary": {
                     "subtotal": calculation.subtotal,
-                    "coordination_amount": calculation.coordination_amount,
-                    "tax_amount": calculation.tax_amount,
+                    "coordination_amount": getattr(calculation, 'coordination_amount', 0.0),
+                    "tax_amount": getattr(calculation, 'tax_amount', 0.0),
+                    "discount_amount": getattr(calculation, 'discount_amount', 0.0),
                     "total_cost": calculation.total_cost,
-                    "cost_per_person": calculation.cost_per_person,
-                    "applied_configs": calculation.applied_configs
+                    "cost_per_person": getattr(calculation, 'cost_per_person', None),
+                    "applied_configs": getattr(calculation, 'applied_configs', [])
                 }
             }
         }
         
-        logger.info(f"✅ Pricing calculated for RFX {rfx_id}: ${calculation.total_cost:.2f}")
+        logger.info(f"✅ Pricing calculated for project {project_id}: ${calculation.total_cost:.2f}")
         return jsonify(response), 200
         
     except Exception as e:
-        logger.error(f"❌ Error calculating pricing for RFX {rfx_id}: {e}")
+        logger.error(f"❌ Error calculating pricing for project {project_id}: {e}")
         return jsonify({
             "status": "error",
             "message": "Failed to calculate pricing",
@@ -279,13 +433,14 @@ def calculate_pricing(rfx_id: str):
 @pricing_bp.route("/presets", methods=["GET"])
 def get_pricing_presets():
     """
-    📋 Obtener presets de configuración disponibles
+    📋 Get available pricing configuration presets
+    Modern endpoint using new PricingPresetModel with legacy fallback
     """
     try:
         logger.info("📋 Getting available pricing presets")
         
-        pricing_service = PricingConfigurationServiceV2()
-        presets = pricing_service.get_available_presets()
+        # Try modern approach first
+        presets = get_default_presets()
         
         # Convert to response format
         presets_data = []
@@ -295,16 +450,50 @@ def get_pricing_presets():
                 "name": preset.name,
                 "description": preset.description,
                 "preset_type": preset.preset_type,
+                "pricing_model": preset.pricing_model,
                 "coordination_enabled": preset.coordination_enabled,
                 "coordination_rate": preset.coordination_rate,
+                "coordination_type": preset.coordination_type,
                 "cost_per_person_enabled": preset.cost_per_person_enabled,
                 "default_headcount": preset.default_headcount,
-                "taxes_enabled": preset.taxes_enabled,
+                "tax_enabled": preset.tax_enabled,
                 "default_tax_rate": preset.default_tax_rate,
-                "default_tax_type": preset.default_tax_type,
+                "discount_enabled": preset.discount_enabled,
+                "default_discount_rate": preset.default_discount_rate,
+                "margin_target": preset.margin_target,
+                "minimum_margin": preset.minimum_margin,
                 "is_default": preset.is_default
             }
             presets_data.append(preset_data)
+        
+        # If no modern presets, try legacy service
+        if not presets_data:
+            try:
+                from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
+                pricing_service = PricingConfigurationServiceV2()
+                legacy_presets = pricing_service.get_available_presets()
+                
+                for preset in legacy_presets:
+                    preset_data = {
+                        "id": preset.name.lower().replace(" ", "_"),
+                        "name": preset.name,
+                        "description": preset.description,
+                        "preset_type": preset.preset_type,
+                        "pricing_model": "fixed_price",  # Default for legacy
+                        "coordination_enabled": preset.coordination_enabled,
+                        "coordination_rate": preset.coordination_rate,
+                        "coordination_type": "percentage",
+                        "cost_per_person_enabled": preset.cost_per_person_enabled,
+                        "default_headcount": preset.default_headcount,
+                        "tax_enabled": preset.taxes_enabled,
+                        "default_tax_rate": preset.default_tax_rate,
+                        "is_default": preset.is_default
+                    }
+                    presets_data.append(preset_data)
+                    
+                logger.info("📚 Using legacy pricing presets")
+            except ImportError:
+                logger.warning("⚠️ No pricing preset service available")
         
         response = {
             "status": "success",
@@ -324,31 +513,64 @@ def get_pricing_presets():
         }), 500
 
 
-@pricing_bp.route("/summary/<rfx_id>", methods=["GET"])
-def get_pricing_summary(rfx_id: str):
+@pricing_bp.route("/summary/<project_id>", methods=["GET"])
+def get_pricing_summary(project_id: str):
     """
-    📊 Obtener resumen de configuración de pricing para un RFX
+    📊 Get pricing configuration summary for a project
+    Modern endpoint with legacy RFX support
     """
     try:
-        logger.info(f"📊 Getting pricing summary for RFX: {rfx_id}")
+        logger.info(f"📊 Getting pricing summary for project: {project_id}")
         
-        pricing_service = PricingConfigurationServiceV2()
-        summary = pricing_service.get_pricing_summary_for_rfx(rfx_id)
+        db_client = get_database_client()
+        
+        # Get project info
+        project_record = None
+        if hasattr(db_client, 'get_project_by_id'):
+            project_record = db_client.get_project_by_id(project_id)
+        if not project_record and hasattr(db_client, 'find_rfx_by_identifier'):
+            project_record = db_client.find_rfx_by_identifier(project_id)
+        
+        summary = {}
+        
+        # Try modern approach first
+        if hasattr(db_client, 'get_pricing_configuration_by_project'):
+            pricing_config = db_client.get_pricing_configuration_by_project(project_id)
+            if pricing_config:
+                summary = {
+                    "has_configuration": True,
+                    "pricing_model": pricing_config.get("pricing_model", "fixed_price"),
+                    "coordination_enabled": pricing_config.get("coordination_enabled", False),
+                    "tax_enabled": pricing_config.get("tax_enabled", False),
+                    "discount_enabled": pricing_config.get("discount_enabled", False),
+                    "is_active": pricing_config.get("is_active", True)
+                }
+        
+        # Fallback to legacy service
+        if not summary:
+            try:
+                from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
+                pricing_service = PricingConfigurationServiceV2()
+                summary = pricing_service.get_pricing_summary_for_rfx(project_id)
+                logger.info("📚 Using legacy pricing summary")
+            except ImportError:
+                summary = {"has_configuration": False}
         
         response = {
             "status": "success",
             "message": "Pricing summary retrieved successfully",
             "data": {
-                "rfx_id": rfx_id,
+                "project_id": project_id,
+                "rfx_id": project_id,  # Legacy compatibility
                 **summary
             }
         }
         
-        logger.info(f"✅ Pricing summary retrieved for RFX {rfx_id}")
+        logger.info(f"✅ Pricing summary retrieved for project {project_id}")
         return jsonify(response), 200
         
     except Exception as e:
-        logger.error(f"❌ Error getting pricing summary for RFX {rfx_id}: {e}")
+        logger.error(f"❌ Error getting pricing summary for project {project_id}: {e}")
         return jsonify({
             "status": "error",
             "message": "Failed to retrieve pricing summary",
@@ -356,13 +578,14 @@ def get_pricing_summary(rfx_id: str):
         }), 500
 
 
-@pricing_bp.route("/quick-config/<rfx_id>", methods=["POST"])
-def quick_pricing_config(rfx_id: str):
+@pricing_bp.route("/quick-config/<project_id>", methods=["POST"])
+def quick_pricing_config(project_id: str):
     """
-    ⚡ Configuración rápida de pricing con opciones comunes
+    ⚡ Quick pricing configuration with common options
+    Modern endpoint with legacy RFX support
     """
     try:
-        logger.info(f"⚡ Quick pricing configuration for RFX: {rfx_id}")
+        logger.info(f"⚡ Quick pricing configuration for project: {project_id}")
         
         # Validate request format
         if not request.is_json:
@@ -382,10 +605,10 @@ def quick_pricing_config(rfx_id: str):
         # Build configuration request based on type
         if config_type == "coordination_only":
             config_data = {
-                "rfx_id": rfx_id,
+                "project_id": project_id,
                 "coordination_enabled": True,
-                "coordination_rate": custom_coordination_rate or 0.18,
-                "cost_per_person_enabled": False
+                "coordination_rate": custom_coordination_rate or 0.15,
+                "headcount": None
             }
         elif config_type == "cost_per_person_only":
             if not custom_headcount:
@@ -395,9 +618,8 @@ def quick_pricing_config(rfx_id: str):
                     "error": "Missing headcount"
                 }), 400
             config_data = {
-                "rfx_id": rfx_id,
+                "project_id": project_id,
                 "coordination_enabled": False,
-                "cost_per_person_enabled": True,
                 "headcount": custom_headcount
             }
         elif config_type == "full":
@@ -408,30 +630,28 @@ def quick_pricing_config(rfx_id: str):
                     "error": "Missing headcount"
                 }), 400
             config_data = {
-                "rfx_id": rfx_id,
+                "project_id": project_id,
                 "coordination_enabled": True,
-                "coordination_rate": custom_coordination_rate or 0.18,
-                "cost_per_person_enabled": True,
+                "coordination_rate": custom_coordination_rate or 0.15,
                 "headcount": custom_headcount
             }
         elif config_type == "none":
             config_data = {
-                "rfx_id": rfx_id,
+                "project_id": project_id,
                 "coordination_enabled": False,
-                "cost_per_person_enabled": False
+                "headcount": None
             }
         else:  # "basic" or default
             config_data = {
-                "rfx_id": rfx_id,
+                "project_id": project_id,
                 "coordination_enabled": True,
                 "coordination_rate": 0.15,  # 15% basic coordination
-                "cost_per_person_enabled": bool(custom_headcount),
                 "headcount": custom_headcount if custom_headcount else None
             }
         
-        # Create and process request
+        # Create pricing configuration
         try:
-            pricing_request = PricingConfigurationRequest(**config_data)
+            pricing_config = PricingConfigurationModel(**config_data)
         except ValidationError as e:
             logger.error(f"❌ Validation error for quick pricing configuration: {e}")
             return jsonify({
@@ -440,9 +660,33 @@ def quick_pricing_config(rfx_id: str):
                 "error": str(e)
             }), 400
         
-        # Update configuration
-        pricing_service = PricingConfigurationServiceV2()
-        updated_config = pricing_service.update_rfx_pricing_from_request(pricing_request)
+        # Save configuration
+        db_client = get_database_client()
+        updated_config = None
+        
+        # Try modern approach
+        if hasattr(db_client, 'upsert_pricing_configuration'):
+            updated_config = db_client.upsert_pricing_configuration(pricing_config.model_dump())
+        
+        # Fallback to legacy service
+        if not updated_config:
+            try:
+                from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
+                pricing_service = PricingConfigurationServiceV2()
+                
+                # Convert to legacy format
+                legacy_data = {
+                    "rfx_id": project_id,
+                    "coordination_enabled": pricing_config.coordination_enabled,
+                    "coordination_rate": pricing_config.coordination_rate,
+                    "cost_per_person_enabled": pricing_config.headcount is not None,
+                    "headcount": pricing_config.headcount
+                }
+                legacy_request = PricingConfigurationRequest(**legacy_data)
+                updated_config = pricing_service.update_rfx_pricing_from_request(legacy_request)
+                logger.info("📚 Using legacy pricing service for quick config")
+            except ImportError:
+                logger.error("❌ No pricing service available")
         
         if not updated_config:
             return jsonify({
@@ -456,20 +700,21 @@ def quick_pricing_config(rfx_id: str):
             "status": "success",
             "message": f"Quick pricing configuration '{config_type}' applied successfully",
             "data": {
-                "rfx_id": rfx_id,
+                "project_id": project_id,
+                "rfx_id": project_id,  # Legacy compatibility
                 "config_type": config_type,
-                "coordination_enabled": updated_config.has_coordination(),
-                "coordination_rate": updated_config.get_coordination_rate(),
-                "cost_per_person_enabled": updated_config.has_cost_per_person(),
-                "headcount": updated_config.get_headcount()
+                "coordination_enabled": pricing_config.coordination_enabled,
+                "coordination_rate": pricing_config.coordination_rate,
+                "headcount": pricing_config.headcount,
+                "cost_per_person_enabled": pricing_config.headcount is not None
             }
         }
         
-        logger.info(f"✅ Quick pricing configuration '{config_type}' applied for RFX {rfx_id}")
+        logger.info(f"✅ Quick pricing configuration '{config_type}' applied for project {project_id}")
         return jsonify(response), 200
         
     except Exception as e:
-        logger.error(f"❌ Error applying quick pricing configuration for RFX {rfx_id}: {e}")
+        logger.error(f"❌ Error applying quick pricing configuration for project {project_id}: {e}")
         return jsonify({
             "status": "error",
             "message": "Failed to apply quick pricing configuration",
@@ -480,7 +725,8 @@ def quick_pricing_config(rfx_id: str):
 @pricing_bp.route("/validate-config", methods=["POST"])
 def validate_pricing_configuration():
     """
-    ✅ Validar configuración de pricing sin guardar
+    ✅ Validate pricing configuration without saving
+    Modern validation using new PricingConfigurationModel
     """
     try:
         logger.info("✅ Validating pricing configuration")
@@ -495,21 +741,21 @@ def validate_pricing_configuration():
         
         data = request.get_json()
         
-        # Validate using Pydantic model
+        # Validate using new Pydantic model
         try:
-            pricing_request = PricingConfigurationRequest(**data)
+            pricing_config = PricingConfigurationModel(**data)
             
             # Additional business logic validation
             validation_errors = []
             
-            if pricing_request.coordination_enabled and not pricing_request.coordination_rate:
+            if pricing_config.coordination_enabled and not pricing_config.coordination_rate:
                 validation_errors.append("coordination_rate is required when coordination is enabled")
             
-            if pricing_request.cost_per_person_enabled and not pricing_request.headcount:
-                validation_errors.append("headcount is required when cost_per_person is enabled")
+            if pricing_config.tax_enabled and not pricing_config.tax_rate:
+                validation_errors.append("tax_rate is required when tax is enabled")
             
-            if pricing_request.taxes_enabled and not pricing_request.tax_rate:
-                validation_errors.append("tax_rate is required when taxes are enabled")
+            if pricing_config.discount_enabled and not pricing_config.discount_rate:
+                validation_errors.append("discount_rate is required when discount is enabled")
             
             if validation_errors:
                 return jsonify({
@@ -523,12 +769,13 @@ def validate_pricing_configuration():
                 "status": "success",
                 "message": "Pricing configuration is valid",
                 "data": {
-                    "coordination_enabled": pricing_request.coordination_enabled,
-                    "coordination_rate": pricing_request.coordination_rate,
-                    "cost_per_person_enabled": pricing_request.cost_per_person_enabled,
-                    "headcount": pricing_request.headcount,
-                    "taxes_enabled": pricing_request.taxes_enabled,
-                    "tax_rate": pricing_request.tax_rate,
+                    "coordination_enabled": pricing_config.coordination_enabled,
+                    "coordination_rate": pricing_config.coordination_rate,
+                    "headcount": pricing_config.headcount,
+                    "tax_enabled": pricing_config.tax_enabled,
+                    "tax_rate": pricing_config.tax_rate,
+                    "discount_enabled": pricing_config.discount_enabled,
+                    "discount_rate": pricing_config.discount_rate,
                     "is_valid": True
                 }
             }
@@ -554,121 +801,161 @@ def validate_pricing_configuration():
         }), 500
 
 
-@pricing_bp.route("/calculate-from-rfx/<rfx_id>", methods=["GET"])
-def calculate_pricing_from_rfx(rfx_id: str):
+@pricing_bp.route("/calculate-from-project/<project_id>", methods=["GET"])
+def calculate_pricing_from_project(project_id: str):
     """
-    🧮 Calcular pricing automáticamente basado en productos del RFX
+    🧮 Calculate pricing automatically based on project items
+    Modern endpoint with legacy RFX support
     """
     try:
-        logger.info(f"🧮 Auto-calculating pricing for RFX: {rfx_id}")
+        logger.info(f"🧮 Auto-calculating pricing for project: {project_id}")
         
-        # 🧠 Smart RFX lookup: Try UUID first, then search by name
         db_client = get_database_client()
-        rfx_record = db_client.find_rfx_by_identifier(rfx_id)
         
-        if not rfx_record:
-            logger.error(f"❌ RFX not found for identifier: {rfx_id}")
+        # Smart lookup: Try projects table first, then RFX
+        project_record = None
+        if hasattr(db_client, 'get_project_by_id'):
+            project_record = db_client.get_project_by_id(project_id)
+        if not project_record and hasattr(db_client, 'find_rfx_by_identifier'):
+            project_record = db_client.find_rfx_by_identifier(project_id)
+        
+        if not project_record:
             return jsonify({
                 "status": "error",
-                "message": f"RFX not found for identifier: {rfx_id}",
-                "error": "rfx_not_found",
-                "help": "Provide either a valid UUID or the exact requester/company name"
+                "message": f"Project not found for identifier: {project_id}",
+                "error": "project_not_found"
             }), 404
         
-        # Extract the actual UUID for subsequent operations
-        actual_rfx_id = str(rfx_record["id"])
+        actual_project_id = str(project_record["id"])
         
-        # Log the successful lookup
-        try:
-            import uuid as _uuid
-            _ = _uuid.UUID(rfx_id)
-            logger.info(f"✅ Direct UUID lookup successful: {rfx_id}")
-        except (ValueError, TypeError):
-            logger.info(f"✅ Smart lookup successful: '{rfx_id}' → RFX ID: {actual_rfx_id}")
-            logger.info(f"📋 Found RFX: {rfx_record.get('title', 'Unknown')} for {rfx_record.get('requesters', {}).get('name', 'Unknown')} at {rfx_record.get('companies', {}).get('name', 'Unknown')}")
+        # Get project items and calculate subtotal
+        project_items = None
+        if hasattr(db_client, 'get_project_items'):
+            project_items = db_client.get_project_items(actual_project_id)
+        elif hasattr(db_client, 'get_rfx_products'):
+            project_items = db_client.get_rfx_products(actual_project_id)
         
-        # Use the actual UUID for subsequent operations
-        rfx_id = actual_rfx_id
-        
-        # Obtener productos y calcular subtotal
-        rfx_products = db_client.get_rfx_products(rfx_id)
-        if not rfx_products:
+        if not project_items:
             return jsonify({
                 "status": "error",
-                "message": "No products found for RFX",
-                "error": "RFX must have products with prices to calculate pricing",
-                "suggestion": "Please set product costs first"
+                "message": "No items found for project",
+                "error": "Project must have items with prices to calculate pricing",
+                "suggestion": "Please set item costs first"
             }), 404
         
-        # Calcular subtotal de productos
+        # Calculate subtotal from project items
         subtotal = 0.0
-        for product in rfx_products:
-            unit_price = product.get("estimated_unit_price", 0.0) or 0.0
-            quantity = product.get("quantity", 0) or 0
+        for item in project_items:
+            unit_price = item.get("unit_price", item.get("estimated_unit_price", 0.0)) or 0.0
+            quantity = item.get("quantity", 0) or 0
             subtotal += unit_price * quantity
         
         if subtotal <= 0:
             return jsonify({
                 "status": "error",
                 "message": "Cannot calculate pricing with zero subtotal",
-                "error": "Products must have valid prices and quantities",
+                "error": "Items must have valid prices and quantities",
                 "debug": {
-                    "products_count": len(rfx_products),
+                    "items_count": len(project_items),
                     "calculated_subtotal": subtotal
                 }
             }), 400
         
-        # Calcular pricing
-        pricing_service = PricingConfigurationServiceV2()
-        calculation = pricing_service.calculate_pricing(rfx_id, subtotal)
+        # Calculate pricing using modern approach
+        calculation = None
         
-        # Obtener configuración para contexto adicional
-        config = pricing_service.get_rfx_pricing_configuration(rfx_id)
+        # Try new pricing configuration approach
+        if hasattr(db_client, 'get_pricing_configuration_by_project'):
+            pricing_config = db_client.get_pricing_configuration_by_project(actual_project_id)
+            if pricing_config:
+                config_model = PricingConfigurationModel(**pricing_config)
+                calculation = PricingCalculationModel.calculate_from_config(config_model, subtotal)
         
-        # Crear respuesta detallada
+        # Fallback to legacy pricing service
+        if not calculation:
+            try:
+                from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
+                pricing_service = PricingConfigurationServiceV2()
+                legacy_calculation = pricing_service.calculate_pricing(actual_project_id, subtotal)
+                
+                # Convert to new format
+                calculation = PricingCalculationModel(
+                    subtotal=legacy_calculation.subtotal,
+                    coordination_enabled=legacy_calculation.coordination_enabled,
+                    coordination_amount=legacy_calculation.coordination_amount,
+                    tax_amount=legacy_calculation.tax_amount,
+                    total_cost=legacy_calculation.total_cost
+                )
+                logger.info("📚 Using legacy pricing service for auto calculation")
+            except ImportError:
+                calculation = PricingCalculationModel(subtotal=subtotal, total_cost=subtotal)
+        
+        # Get pricing configuration for context
+        config_exists = hasattr(db_client, 'get_pricing_configuration_by_project') and \
+                       db_client.get_pricing_configuration_by_project(actual_project_id) is not None
+        
+        # Create detailed response
         response = {
             "status": "success",
-            "message": "Pricing calculated successfully from RFX products",
+            "message": "Pricing calculated successfully from project items",
             "data": {
-                "rfx_id": rfx_id,
-                "products_analyzed": len(rfx_products),
-                "calculation": calculation.model_dump(),
+                "project_id": actual_project_id,
+                "rfx_id": actual_project_id,  # Legacy compatibility
+                "items_analyzed": len(project_items),
+                "calculation": calculation.model_dump() if hasattr(calculation, 'model_dump') else calculation,
                 "breakdown": {
                     "subtotal": calculation.subtotal,
                     "coordination": {
-                        "enabled": calculation.coordination_enabled,
-                        "rate": calculation.coordination_rate,
-                        "amount": calculation.coordination_amount
+                        "enabled": getattr(calculation, 'coordination_enabled', False),
+                        "rate": getattr(calculation, 'coordination_rate', 0.0),
+                        "amount": getattr(calculation, 'coordination_amount', 0.0)
                     },
                     "cost_per_person": {
-                        "enabled": calculation.cost_per_person_enabled,
-                        "headcount": calculation.headcount,
-                        "cost_per_person": calculation.cost_per_person
+                        "enabled": getattr(calculation, 'headcount', None) is not None,
+                        "headcount": getattr(calculation, 'headcount', None),
+                        "cost_per_person": getattr(calculation, 'cost_per_person', None)
                     },
                     "taxes": {
-                        "enabled": calculation.taxes_enabled,
-                        "rate": calculation.tax_rate,
-                        "amount": calculation.tax_amount
+                        "enabled": getattr(calculation, 'tax_enabled', False),
+                        "rate": getattr(calculation, 'tax_rate', 0.0),
+                        "amount": getattr(calculation, 'tax_amount', 0.0)
                     },
                     "totals": {
-                        "before_tax": calculation.total_before_tax,
                         "final_total": calculation.total_cost
                     }
                 },
                 "configuration_status": {
-                    "has_configuration": config is not None,
-                    "enabled_configs": calculation.applied_configs if calculation.applied_configs else []
+                    "has_configuration": config_exists,
+                    "applied_configs": getattr(calculation, 'applied_configs', [])
                 }
             }
         }
         
-        logger.info(f"✅ Auto-pricing calculated for RFX {rfx_id}: ${calculation.total_cost:.2f}")
+        logger.info(f"✅ Auto-pricing calculated for project {actual_project_id}: ${calculation.total_cost:.2f}")
         return jsonify(response), 200
         
     except Exception as e:
-        logger.error(f"❌ Error auto-calculating pricing for RFX {rfx_id}: {e}")
+        logger.error(f"❌ Error auto-calculating pricing for project {project_id}: {e}")
         return jsonify({
             "status": "error",
-            "message": "Failed to calculate pricing from RFX",
+            "message": "Failed to calculate pricing from project",
             "error": str(e)
         }), 500
+
+
+# ========================
+# LEGACY COMPATIBILITY ENDPOINTS
+# ========================
+
+@pricing_bp.route("/legacy/config/<rfx_id>", methods=["GET"])
+def get_legacy_pricing_configuration(rfx_id: str):
+    """Legacy compatibility endpoint for RFX pricing configuration"""
+    logger.info(f"📚 Legacy pricing config endpoint called for RFX: {rfx_id}")
+    return get_pricing_configuration(rfx_id)
+
+
+@pricing_bp.route("/calculate-from-rfx/<rfx_id>", methods=["GET"])
+def calculate_pricing_from_rfx(rfx_id: str):
+    """Legacy compatibility endpoint for RFX-based pricing calculation"""
+    logger.info(f"📚 Legacy pricing calculation endpoint called for RFX: {rfx_id}")
+    return calculate_pricing_from_project(rfx_id)

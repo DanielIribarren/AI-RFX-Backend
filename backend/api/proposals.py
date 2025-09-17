@@ -1,6 +1,7 @@
 """
-📄 Proposals API Endpoints - Gestión de propuestas comerciales
-Integra con el procesamiento RFX para generar propuestas automáticamente
+📄 Proposals/Quotes API Endpoints - Modern quote management system
+Aligned with budy-ai-schema.sql (quotes table)
+Maintains backward compatibility with legacy proposal endpoints
 """
 from flask import Blueprint, request, jsonify
 from werkzeug.exceptions import BadRequest
@@ -9,23 +10,34 @@ import asyncio
 import logging
 import time
 import random
+from typing import Optional, Dict, Any
+from uuid import UUID
 
-from backend.models.proposal_models import ProposalRequest, ProposalResponse, PropuestaGenerada, NotasPropuesta
+# Updated imports for new schema
+from backend.models.proposal_models import (
+    QuoteRequest, QuoteResponse, QuoteModel, QuoteNotes,
+    # Legacy aliases for backward compatibility
+    ProposalRequest, ProposalResponse, PropuestaGenerada, NotasPropuesta,
+    # Helper functions
+    map_legacy_quote_request
+)
 from backend.core.database import get_database_client
 
 logger = logging.getLogger(__name__)
 
-# Create blueprint
+# Create blueprint with enhanced functionality
 proposals_bp = Blueprint("proposals_api", __name__, url_prefix="/api/proposals")
 
 
 @proposals_bp.route("/generate", methods=["POST"])
 def generate_proposal():
     """
-    🎯 Genera propuesta comercial basada en datos RFX procesados
+    🎯 Generate commercial quote based on processed project data
+    Modern version using quotes table (budy-ai-schema.sql)
+    Maintains backward compatibility with legacy proposal format
     """
     try:
-        # Validar datos de entrada
+        # Validate input data
         if not request.is_json:
             return jsonify({
                 "status": "error",
@@ -34,49 +46,65 @@ def generate_proposal():
             }), 400
         
         data = request.get_json()
+        logger.info(f"🔍 Quote generation request received: {list(data.keys())}")
         
-        # Validar request usando Pydantic
+        # Handle legacy request format
+        if 'rfx_id' in data:
+            logger.info("🔄 Converting legacy proposal request to quote format")
+            data = map_legacy_quote_request(data)
+        
+        # Validate request using Pydantic
         try:
-            proposal_request = ProposalRequest(**data)
+            quote_request = QuoteRequest(**data)
         except ValidationError as e:
+            logger.error(f"❌ Quote request validation failed: {e}")
             return jsonify({
                 "status": "error",
                 "message": "Invalid request data",
                 "error": str(e)
             }), 400
         
-        # Obtener datos RFX de la base de datos
+        # Get project/RFX data from database (support both new and legacy)
         db_client = get_database_client()
-        rfx_data = db_client.get_rfx_by_id(proposal_request.rfx_id)
         
-        if not rfx_data:
+        # Try new projects table first, then fall back to legacy RFX
+        if hasattr(quote_request, 'project_id'):
+            project_data = db_client.get_project_by_id(quote_request.project_id)
+            project_id = quote_request.project_id
+        else:
+            # Legacy support: convert rfx_id to project lookup
+            project_data = db_client.get_rfx_by_id(data.get('rfx_id', ''))
+            project_id = data.get('rfx_id', '')
+        
+        if not project_data:
             return jsonify({
                 "status": "error",
-                "message": f"RFX not found: {proposal_request.rfx_id}",
-                "error": "RFX data required for proposal generation"
+                "message": f"Project not found: {project_id}",
+                "error": "Project data required for quote generation"
             }), 404
         
-        # Obtener costos unitarios reales de productos desde BD
-        product_costs = []
-        rfx_products = db_client.get_rfx_products(proposal_request.rfx_id)
-        if rfx_products:
-            product_costs = [p.get("estimated_unit_price", 0) for p in rfx_products]
-            logger.info(f"🔍 Using user-provided costs from database: {product_costs}")
+        # Get real unit costs from database
+        item_costs = []
+        project_items = db_client.get_project_items(project_id) if hasattr(db_client, 'get_project_items') else db_client.get_rfx_products(project_id)
+        
+        if project_items:
+            item_costs = [item.get("unit_price", item.get("estimated_unit_price", 0)) for item in project_items]
+            logger.info(f"🔍 Using user-provided costs from database: {len(item_costs)} items")
         else:
-            # Fallback si no hay productos con costos, usar los del request
-            product_costs = proposal_request.costs
-            logger.warning(f"⚠️ No user costs found in database, using request costs: {product_costs}")
+            # Fallback to request costs if no items in database
+            item_costs = getattr(quote_request, 'itemized_costs', [])
+            logger.warning(f"⚠️ No items found in database, using request costs: {len(item_costs)} items")
         
-        # ✅ Crear nuevo request con costos reales (Pydantic models son inmutables)
-        proposal_data = proposal_request.model_dump()
-        proposal_data['costs'] = product_costs
-        proposal_request = ProposalRequest(**proposal_data)
+        # Map database data to expected format for generation service
+        try:
+            from backend.utils.data_mappers import map_rfx_data_for_proposal
+            project_data_mapped = map_rfx_data_for_proposal(project_data, project_items)
+        except ImportError:
+            # If mapper doesn't exist, use data as-is
+            project_data_mapped = project_data
+            logger.warning("⚠️ Data mapper not available, using raw project data")
         
-        # Mapear datos BD V2.0 → estructura esperada por ProposalGenerationService
-        from backend.utils.data_mappers import map_rfx_data_for_proposal
-        rfx_data_mapped = map_rfx_data_for_proposal(rfx_data, rfx_products)
-        
-        # Generar propuesta usando el servicio (lazy import para evitar fallas en startup)
+        # Generate quote using the service (lazy import to avoid startup issues)
         try:
             from backend.services.proposal_generator import ProposalGenerationService
         except Exception as import_error:
@@ -88,34 +116,48 @@ def generate_proposal():
                 "error": str(import_error)
             }), 500
 
+        # Create legacy proposal request for compatibility with existing service
+        legacy_request_data = {
+            'rfx_id': project_id,
+            'costs': item_costs,
+            'notes': getattr(quote_request, 'notes', {}),
+            'service_modality': getattr(quote_request, 'service_modality', 'standard')
+        }
+        legacy_proposal_request = ProposalRequest(**legacy_request_data)
+
         proposal_generator = ProposalGenerationService()
         
-        # Ejecutar generación asíncrona
+        # Execute async generation
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
         try:
-            propuesta_generada = loop.run_until_complete(
-                proposal_generator.generate_proposal(rfx_data_mapped, proposal_request)
+            generated_quote = loop.run_until_complete(
+                proposal_generator.generate_proposal(project_data_mapped, legacy_proposal_request)
             )
         finally:
             loop.close()
         
-        # ✅ Document is already saved by ProposalGenerationService._save_to_database()
-        # No need to save again here - use the existing ID from the generated proposal
-        documento_id = str(propuesta_generada.id)
+        # The document is already saved by ProposalGenerationService
+        # Use the existing ID from the generated quote
+        quote_id = str(generated_quote.id)
         
-        # Crear respuesta
-        response = ProposalResponse(
-            status="success",
-            message="Propuesta generada exitosamente",
-            document_id=documento_id,
-            pdf_url=f"/api/download/{documento_id}",
-            proposal=propuesta_generada
-        )
+        # Create modern response (maintaining backward compatibility)
+        response_data = {
+            "status": "success",
+            "message": "Quote generated successfully",
+            "data": {
+                "id": quote_id,
+                "project_id": project_id,
+                "rfx_id": project_id,  # Legacy compatibility
+                "quote": generated_quote.model_dump() if hasattr(generated_quote, 'model_dump') else generated_quote,
+                "download_url": f"/api/download/{quote_id}",
+                "pdf_url": f"/api/download/{quote_id}"  # Legacy compatibility
+            }
+        }
         
-        logger.info(f"✅ Propuesta generada exitosamente: {propuesta_generada.id}")
-        return jsonify(response.model_dump()), 200
+        logger.info(f"✅ Quote generated successfully: {quote_id}")
+        return jsonify(response_data), 200
         
     except ValidationError as e:
         logger.error(f"❌ Validation error: {e}")
@@ -130,11 +172,13 @@ def generate_proposal():
         return jsonify({
             "status": "error",
             "message": str(e),
-            "error": "Proposal generation failed"
+            "error": "Quote generation failed"
         }), 422
         
     except Exception as e:
-        logger.error(f"❌ Unexpected error in proposal generation: {e}")
+        logger.error(f"❌ Unexpected error in quote generation: {e}")
+        import traceback
+        logger.error(f"❌ Full traceback: {traceback.format_exc()}")
         return jsonify({
             "status": "error",
             "message": "Internal server error",
@@ -142,75 +186,281 @@ def generate_proposal():
         }), 500
 
 
-@proposals_bp.route("/<proposal_id>", methods=["GET"])
-def get_proposal(proposal_id: str):
-    """Obtener propuesta específica por ID"""
+@proposals_bp.route("/<quote_id>", methods=["GET"])
+def get_proposal(quote_id: str):
+    """
+    Get specific quote/proposal by ID
+    Modern endpoint using quotes table with legacy compatibility
+    """
     try:
         db_client = get_database_client()
-        proposal_data = db_client.get_document_by_id(proposal_id)
         
-        if not proposal_data:
+        # Try new quotes table first, then fall back to legacy documents
+        quote_data = None
+        if hasattr(db_client, 'get_quote_by_id'):
+            quote_data = db_client.get_quote_by_id(quote_id)
+        
+        # Fallback to legacy documents table
+        if not quote_data and hasattr(db_client, 'get_document_by_id'):
+            quote_data = db_client.get_document_by_id(quote_id)
+            logger.info(f"📚 Using legacy document data for quote {quote_id}")
+        
+        if not quote_data:
             return jsonify({
                 "status": "error",
-                "message": "Propuesta no encontrada",
-                "error": f"No proposal found with ID: {proposal_id}"
+                "message": "Quote not found",
+                "error": f"No quote found with ID: {quote_id}"
             }), 404
         
+        # Modern response format with legacy compatibility
         response = {
             "status": "success",
-            "message": "Propuesta obtenida exitosamente",
+            "message": "Quote retrieved successfully",
             "data": {
-                "id": proposal_data["id"],
-                "rfx_id": proposal_data["rfx_id"],
-                "content_markdown": proposal_data.get("content_markdown", ""),  # ✅ V2.0 field name
-                "content_html": proposal_data.get("content_html", ""),  # ✅ V2.0 field name  
-                "total_cost": proposal_data.get("total_cost", 0.0),  # ✅ V2.0 field name
-                "created_at": proposal_data.get("created_at", ""),  # ✅ V2.0 field name
-                "download_url": f"/api/download/{proposal_id}"
+                "id": quote_data["id"],
+                "project_id": quote_data.get("project_id", quote_data.get("rfx_id")),
+                "rfx_id": quote_data.get("project_id", quote_data.get("rfx_id")),  # Legacy compatibility
+                "quote_number": quote_data.get("quote_number"),
+                "status": quote_data.get("status", "draft"),
+                "html_content": quote_data.get("html_content", quote_data.get("content_html", "")),
+                "content_html": quote_data.get("html_content", quote_data.get("content_html", "")),  # Legacy compatibility
+                "content_markdown": quote_data.get("content_markdown", ""),  # Legacy compatibility
+                "subtotal": quote_data.get("subtotal", 0.0),
+                "total_amount": quote_data.get("total_amount", quote_data.get("total_cost", 0.0)),
+                "total_cost": quote_data.get("total_amount", quote_data.get("total_cost", 0.0)),  # Legacy compatibility
+                "currency": quote_data.get("currency", "USD"),
+                "valid_until": quote_data.get("valid_until"),
+                "created_at": quote_data.get("created_at", ""),
+                "generated_at": quote_data.get("generated_at", quote_data.get("created_at", "")),
+                "download_url": f"/api/download/{quote_id}",
+                "pdf_url": f"/api/download/{quote_id}"  # Legacy compatibility
             }
         }
         
         return jsonify(response), 200
         
     except Exception as e:
-        logger.error(f"❌ Error obteniendo propuesta {proposal_id}: {e}")
+        logger.error(f"❌ Error retrieving quote {quote_id}: {e}")
         return jsonify({
             "status": "error",
-            "message": f"Failed to retrieve proposal {proposal_id}",
+            "message": f"Failed to retrieve quote {quote_id}",
             "error": str(e)
         }), 500
 
 
-@proposals_bp.route("/rfx/<rfx_id>/proposals", methods=["GET"])
-def get_proposals_by_rfx(rfx_id: str):
-    """Obtener todas las propuestas de un RFX específico"""
+@proposals_bp.route("/rfx/<project_id>/proposals", methods=["GET"])
+def get_proposals_by_rfx(project_id: str):
+    """
+    Get all quotes/proposals for a specific project/RFX
+    Modern endpoint using quotes table with legacy compatibility
+    """
     try:
         db_client = get_database_client()
-        proposals = db_client.get_proposals_by_rfx_id(rfx_id)
         
-        proposals_data = []
-        for proposal in proposals:
-            proposals_data.append({
-                "id": proposal["id"],
-                "rfx_id": proposal["rfx_id"],
-                "document_type": proposal.get("document_type", "proposal"),  # ✅ V2.0 field name
-                "created_at": proposal.get("created_at", ""),  # ✅ V2.0 field name
-                "total_cost": proposal.get("total_cost", 0.0),  # ✅ V2.0 field name
-                "download_url": f"/api/download/{proposal['id']}"
-            })
+        # Try new quotes table first
+        quotes = None
+        if hasattr(db_client, 'get_quotes_by_project'):
+            quotes = db_client.get_quotes_by_project(project_id)
+            
+        # Fallback to legacy proposals table
+        if not quotes and hasattr(db_client, 'get_proposals_by_rfx_id'):
+            quotes = db_client.get_proposals_by_rfx_id(project_id)
+            logger.info(f"📚 Using legacy proposals data for project {project_id}")
+        
+        if not quotes:
+            quotes = []
+        
+        quotes_data = []
+        for quote in quotes:
+            quote_item = {
+                "id": quote["id"],
+                "project_id": quote.get("project_id", quote.get("rfx_id")),
+                "rfx_id": quote.get("project_id", quote.get("rfx_id")),  # Legacy compatibility
+                "quote_number": quote.get("quote_number"),
+                "status": quote.get("status", "draft"),
+                "generation_method": quote.get("generation_method", "automatic"),
+                "document_type": quote.get("document_type", "quote"),  # Legacy compatibility
+                "subtotal": quote.get("subtotal", 0.0),
+                "total_amount": quote.get("total_amount", quote.get("total_cost", 0.0)),
+                "total_cost": quote.get("total_amount", quote.get("total_cost", 0.0)),  # Legacy compatibility
+                "currency": quote.get("currency", "USD"),
+                "valid_until": quote.get("valid_until"),
+                "created_at": quote.get("created_at", ""),
+                "generated_at": quote.get("generated_at", quote.get("created_at", "")),
+                "sent_at": quote.get("sent_at"),
+                "viewed_at": quote.get("viewed_at"),
+                "download_url": f"/api/download/{quote['id']}",
+                "pdf_url": f"/api/download/{quote['id']}"  # Legacy compatibility
+            }
+            quotes_data.append(quote_item)
         
         response = {
             "status": "success",
-            "message": f"Encontradas {len(proposals_data)} propuestas para RFX {rfx_id}",
-            "data": proposals_data
+            "message": f"Found {len(quotes_data)} quotes for project {project_id}",
+            "data": quotes_data,
+            "pagination": {
+                "total_items": len(quotes_data),
+                "page": 1,
+                "limit": len(quotes_data)
+            }
         }
         
         return jsonify(response), 200
         
     except Exception as e:
-        logger.error(f"❌ Error obteniendo propuestas para RFX {rfx_id}: {e}")
+        logger.error(f"❌ Error retrieving quotes for project {project_id}: {e}")
         return jsonify({
             "status": "error",
-            "message": f"Failed to retrieve proposals for RFX {rfx_id}",
+            "message": f"Failed to retrieve quotes for project {project_id}",
             "error": str(e)
         }), 500
+
+
+# ========================
+# NEW MODERN QUOTE ENDPOINTS
+# ========================
+
+@proposals_bp.route("/quotes", methods=["GET"])
+def get_quotes():
+    """Get all quotes with pagination (modern endpoint)"""
+    try:
+        # Get pagination parameters
+        page = int(request.args.get('page', 1))
+        limit = int(request.args.get('limit', 20))
+        offset = (page - 1) * limit
+        
+        # Validate pagination
+        if page < 1 or limit < 1 or limit > 100:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid pagination parameters",
+                "error": "Page must be >= 1, limit between 1-100"
+            }), 400
+        
+        db_client = get_database_client()
+        
+        # Get quotes with pagination
+        if hasattr(db_client, 'get_all_quotes'):
+            quotes = db_client.get_all_quotes(limit=limit, offset=offset)
+        else:
+            # Fallback for legacy system
+            quotes = []
+            logger.warning("⚠️ get_all_quotes method not available, returning empty list")
+        
+        # Format quotes data
+        quotes_data = []
+        for quote in quotes:
+            quote_item = {
+                "id": quote["id"],
+                "project_id": quote.get("project_id"),
+                "organization_id": quote.get("organization_id"),
+                "quote_number": quote.get("quote_number"),
+                "status": quote.get("status", "draft"),
+                "subtotal": quote.get("subtotal", 0.0),
+                "total_amount": quote.get("total_amount", 0.0),
+                "currency": quote.get("currency", "USD"),
+                "valid_until": quote.get("valid_until"),
+                "created_at": quote.get("created_at"),
+                "created_by": quote.get("created_by"),
+                "sent_at": quote.get("sent_at"),
+                "viewed_at": quote.get("viewed_at")
+            }
+            quotes_data.append(quote_item)
+        
+        response = {
+            "status": "success",
+            "message": f"Retrieved {len(quotes_data)} quotes",
+            "data": quotes_data,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total_items": len(quotes_data),
+                "has_more": len(quotes_data) == limit
+            }
+        }
+        
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error retrieving quotes: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to retrieve quotes",
+            "error": str(e)
+        }), 500
+
+
+@proposals_bp.route("/quotes/<quote_id>/status", methods=["PUT"])
+def update_quote_status(quote_id: str):
+    """Update quote status (modern endpoint)"""
+    try:
+        if not request.is_json:
+            return jsonify({
+                "status": "error",
+                "message": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        new_status = data.get("status")
+        
+        if not new_status:
+            return jsonify({
+                "status": "error",
+                "message": "Status is required"
+            }), 400
+        
+        # Validate status values
+        valid_statuses = ["draft", "generated", "sent", "viewed", "accepted", "rejected", "expired", "cancelled"]
+        if new_status not in valid_statuses:
+            return jsonify({
+                "status": "error",
+                "message": f"Invalid status. Valid values: {', '.join(valid_statuses)}"
+            }), 400
+        
+        db_client = get_database_client()
+        
+        # Update quote status
+        if hasattr(db_client, 'update_quote_status'):
+            success = db_client.update_quote_status(quote_id, new_status)
+        else:
+            # Fallback for legacy system
+            success = False
+            logger.warning("⚠️ update_quote_status method not available")
+        
+        if success:
+            response = {
+                "status": "success",
+                "message": f"Quote status updated to {new_status}",
+                "data": {
+                    "quote_id": quote_id,
+                    "status": new_status
+                }
+            }
+            return jsonify(response), 200
+        else:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to update quote status",
+                "error": "Quote not found or update failed"
+            }), 404
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating quote status {quote_id}: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to update quote status",
+            "error": str(e)
+        }), 500
+
+
+# ========================
+# LEGACY COMPATIBILITY ENDPOINTS
+# ========================
+
+@proposals_bp.route("/legacy/<proposal_id>", methods=["GET"])
+def get_legacy_proposal(proposal_id: str):
+    """
+    Legacy compatibility endpoint for old proposal format
+    """
+    logger.info(f"📚 Legacy proposal endpoint called for ID: {proposal_id}")
+    return get_proposal(proposal_id)

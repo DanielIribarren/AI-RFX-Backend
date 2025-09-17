@@ -1,6 +1,6 @@
 """
-🔌 Database Client V2.0 - English Schema Compatible
-Centralized database operations with the new normalized structure
+🔌 Database Client V3.0 - Budy AI Schema Compatible
+Centralized database operations adapted to the new normalized budy-ai-schema.sql structure
 """
 from typing import Optional, Dict, Any, List, Union
 from supabase import create_client, Client
@@ -34,378 +34,372 @@ class DatabaseClient:
         return self._client
     
     def health_check(self) -> bool:
-        """Check database connection health"""
+        """Check database connection health using budy-ai-schema"""
         try:
-            # Simple query to check connection - use rfx_v2 for V2.0 schema
-            response = self.client.table("rfx_v2").select("id").limit(1).execute()
+            # Test with projects table (main table in new schema)
+            response = self.client.table("projects").select("id").limit(1).execute()
             return True
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
-            # Fallback to old table if V2.0 not available
-            try:
-                response = self.client.table("rfx").select("id").limit(1).execute()
-                return True
-            except:
-                return False
+            return False
     
     # ========================
-    # COMPANY OPERATIONS
+    # ORGANIZATION OPERATIONS (UPDATED FROM COMPANIES)
     # ========================
     
-    def insert_company(self, company_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert or update company information"""
+    def insert_organization(self, org_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert new organization (updated from company)"""
         try:
-            # Check if company exists by name or email
-            existing = None
-            if company_data.get("email"):
-                existing = self.client.table("companies")\
-                    .select("*")\
-                    .eq("email", company_data["email"])\
-                    .execute()
+            if 'id' not in org_data:
+                org_data['id'] = str(uuid4())
             
-            if not existing or not existing.data:
-                # Also check by name
-                existing = self.client.table("companies")\
-                    .select("*")\
-                    .eq("name", company_data["name"])\
-                    .execute()
+            # Set defaults for new organization
+            if 'plan_type' not in org_data:
+                org_data['plan_type'] = 'free'
+            if 'default_currency' not in org_data:
+                org_data['default_currency'] = 'USD'
+            if 'language_preference' not in org_data:
+                org_data['language_preference'] = 'es'
             
-            if existing and existing.data:
-                # Update existing company
-                response = self.client.table("companies")\
-                    .update(company_data)\
-                    .eq("id", existing.data[0]["id"])\
-                    .execute()
-                logger.info(f"✅ Company updated: {company_data['name']}")
-                return response.data[0] if response.data else existing.data[0]
+            response = self.client.table("organizations").insert(org_data).execute()
+            if response.data:
+                logger.info(f"✅ Organization inserted: {org_data.get('name')} (ID: {response.data[0]['id']})")
+                return response.data[0]
             else:
-                # Insert new company
-                if 'id' not in company_data:
-                    company_data['id'] = str(uuid4())
-                
-                response = self.client.table("companies")\
-                    .insert(company_data)\
-                    .execute()
-                logger.info(f"✅ Company inserted: {company_data['name']}")
-                return response.data[0] if response.data else company_data
-                
+                raise Exception("No data returned from organization insert")
         except Exception as e:
-            logger.error(f"❌ Failed to insert/update company: {e}")
+            logger.error(f"❌ Failed to insert organization: {e}")
             raise
     
-    def get_company_by_id(self, company_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
-        """Get company by ID"""
+    def get_organization_by_id(self, org_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
+        """Get organization by ID"""
         try:
-            response = self.client.table("companies")\
+            response = self.client.table("organizations")\
                 .select("*")\
-                .eq("id", str(company_id))\
+                .eq("id", str(org_id))\
                 .execute()
             
-            if response.data:
-                return response.data[0]
-            return None
+            return response.data[0] if response.data else None
         except Exception as e:
-            logger.error(f"❌ Failed to get company {company_id}: {e}")
+            logger.error(f"❌ Failed to get organization {org_id}: {e}")
             return None
     
-    # ========================
-    # REQUESTER OPERATIONS
-    # ========================
-    
-    def insert_requester(self, requester_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert or update requester information"""
+    def get_organization_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        """Get organization by slug"""
         try:
-            # Check if requester exists by email
-            existing = None
-            if requester_data.get("email"):
-                existing = self.client.table("requesters")\
-                    .select("*")\
-                    .eq("email", requester_data["email"])\
-                    .execute()
-            
-            if existing and existing.data:
-                # Update existing requester
-                response = self.client.table("requesters")\
-                    .update(requester_data)\
-                    .eq("id", existing.data[0]["id"])\
-                    .execute()
-                logger.info(f"✅ Requester updated: {requester_data.get('email', requester_data.get('name'))}")
-                return response.data[0] if response.data else existing.data[0]
-            else:
-                # Insert new requester
-                if 'id' not in requester_data:
-                    requester_data['id'] = str(uuid4())
-                
-                response = self.client.table("requesters")\
-                    .insert(requester_data)\
-                    .execute()
-                logger.info(f"✅ Requester inserted: {requester_data.get('email', requester_data.get('name'))}")
-                return response.data[0] if response.data else requester_data
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to insert/update requester: {e}")
-            raise
-    
-    def get_requester_by_id(self, requester_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
-        """Get requester by ID"""
-        try:
-            response = self.client.table("requesters")\
-                .select("*, companies(*)")\
-                .eq("id", str(requester_id))\
+            response = self.client.table("organizations")\
+                .select("*")\
+                .eq("slug", slug)\
                 .execute()
             
-            if response.data:
-                return response.data[0]
-            return None
+            return response.data[0] if response.data else None
         except Exception as e:
-            logger.error(f"❌ Failed to get requester {requester_id}: {e}")
+            logger.error(f"❌ Failed to get organization by slug {slug}: {e}")
             return None
     
     # ========================
-    # RFX OPERATIONS
+    # USER OPERATIONS (UPDATED FROM REQUESTERS)
     # ========================
     
-    def insert_rfx(self, rfx_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert RFX data into database"""
+    def insert_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert new user (updated from requester)"""
         try:
-            if 'id' not in rfx_data:
-                rfx_data['id'] = str(uuid4())
+            if 'id' not in user_data:
+                user_data['id'] = str(uuid4())
             
-            response = self.client.table("rfx_v2").insert(rfx_data).execute()
+            # Set defaults
+            if 'language_preference' not in user_data:
+                user_data['language_preference'] = 'es'
+            if 'timezone' not in user_data:
+                user_data['timezone'] = 'UTC'
+            if 'is_active' not in user_data:
+                user_data['is_active'] = True
+            
+            response = self.client.table("users").insert(user_data).execute()
             if response.data:
-                logger.info(f"✅ RFX inserted successfully: {response.data[0]['id']}")
+                logger.info(f"✅ User inserted: {user_data.get('email')} (ID: {response.data[0]['id']})")
                 return response.data[0]
             else:
-                raise Exception("No data returned from insert operation")
+                raise Exception("No data returned from user insert")
         except Exception as e:
-            logger.error(f"❌ Failed to insert RFX: {e}")
+            logger.error(f"❌ Failed to insert user: {e}")
             raise
     
-    def get_rfx_by_id(self, rfx_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
-        """Get RFX by ID with company and requester information"""
+    def get_user_by_id(self, user_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
+        """Get user by ID"""
         try:
-            response = self.client.table("rfx_v2")\
-                .select("*, companies(*), requesters(*)")\
-                .eq("id", str(rfx_id))\
+            response = self.client.table("users")\
+                .select("*")\
+                .eq("id", str(user_id))\
                 .execute()
             
-            if response.data:
-                return response.data[0]
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"❌ Failed to get user {user_id}: {e}")
             return None
-        except Exception as e:
-            logger.error(f"❌ Failed to get RFX {rfx_id}: {e}")
-            raise
     
-    def get_rfx_history(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get RFX history with pagination"""
+    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Get user by email"""
         try:
-            response = self.client.table("rfx_v2")\
-                .select("*, companies(*), requesters(*)")\
-                .order("received_at", desc=True)\
-                .range(offset, offset + limit - 1)\
+            response = self.client.table("users")\
+                .select("*")\
+                .eq("email", email)\
                 .execute()
             
-            return response.data or []
+            return response.data[0] if response.data else None
         except Exception as e:
-            logger.error(f"❌ Failed to get RFX history: {e}")
+            logger.error(f"❌ Failed to get user by email {email}: {e}")
+            return None
+    
+    # ========================
+    # PROJECT OPERATIONS (UPDATED FROM RFX)
+    # ========================
+    
+    def insert_project(self, project_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert new project (formerly RFX)"""
+        try:
+            if 'id' not in project_data:
+                project_data['id'] = str(uuid4())
+            
+            # Generate project number if not provided
+            if 'project_number' not in project_data:
+                from datetime import datetime
+                project_data['project_number'] = f"PROJ-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:8].upper()}"
+            
+            # Set defaults
+            if 'status' not in project_data:
+                project_data['status'] = 'draft'
+            if 'project_type' not in project_data:
+                project_data['project_type'] = 'general'
+            if 'currency' not in project_data:
+                project_data['currency'] = 'USD'
+            if 'priority' not in project_data:
+                project_data['priority'] = 3
+            
+            response = self.client.table("projects").insert(project_data).execute()
+            if response.data:
+                logger.info(f"✅ Project inserted: {project_data.get('name')} (ID: {response.data[0]['id']})")
+                return response.data[0]
+            else:
+                raise Exception("No data returned from project insert")
+        except Exception as e:
+            logger.error(f"❌ Failed to insert project: {e}")
             raise
     
-    def get_latest_rfx(self, limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get latest RFX ordered by creation date with optimized query for load-more pattern"""
+    def get_project_by_id(self, project_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
+        """Get project by ID with full context"""
         try:
-            # Use created_at as primary sort, fallback to received_at if needed
-            response = self.client.table("rfx_v2")\
-                .select("*, companies(*), requesters(*)")\
+            response = self.client.table("projects")\
+                .select("*, organizations(*), users!projects_created_by_fkey(*)")\
+                .eq("id", str(project_id))\
+                .execute()
+            
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"❌ Failed to get project {project_id}: {e}")
+            return None
+    
+    def get_projects_by_organization(self, org_id: Union[str, UUID], 
+                                   limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get projects for an organization with pagination"""
+        try:
+            response = self.client.table("projects")\
+                .select("*, organizations(*), users!projects_created_by_fkey(*)")\
+                .eq("organization_id", str(org_id))\
                 .order("created_at", desc=True)\
                 .range(offset, offset + limit - 1)\
                 .execute()
             
-            logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} latest RFX (offset: {offset}, limit: {limit})")
+            logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} projects for org {org_id}")
             return response.data or []
         except Exception as e:
-            # Fallback to received_at if created_at doesn't work
-            logger.warning(f"⚠️ Primary query failed, trying fallback: {e}")
-            try:
-                response = self.client.table("rfx_v2")\
-                    .select("*, companies(*), requesters(*)")\
-                    .order("received_at", desc=True)\
-                    .range(offset, offset + limit - 1)\
-                    .execute()
-                
-                logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} latest RFX via fallback")
-                return response.data or []
-            except Exception as fallback_error:
-                logger.error(f"❌ Both queries failed: {fallback_error}")
-                raise
+            logger.error(f"❌ Failed to get projects for organization {org_id}: {e}")
+            return []
     
-    def update_rfx_status(self, rfx_id: Union[str, UUID], status: str) -> bool:
-        """Update RFX status"""
+    def get_latest_projects(self, org_id: Union[str, UUID] = None, 
+                          limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
+        """Get latest projects with organization context"""
         try:
-            response = (
-                self.client.table("rfx_v2")
-                .update({"status": status})
-                .eq("id", str(rfx_id))
+            query = self.client.table("projects")\
+                .select("*, organizations(*), users!projects_created_by_fkey(*)")\
+                .order("created_at", desc=True)\
+                .range(offset, offset + limit - 1)
+            
+            if org_id:
+                query = query.eq("organization_id", str(org_id))
+            
+            response = query.execute()
+            
+            logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} latest projects")
+            return response.data or []
+        except Exception as e:
+            logger.error(f"❌ Failed to get latest projects: {e}")
+            return []
+    
+    def update_project_status(self, project_id: Union[str, UUID], status: str) -> bool:
+        """Update project status"""
+        try:
+            from datetime import datetime
+            response = self.client.table("projects")\
+                .update({"status": status, "updated_at": datetime.now().isoformat()})\
+                .eq("id", str(project_id))\
                 .execute()
-            )
             
             if response.data and len(response.data) > 0:
-                logger.info(f"✅ RFX status updated: {rfx_id} -> {status}")
+                logger.info(f"✅ Project status updated: {project_id} -> {status}")
                 return True
             else:
-                logger.warning(f"⚠️ No RFX found to update: {rfx_id}")
+                logger.warning(f"⚠️ No project found to update: {project_id}")
                 return False
-                
         except Exception as e:
-            logger.error(f"❌ Failed to update RFX status: {e}")
+            logger.error(f"❌ Failed to update project status: {e}")
             raise
     
-    def update_rfx_data(self, rfx_id: Union[str, UUID], update_data: Dict[str, Any]) -> bool:
-        """Update RFX data fields (requester, company, delivery info, etc.)"""
+    def update_project_data(self, project_id: Union[str, UUID], update_data: Dict[str, Any]) -> bool:
+        """Update project data fields"""
         try:
-            logger.info(f"🔄 DEBUG: update_rfx_data called for RFX: {rfx_id}")
-            logger.info(f"🔄 DEBUG: Raw update_data: {update_data}")
+            logger.info(f"🔄 Updating project data for: {project_id}")
             
-            # Define allowed fields to update (security measure)
-            # NOTA: Solo campos que realmente existen en la tabla rfx_v2 del esquema V2.0
+            # Define allowed fields to update based on budy-ai-schema projects table
             allowed_fields = {
-                "delivery_date", "delivery_time", "location", "requirements", 
-                "metadata_json", "description", "title", "status", "priority",
-                "estimated_budget", "actual_cost"
+                "name", "description", "client_name", "client_email", "client_phone", 
+                "client_company", "client_type", "service_date", "service_location", 
+                "estimated_attendees", "service_duration_hours", "estimated_budget", 
+                "currency", "deadline", "tags", "priority", "status"
             }
-            
-            logger.info(f"🔄 DEBUG: Allowed fields: {allowed_fields}")
             
             # Filter update_data to only include allowed fields
             filtered_data = {k: v for k, v in update_data.items() if k in allowed_fields}
             
-            logger.info(f"🔄 DEBUG: Filtered data: {filtered_data}")
-            
             if not filtered_data:
-                logger.warning(f"⚠️ DEBUG: No valid fields to update for RFX {rfx_id}")
-                logger.warning(f"⚠️ DEBUG: Attempted fields: {list(update_data.keys())}")
+                logger.warning(f"⚠️ No valid fields to update for project {project_id}")
+                logger.warning(f"⚠️ Attempted fields: {list(update_data.keys())}")
                 return False
             
-            logger.info(f"🔄 DEBUG: Executing database update for RFX {rfx_id}")
-            logger.info(f"🔄 DEBUG: Table: rfx_v2, Update data: {filtered_data}")
+            # Add updated_at timestamp
+            from datetime import datetime
+            filtered_data['updated_at'] = datetime.now().isoformat()
             
-            response = (
-                self.client.table("rfx_v2")
-                .update(filtered_data)
-                .eq("id", str(rfx_id))
+            logger.info(f"🔄 Executing project update with fields: {list(filtered_data.keys())}")
+            
+            response = self.client.table("projects")\
+                .update(filtered_data)\
+                .eq("id", str(project_id))\
                 .execute()
-            )
-            
-            logger.info(f"🔍 DEBUG: Database response: {response}")
-            logger.info(f"🔍 DEBUG: Response data: {response.data}")
-            logger.info(f"🔍 DEBUG: Response data length: {len(response.data) if response.data else 0}")
             
             if response.data and len(response.data) > 0:
-                logger.info(f"✅ DEBUG: RFX data updated successfully: {rfx_id} -> {list(filtered_data.keys())}")
-                logger.info(f"✅ DEBUG: Updated record: {response.data[0] if response.data else 'No data'}")
+                logger.info(f"✅ Project data updated successfully: {project_id}")
                 return True
             else:
-                logger.warning(f"⚠️ DEBUG: No RFX found to update: {rfx_id}")
-                logger.warning(f"⚠️ DEBUG: This could mean the RFX ID doesn't exist in the database")
+                logger.warning(f"⚠️ No project found to update: {project_id}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ DEBUG: Exception in update_rfx_data: {e}")
-            logger.error(f"❌ DEBUG: Exception type: {type(e)}")
-            import traceback
-            logger.error(f"❌ DEBUG: Full traceback: {traceback.format_exc()}")
+            logger.error(f"❌ Failed to update project data: {e}")
             raise
     
     # ========================
-    # RFX PRODUCTS OPERATIONS
+    # PROJECT ITEMS OPERATIONS (UPDATED FROM RFX_PRODUCTS)
     # ========================
     
-    def insert_rfx_products(self, rfx_id: Union[str, UUID], products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Insert structured products for an RFX"""
+    def insert_project_items(self, project_id: Union[str, UUID], items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Insert project items (formerly RFX products)"""
         try:
-            if not products:
-                logger.warning(f"No products to insert for RFX {rfx_id}")
+            if not items:
+                logger.warning(f"No items to insert for project {project_id}")
                 return []
             
-            products_data = []
-            for i, product in enumerate(products):
-                product_data = product.copy()
-                product_data['rfx_id'] = str(rfx_id)
-                if 'id' not in product_data:
-                    product_data['id'] = str(uuid4())
+            items_data = []
+            for i, item in enumerate(items):
+                item_data = item.copy()
+                item_data['project_id'] = str(project_id)
+                if 'id' not in item_data:
+                    item_data['id'] = str(uuid4())
                 
-                # Ensure required fields exist
-                if 'product_name' not in product_data or not product_data['product_name']:
-                    logger.warning(f"Product {i} missing product_name, skipping")
-                    continue
-                    
-                if 'quantity' not in product_data:
-                    product_data['quantity'] = 1
-                    
-                if 'unit' not in product_data:
-                    product_data['unit'] = 'unidades'
+                # Ensure required fields - map from legacy fields if needed
+                if 'name' not in item_data:
+                    if 'product_name' in item_data:
+                        item_data['name'] = item_data['product_name']
+                    else:
+                        logger.warning(f"Item {i} missing name, skipping")
+                        continue
                 
-                # Clean any None values that might cause issues
-                for key, value in list(product_data.items()):
-                    if value is None and key not in ['estimated_unit_price', 'total_estimated_cost', 'supplier_id', 'catalog_product_id', 'description', 'notes']:
-                        del product_data[key]
+                if 'quantity' not in item_data:
+                    item_data['quantity'] = 1
                 
-                products_data.append(product_data)
-                logger.debug(f"✅ Prepared product {i}: {product_data.get('product_name')} (ID: {product_data['id']})")
+                if 'unit_of_measure' not in item_data:
+                    item_data['unit_of_measure'] = item_data.get('unit', 'pieces')
+                
+                # Map legacy pricing fields
+                if 'unit_price' not in item_data and 'estimated_unit_price' in item_data:
+                    item_data['unit_price'] = item_data['estimated_unit_price']
+                
+                if 'total_price' not in item_data and 'total_estimated_cost' in item_data:
+                    item_data['total_price'] = item_data['total_estimated_cost']
+                
+                # Clean any None values
+                for key, value in list(item_data.items()):
+                    if value is None and key not in ['unit_price', 'total_price', 'source_document_id', 'description', 'notes']:
+                        del item_data[key]
+                
+                items_data.append(item_data)
+                logger.debug(f"✅ Prepared item {i}: {item_data.get('name')} (ID: {item_data['id']})")
             
-            if not products_data:
-                logger.warning(f"No valid products to insert for RFX {rfx_id}")
+            if not items_data:
+                logger.warning(f"No valid items to insert for project {project_id}")
                 return []
             
-            logger.info(f"🔄 Inserting {len(products_data)} products for RFX {rfx_id}")
-            response = self.client.table("rfx_products").insert(products_data).execute()
+            logger.info(f"🔄 Inserting {len(items_data)} items for project {project_id}")
+            response = self.client.table("project_items").insert(items_data).execute()
             
             if response.data:
-                logger.info(f"✅ {len(response.data)} RFX products inserted successfully for RFX {rfx_id}")
-                for product in response.data:
-                    logger.debug(f"   - {product.get('product_name')} (ID: {product.get('id')})")
+                logger.info(f"✅ {len(response.data)} project items inserted for project {project_id}")
+                for item in response.data:
+                    logger.debug(f"   - {item.get('name')} (ID: {item.get('id')})")
                 return response.data
             else:
-                logger.error(f"❌ No data returned after inserting products for RFX {rfx_id}")
+                logger.error(f"❌ No data returned after inserting items for project {project_id}")
                 return []
                 
         except Exception as e:
-            logger.error(f"❌ Failed to insert RFX products for {rfx_id}: {e}")
-            logger.error(f"❌ Products data that failed: {products_data if 'products_data' in locals() else 'N/A'}")
+            logger.error(f"❌ Failed to insert project items for {project_id}: {e}")
+            logger.error(f"❌ Items data that failed: {items_data if 'items_data' in locals() else 'N/A'}")
             raise
     
-    def get_rfx_products(self, rfx_id: Union[str, UUID]) -> List[Dict[str, Any]]:
-        """Get all products for an RFX"""
+    def get_project_items(self, project_id: Union[str, UUID]) -> List[Dict[str, Any]]:
+        """Get all items for a project"""
         try:
-            # Simple query without JOINs to avoid foreign key errors
-            response = self.client.table("rfx_products")\
+            response = self.client.table("project_items")\
                 .select("*")\
-                .eq("rfx_id", str(rfx_id))\
+                .eq("project_id", str(project_id))\
+                .order("sort_order")\
                 .execute()
             
-            products = response.data or []
-            logger.info(f"✅ Found {len(products)} products for RFX {rfx_id}")
-            return products
+            items = response.data or []
+            logger.info(f"✅ Found {len(items)} items for project {project_id}")
+            return items
         except Exception as e:
-            logger.error(f"❌ Failed to get RFX products for {rfx_id}: {e}")
+            logger.error(f"❌ Failed to get project items for {project_id}: {e}")
             return []
     
-    def update_rfx_product_cost(self, rfx_id: Union[str, UUID], product_id: str, unit_price: float) -> bool:
-        """Update unit price for a specific RFX product"""
+    def update_project_item_cost(self, project_id: Union[str, UUID], item_id: str, unit_price: float) -> bool:
+        """Update unit price for a specific project item"""
         try:
-            response = self.client.table("rfx_products")\
-                .update({"estimated_unit_price": unit_price})\
-                .eq("rfx_id", str(rfx_id))\
-                .eq("id", product_id)\
+            from datetime import datetime
+            response = self.client.table("project_items")\
+                .update({"unit_price": unit_price, "updated_at": datetime.now().isoformat()})\
+                .eq("project_id", str(project_id))\
+                .eq("id", item_id)\
                 .execute()
             
             if response.data:
-                logger.info(f"✅ Updated product {product_id} cost to ${unit_price:.2f}")
+                logger.info(f"✅ Updated item {item_id} cost to ${unit_price:.2f}")
                 return True
             else:
-                logger.warning(f"⚠️ No product found to update: RFX {rfx_id}, Product {product_id}")
+                logger.warning(f"⚠️ No item found to update: Project {project_id}, Item {item_id}")
                 return False
         except Exception as e:
-            logger.error(f"❌ Failed to update product cost: {e}")
+            logger.error(f"❌ Failed to update item cost: {e}")
             return False
     
     # ========================
@@ -467,26 +461,43 @@ class DatabaseClient:
             return None
     
     # ========================
-    # DOCUMENT OPERATIONS
+    # QUOTES OPERATIONS (UPDATED FROM DOCUMENTS)
     # ========================
     
-    def insert_generated_document(self, doc_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert generated document record with V2.0 schema mapping"""
+    def insert_quote(self, quote_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert generated quote (formerly document)"""
         try:
-            if 'id' not in doc_data:
-                doc_data['id'] = str(uuid4())
+            if 'id' not in quote_data:
+                quote_data['id'] = str(uuid4())
             
-            # ✅ Map legacy Spanish column names to V2.0 English schema
-            mapped_data = self._map_document_data_to_v2(doc_data)
+            # Generate quote number if not provided
+            if 'quote_number' not in quote_data:
+                from datetime import datetime
+                quote_number = f"QTE-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:8].upper()}"
+                quote_data['quote_number'] = quote_number
             
-            response = self.client.table("generated_documents").insert(mapped_data).execute()
+            # Set defaults
+            if 'status' not in quote_data:
+                quote_data['status'] = 'draft'
+            if 'version' not in quote_data:
+                quote_data['version'] = 1
+            if 'currency' not in quote_data:
+                quote_data['currency'] = 'USD'
+            if 'generation_method' not in quote_data:
+                quote_data['generation_method'] = 'ai_assisted'
+            
+            # Map legacy document fields to quote fields if needed
+            if any(legacy_field in quote_data for legacy_field in ['rfx_id', 'content_html', 'total_cost']):
+                quote_data = self._map_document_to_quote_fields(quote_data)
+            
+            response = self.client.table("quotes").insert(quote_data).execute()
             if response.data:
-                logger.info(f"✅ Document record inserted: {response.data[0]['id']}")
+                logger.info(f"✅ Quote inserted: {quote_data.get('quote_number')} (ID: {response.data[0]['id']})")
                 return response.data[0]
             else:
-                raise Exception("No data returned from document insert")
+                raise Exception("No data returned from quote insert")
         except Exception as e:
-            logger.error(f"❌ Failed to insert document record: {e}")
+            logger.error(f"❌ Failed to insert quote: {e}")
             raise
     
     def _map_document_data_to_v2(self, doc_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -536,35 +547,32 @@ class DatabaseClient:
         logger.debug(f"🔄 Mapped document data: {list(field_mapping.keys())} -> {list(mapped_data.keys())}")
         return mapped_data
     
-    def get_document_by_id(self, doc_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
-        """Get generated document by ID"""
+    def get_quote_by_id(self, quote_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
+        """Get quote by ID"""
         try:
-            response = self.client.table("generated_documents")\
-                .select("*")\
-                .eq("id", str(doc_id))\
+            response = self.client.table("quotes")\
+                .select("*, projects(*), organizations(*)")\
+                .eq("id", str(quote_id))\
                 .execute()
             
-            if response.data:
-                return response.data[0]
-            return None
+            return response.data[0] if response.data else None
         except Exception as e:
-            logger.error(f"❌ Failed to get document {doc_id}: {e}")
-            raise
+            logger.error(f"❌ Failed to get quote {quote_id}: {e}")
+            return None
     
-    def get_proposals_by_rfx_id(self, rfx_id: Union[str, UUID]) -> List[Dict[str, Any]]:
-        """Get all proposals for a specific RFX"""
+    def get_quotes_by_project(self, project_id: Union[str, UUID]) -> List[Dict[str, Any]]:
+        """Get all quotes for a project"""
         try:
-            response = self.client.table("generated_documents")\
+            response = self.client.table("quotes")\
                 .select("*")\
-                .eq("rfx_id", str(rfx_id))\
-                .eq("document_type", "proposal")\
+                .eq("project_id", str(project_id))\
                 .order("created_at", desc=True)\
                 .execute()
             
             return response.data or []
         except Exception as e:
-            logger.error(f"❌ Failed to get proposals for RFX {rfx_id}: {e}")
-            raise
+            logger.error(f"❌ Failed to get quotes for project {project_id}: {e}")
+            return []
     
     # ========================
     # HISTORY & AUDIT
@@ -903,6 +911,114 @@ def get_database_client() -> DatabaseClient:
         _db_client = DatabaseClient()
     return _db_client
 
+
+# Helper function for document to quote mapping
+def _map_document_to_quote_fields(self, doc_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Map legacy document fields to new quote structure"""
+    quote_data = doc_data.copy()
+    
+    field_mapping = {
+        'rfx_id': 'project_id',
+        'content_html': 'html_content',
+        'total_cost': 'total_amount',
+        'created_by': 'created_by'
+    }
+    
+    for old_key, new_key in field_mapping.items():
+        if old_key in quote_data:
+            quote_data[new_key] = quote_data.pop(old_key)
+    
+    # Ensure subtotal is set
+    if 'subtotal' not in quote_data and 'total_amount' in quote_data:
+        quote_data['subtotal'] = quote_data['total_amount']
+    
+    return quote_data
+
+# Add legacy compatibility methods
+DatabaseClient._map_document_to_quote_fields = _map_document_to_quote_fields
+
+# Legacy method aliases
+def insert_rfx(self, rfx_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Legacy alias: RFX -> Project"""
+    # Map legacy RFX fields to new project fields
+    project_data = self._map_rfx_to_project(rfx_data)
+    return self.insert_project(project_data)
+
+def get_rfx_by_id(self, rfx_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
+    """Legacy alias: RFX -> Project"""
+    project = self.get_project_by_id(rfx_id)
+    if project:
+        return self._map_project_to_rfx(project)
+    return None
+
+def get_rfx_history(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    """Legacy alias: Get project history"""
+    logger.warning("⚠️ get_rfx_history called - requires organization context in new schema")
+    return []
+
+def get_latest_rfx(self, limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
+    """Legacy alias: Get latest projects"""
+    logger.warning("⚠️ get_latest_rfx called - requires organization context in new schema")
+    return []
+
+def insert_rfx_products(self, rfx_id: Union[str, UUID], products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Legacy alias: RFX Products -> Project Items"""
+    return self.insert_project_items(rfx_id, products)
+
+def get_rfx_products(self, rfx_id: Union[str, UUID]) -> List[Dict[str, Any]]:
+    """Legacy alias: Project Items -> RFX Products"""
+    items = self.get_project_items(rfx_id)
+    return self._map_items_to_products(items)
+
+def save_generated_document(self, doc_data: Dict[str, Any]) -> str:
+    """Legacy alias: Generated Document -> Quote"""
+    result = self.insert_quote(doc_data)
+    return result.get("id", "")
+
+def get_document_by_id(self, doc_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
+    """Legacy alias: Quote -> Document"""
+    quote = self.get_quote_by_id(doc_id)
+    if quote:
+        return self._map_quote_to_document(quote)
+    return None
+
+def get_proposals_by_rfx_id(self, rfx_id: Union[str, UUID]) -> List[Dict[str, Any]]:
+    """Legacy alias: Get quotes for project"""
+    quotes = self.get_quotes_by_project(rfx_id)
+    documents = []
+    for quote in quotes:
+        document = self._map_quote_to_document(quote)
+        documents.append(document)
+    return documents
+
+def find_rfx_by_identifier(self, identifier: str) -> Optional[Dict[str, Any]]:
+    """Legacy alias: Smart project lookup"""
+    project = self.find_project_by_identifier(identifier)
+    if project:
+        return self._map_project_to_rfx(project)
+    return None
+
+def update_rfx_status(self, rfx_id: Union[str, UUID], status: str) -> bool:
+    """Legacy alias: Update project status"""
+    return self.update_project_status(rfx_id, status)
+
+def update_rfx_data(self, rfx_id: Union[str, UUID], update_data: Dict[str, Any]) -> bool:
+    """Legacy alias: Update project data"""  
+    return self.update_project_data(rfx_id, update_data)
+
+# Add legacy methods to DatabaseClient
+DatabaseClient.insert_rfx = insert_rfx
+DatabaseClient.get_rfx_by_id = get_rfx_by_id
+DatabaseClient.get_rfx_history = get_rfx_history
+DatabaseClient.get_latest_rfx = get_latest_rfx
+DatabaseClient.insert_rfx_products = insert_rfx_products
+DatabaseClient.get_rfx_products = get_rfx_products
+DatabaseClient.save_generated_document = save_generated_document
+DatabaseClient.get_document_by_id = get_document_by_id
+DatabaseClient.get_proposals_by_rfx_id = get_proposals_by_rfx_id
+DatabaseClient.find_rfx_by_identifier = find_rfx_by_identifier
+DatabaseClient.update_rfx_status = update_rfx_status
+DatabaseClient.update_rfx_data = update_rfx_data
 
 # Alias for backward compatibility
 def get_supabase() -> Client:
