@@ -22,6 +22,10 @@ from backend.models.proposal_models import (
     map_legacy_quote_request
 )
 from backend.core.database import get_database_client
+from backend.services.budy_agent import get_budy_agent  # NEW: BudyAgent integration
+from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter  # UPDATED: Unified adapter
+from uuid import uuid4
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +76,8 @@ def generate_proposal():
             project_data = db_client.get_project_by_id(quote_request.project_id)
             project_id = quote_request.project_id
         else:
-            # Legacy support: convert rfx_id to project lookup
-            project_data = db_client.get_rfx_by_id(data.get('rfx_id', ''))
+            # Legacy support: convert rfx_id to project lookup using modern method
+            project_data = db_client.get_project_by_id(data.get('rfx_id', ''))
             project_id = data.get('rfx_id', '')
         
         if not project_data:
@@ -104,59 +108,172 @@ def generate_proposal():
             project_data_mapped = project_data
             logger.warning("⚠️ Data mapper not available, using raw project data")
         
-        # Generate quote using the service (lazy import to avoid startup issues)
+        # 🤖 GENERAR PRESUPUESTO CON BUDY AGENT - MOMENTO 3
+        logger.info(f"🤖 Starting quote generation with BudyAgent (MOMENTO 3)")
+        
+        # Obtener BudyAgent
+        budy_agent = get_budy_agent()
+        
+        # Verificar que tenemos contexto del MOMENTO 1
+        agent_context = budy_agent.get_project_context()
+        if not agent_context:
+            logger.warning("⚠️ No BudyAgent context found, this may affect quote quality")
+        
+        # Preparar datos confirmados por el usuario
+        confirmed_data = {
+            'project_id': project_id,
+            'project_data': project_data_mapped,
+            'item_costs': item_costs,
+            'user_notes': getattr(quote_request, 'notes', {}),
+            'service_modality': getattr(quote_request, 'service_modality', 'standard'),
+            'confirmed_at': datetime.utcnow().isoformat()
+        }
+        
+        # Preparar configuración de pricing
+        pricing_config = {
+            'currency': 'USD',  # Default, puede ser configurado
+            'include_coordination': True,
+            'coordination_rate': 0.15,
+            'include_tax': False,
+            'tax_rate': 0.0,
+            'margin_target': 0.20,
+            'payment_terms': '30 días',
+            'validity_days': 30
+        }
+        
+        # Ejecutar BudyAgent MOMENTO 3: Generación de presupuesto
         try:
-            from backend.services.proposal_generator import ProposalGenerationService
-        except Exception as import_error:
-            import traceback
-            logger.error(f"❌ Import error loading ProposalGenerationService: {import_error}\n{traceback.format_exc()}")
+            budy_quote_result = asyncio.run(budy_agent.generate_quote(confirmed_data, pricing_config))
+        except Exception as e:
+            logger.error(f"❌ BudyAgent quote generation failed: {e}")
+            # Fallback a respuesta de error compatible
             return jsonify({
                 "status": "error",
-                "message": "Internal server error - service unavailable",
-                "error": str(import_error)
+                "message": f"Quote generation failed: {str(e)}",
+                "error": "budy_agent_generation_failed"
             }), 500
-
-        # Create legacy proposal request for compatibility with existing service
-        legacy_request_data = {
-            'rfx_id': project_id,
-            'costs': item_costs,
-            'notes': getattr(quote_request, 'notes', {}),
-            'service_modality': getattr(quote_request, 'service_modality', 'standard')
-        }
-        legacy_proposal_request = ProposalRequest(**legacy_request_data)
-
-        proposal_generator = ProposalGenerationService()
         
-        # Execute async generation
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        logger.info(f"✅ BudyAgent MOMENTO 3 completed successfully")
+        
+        # 🗄️ GUARDAR QUOTE EN BUDY-AI-SCHEMA DATABASE
+        db_client = get_database_client()
         
         try:
-            generated_quote = loop.run_until_complete(
-                proposal_generator.generate_proposal(project_data_mapped, legacy_proposal_request)
-            )
-        finally:
-            loop.close()
+            # Extraer datos del quote generado por BudyAgent
+            quote_data_raw = budy_quote_result.get('quote', {})
+            quote_metadata = quote_data_raw.get('quote_metadata', {})
+            pricing_breakdown = quote_data_raw.get('pricing_breakdown', {})
+            quote_structure = quote_data_raw.get('quote_structure', {})
+            html_content = quote_data_raw.get('html_content', '')
+            
+            # Preparar datos para tabla QUOTES
+            quote_record = {
+                'id': quote_metadata.get('quote_number', str(uuid4())),
+                'project_id': project_id,
+                'title': quote_metadata.get('project_title', 'Presupuesto sin título'),
+                'description': f"Presupuesto generado por BudyAgent para {quote_metadata.get('client_name', 'cliente')}",
+                'status': 'generated',
+                'version': 1,  # Primera versión
+                'total_amount': pricing_breakdown.get('total', quote_metadata.get('total_amount', 0.0)),
+                'currency': quote_metadata.get('currency', 'USD'),
+                'tax_amount': pricing_breakdown.get('tax', 0.0),
+                'discount_amount': 0.0,  # No aplica descuentos por defecto
+                'subtotal': pricing_breakdown.get('subtotal', 0.0),
+                'valid_until': quote_metadata.get('valid_until'),
+                'notes': f"Generado con BudyAgent v1.0 - Complejidad: {quote_metadata.get('complexity_level', 'medium')}",
+                'template_used': 'budy_agent_standard',
+                'generation_data': {
+                    'model_used': budy_quote_result.get('metadata', {}).get('model_used', 'gpt-4o'),
+                    'generation_time': budy_quote_result.get('metadata', {}).get('generation_time', 0),
+                    'budy_agent_version': '1.0',
+                    'momento_3_timestamp': datetime.utcnow().isoformat(),
+                    'quote_structure': quote_structure,
+                    'pricing_breakdown': pricing_breakdown,
+                    'recommendations': quote_data_raw.get('recommendations', [])
+                },
+                'html_content': html_content,
+                'created_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            # Guardar quote en BD
+            saved_quote = db_client.insert_quote(quote_record)
+            quote_id = saved_quote['id']
+            logger.info(f"💰 Quote saved to database: {quote_id}")
+            
+            # Actualizar estado del proyecto a 'quoted'
+            try:
+                db_client.update_project_status(project_id, 'quoted')
+                logger.info(f"📋 Project status updated to 'quoted'")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to update project status: {e}")
+            
+            # Guardar estado del workflow - MOMENTO 3
+            try:
+                workflow_state = {
+                    'project_id': project_id,
+                    'step_name': 'momento_3_generation',
+                    'step_status': 'completed',
+                    'step_data': {
+                        'quote_id': quote_id,
+                        'model_used': budy_quote_result.get('metadata', {}).get('model_used', 'gpt-4o'),
+                        'generation_time': budy_quote_result.get('metadata', {}).get('generation_time', 0),
+                        'total_amount': quote_record['total_amount'],
+                        'currency': quote_record['currency'],
+                        'generation_method': 'budy_agent_v1.0'
+                    },
+                    'created_at': datetime.utcnow().isoformat()
+                }
+                db_client.insert_workflow_state(workflow_state)
+                logger.info(f"🔄 Saved workflow state for MOMENTO 3")
+            except Exception as e:
+                logger.error(f"❌ Failed to save workflow state: {e}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to save quote to database: {e}")
+            # Continuar con adaptador legacy incluso si BD falla
+            quote_id = quote_metadata.get('quote_number', 'UNKNOWN')
         
-        # The document is already saved by ProposalGenerationService
-        # Use the existing ID from the generated quote
-        quote_id = str(generated_quote.id)
+        # 🔄 CONVERTIR A FORMATO LEGACY CON ADAPTADOR UNIFICADO
+        unified_adapter = UnifiedLegacyAdapter()
         
-        # Create modern response (maintaining backward compatibility)
+        # Agregar project_id y quote_id al resultado para el adaptador
+        budy_quote_result['project_id'] = project_id
+        budy_quote_result['quote_id'] = quote_id
+        
+        # Convertir a formato legacy usando adaptador unificado
+        legacy_proposal = unified_adapter.convert_to_format(budy_quote_result, target_format='proposal')
+        
+        # Estructurar respuesta API compatible con frontend
         response_data = {
-            "status": "success",
-            "message": "Quote generated successfully",
-            "data": {
-                "id": quote_id,
-                "project_id": project_id,
-                "rfx_id": project_id,  # Legacy compatibility
-                "quote": generated_quote.model_dump() if hasattr(generated_quote, 'model_dump') else generated_quote,
-                "download_url": f"/api/download/{quote_id}",
-                "pdf_url": f"/api/download/{quote_id}"  # Legacy compatibility
+            'status': budy_quote_result.get('status', 'success'),
+            'message': 'Quote generated successfully with BudyAgent',
+            'data': {
+                'id': legacy_proposal.get('id'),
+                'project_id': legacy_proposal.get('project_id'),
+                'rfx_id': legacy_proposal.get('rfx_id'),  # Legacy compatibility
+                'quote': legacy_proposal,
+                'download_url': legacy_proposal.get('download_url'),
+                'pdf_url': legacy_proposal.get('pdf_url'),
+                'metadata': {
+                    'generation_method': 'budy_agent_v1.0',
+                    'momento_3_completed': True,
+                    'context_used': True,
+                    'generation_time': legacy_proposal.get('generation_time', 0.0),
+                    'quality_indicators': legacy_proposal.get('quality_indicators', {})
+                }
             }
         }
         
-        logger.info(f"✅ Quote generated successfully: {quote_id}")
+        # Asegurar que los IDs estén en la respuesta
+        response_data['data']['id'] = quote_id
+        response_data['data']['quote_id'] = quote_id
+        response_data['data']['project_id'] = project_id
+        
+        logger.info(f"🔄 Successfully converted quote to legacy API format with BD integration")
+        logger.info(f"✅ Complete quote generation finished: BudyAgent + BD Save + Legacy Format")
+        logger.info(f"💰 Quote ID: {quote_id} | Project ID: {project_id}")
+        
         return jsonify(response_data), 200
         
     except ValidationError as e:

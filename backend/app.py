@@ -19,7 +19,7 @@ from backend.api.projects import projects_bp  # New modern project management AP
 from backend.api.proposals import proposals_bp
 from backend.api.download import download_bp
 from backend.api.pricing import pricing_bp
-from backend.models.rfx_models import RFXResponse
+from backend.models.project_models import RFXResponse
 
 # Configure logging
 logging.basicConfig(

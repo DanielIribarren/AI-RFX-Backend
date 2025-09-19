@@ -264,64 +264,290 @@ class OrganizationUserModel(BaseModel):
 
 
 # ========================
+# LEGACY COMPATIBILITY ENUMS (from rfx_models.py)
+# ========================
+
+class RFXType(str, Enum):
+    """Legacy RFX types - mapped to ProjectTypeEnum"""
+    CATERING = "catering"
+    EVENTS = "events"
+    SUPPLIES = "supplies" 
+    SERVICES = "services"
+    CONSTRUCTION = "construction"
+    MAINTENANCE = "maintenance"
+
+class RFXStatus(str, Enum):
+    """Legacy RFX status - mapped to ProjectStatusEnum"""
+    DRAFT = "draft"
+    IN_PROGRESS = "active"  # Map to active status
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    EXPIRED = "cancelled"  # Map to cancelled
+
+class PriorityLevel(str, Enum):
+    """Priority levels"""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    URGENT = "urgent"
+
+class IndustryType(str, Enum):
+    """Industry categories for SaaS general capabilities"""
+    GENERAL = "general"
+    CATERING = "catering"
+    EVENTS = "events"
+    TECHNOLOGY = "technology"
+    HEALTHCARE = "healthcare"
+    CONSTRUCTION = "construction"
+    SERVICES = "services"
+    EDUCATION = "education"
+    RETAIL = "retail"
+
+class ServiceCategory(str, Enum):
+    """Service categories for granular classification"""
+    GENERAL = "general"
+    CATERING = "catering"
+    SUPPLY_CHAIN = "supply_chain"
+    CONSULTING = "consulting"
+    MAINTENANCE = "maintenance"
+    TECHNOLOGY = "technology"
+    DESIGN = "design"
+    TRAINING = "training"
+
+# ========================
+# UNIFIED INPUT MODELS
+# ========================
+
+class ProjectInput(BaseModel):
+    """
+    🎯 UNIFIED Project Input Model
+    Consolidates RFXInput + ProjectInput with backward compatibility
+    """
+    # Core required fields
+    id: str = Field(..., min_length=1, description="Project/RFX unique identifier")
+    project_type: ProjectTypeEnum = Field(ProjectTypeEnum.CATERING, description="Project category")
+    
+    # Optional content fields (name is optional for backward compatibility with RFXInput)
+    name: Optional[str] = Field(None, description="Project name/title")
+    pdf_url: Optional[str] = Field(None, description="URL to uploaded PDF document")
+    extracted_content: Optional[str] = Field(None, description="Pre-extracted text content")
+    requirements: Optional[str] = Field(None, max_length=2000, description="Specific client requirements")
+    
+    # SaaS extension fields (all optional for backward compatibility)
+    industry_type: Optional[IndustryType] = Field(IndustryType.GENERAL, description="Industry category")
+    service_category: Optional[ServiceCategory] = Field(ServiceCategory.GENERAL, description="Service classification")
+    complexity_score: Optional[float] = Field(None, ge=0.0, le=1.0, description="AI complexity score")
+    context_analysis: Optional[Dict[str, Any]] = Field(default_factory=dict, description="AI context analysis")
+    
+    # Legacy compatibility properties
+    @property
+    def rfx_type(self) -> str:
+        """Legacy compatibility: rfx_type → project_type"""
+        return self.project_type.value if hasattr(self.project_type, 'value') else self.project_type if hasattr(self.project_type, 'value') else self.project_type
+    
+    @rfx_type.setter
+    def rfx_type(self, value: str):
+        """Legacy compatibility: rfx_type ← project_type"""
+        if isinstance(value, str):
+            # Map RFX types to Project types
+            type_mapping = {
+                "catering": ProjectTypeEnum.CATERING,
+                "events": ProjectTypeEnum.EVENTS,
+                "supplies": ProjectTypeEnum.GENERAL,  # Map to general
+                "services": ProjectTypeEnum.CONSULTING,  # Map to consulting
+                "construction": ProjectTypeEnum.CONSTRUCTION,
+                "maintenance": ProjectTypeEnum.GENERAL  # Map to general
+            }
+            self.project_type = type_mapping.get(value, ProjectTypeEnum.GENERAL)
+
+    @validator('complexity_score')
+    def validate_complexity_score(cls, v):
+        """Ensure complexity score is within valid range"""
+        if v is not None and (v < 0.0 or v > 1.0):
+            raise ValueError("Complexity score must be between 0.0 and 1.0")
+        return v
+
+    class Config:
+        use_enum_values = True
+
+# ========================
 # PROJECT MODELS
 # ========================
 
 class ProjectModel(BaseModel):
-    """Main project model (updated from RFXProcessed)"""
+    """
+    🎯 UNIFIED Project Model
+    Consolidates RFXProcessed + ProjectModel with backward compatibility
+    """
+    # Core identification
     id: Optional[UUID] = None
-    organization_id: UUID = Field(..., description="Organization ID")
-    project_number: str = Field(..., min_length=1, max_length=50, pattern=r'^[A-Z0-9-]+$')
-    name: str = Field(..., min_length=1, max_length=255)
+    organization_id: Optional[UUID] = Field(None, description="Organization ID (optional for backward compatibility)")
+    project_number: Optional[str] = Field(None, min_length=1, max_length=50, pattern=r'^[A-Z0-9-]+$')
+    name: str = Field(..., min_length=1, max_length=255, description="Project title/name")
     description: Optional[str] = None
     
-    # Client information
-    client_name: Optional[str] = Field(None, max_length=255)
+    # Client information (unified from both models)
+    client_name: Optional[str] = Field(None, max_length=255, description="Contact person name")
     client_email: Optional[str] = Field(None, pattern=r'^[^@]+@[^@]+\.[^@]+$')
     client_phone: Optional[str] = Field(None, max_length=50)
-    client_company: Optional[str] = Field(None, max_length=255)
+    client_company: Optional[str] = Field(None, max_length=255, description="Client organization name")
     client_type: Optional[ClientTypeEnum] = None
     
-    # Project details
-    project_type: ProjectTypeEnum = ProjectTypeEnum.GENERAL
+    # Project classification
+    project_type: ProjectTypeEnum = ProjectTypeEnum.CATERING
     status: ProjectStatusEnum = ProjectStatusEnum.DRAFT
+    priority: int = Field(3, ge=1, le=5, description="Priority level 1-5")
     
-    # Service/Event details
-    service_date: Optional[datetime] = None
-    service_location: Optional[str] = None
+    # Service/Event details (from both models)
+    service_date: Optional[datetime] = Field(None, description="Event/service date")
+    delivery_date: Optional[date] = Field(None, description="Delivery date")
+    delivery_time: Optional[time] = Field(None, description="Delivery time")
+    service_location: Optional[str] = Field(None, description="Service location")
+    location: Optional[str] = Field(None, description="Primary location (legacy alias)")
     estimated_attendees: Optional[int] = Field(None, gt=0)
     service_duration_hours: Optional[float] = Field(None, gt=0)
     
-    # Financial
-    estimated_budget: Optional[float] = Field(None, ge=0)
+    # Financial information (unified)
+    estimated_budget: Optional[float] = Field(None, ge=0, description="Estimated project budget")
+    actual_cost: Optional[float] = Field(None, ge=0, description="Actual project cost")
     budget_range: Optional[BudgetRangeEnum] = None
     currency: CurrencyEnum = CurrencyEnum.USD
     
-    # Workflow
+    # Requirements and content (from RFX model)
+    requirements: Optional[str] = Field(None, max_length=2000, description="Project requirements")
+    original_pdf_text: Optional[str] = Field(None, description="Original document text")
+    requested_products: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
+    
+    # Processing metadata (from RFX model)
+    metadata_json: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    processing_notes: Optional[str] = None
+    requirements_confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
+    
+    # Workflow management
     workflow_enabled: bool = True
     auto_progression: bool = True
     requires_approval: bool = False
     
-    # Assignment
-    created_by: UUID = Field(..., description="User ID who created the project")
+    # Assignment and tracking
+    created_by: Optional[UUID] = Field(None, description="User ID who created the project")
     assigned_to: Optional[UUID] = Field(None, description="User ID assigned to the project")
     approved_by: Optional[UUID] = Field(None, description="User ID who approved the project")
     
-    # Dates
+    # Timestamps (unified from both models)
     deadline: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    
-    # Metadata
-    tags: List[str] = Field(default_factory=list)
-    priority: int = Field(3, ge=1, le=5, description="Priority level 1-5")
-    
-    # Timestamps
+    received_at: Optional[datetime] = Field(default_factory=datetime.now)
     created_at: Optional[datetime] = Field(default_factory=datetime.now)
     updated_at: Optional[datetime] = Field(default_factory=datetime.now)
+    
+    # Metadata and organization
+    tags: List[str] = Field(default_factory=list)
+    
+    # Products/items compatibility (legacy from RFX)
+    products: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Legacy products list")
+    
+    # Legacy compatibility properties
+    @property
+    def title(self) -> str:
+        """Legacy compatibility: title → name"""
+        return self.name
+    
+    @title.setter
+    def title(self, value: str):
+        """Legacy compatibility: title ← name"""
+        self.name = value
+    
+    @property
+    def rfx_type(self) -> str:
+        """Legacy compatibility: rfx_type → project_type"""
+        return self.project_type.value if hasattr(self.project_type, 'value') else self.project_type
+    
+    @property
+    def rfx_id(self) -> Optional[str]:
+        """Legacy compatibility: rfx_id → id"""
+        return str(self.id) if self.id else None
+    
+    @property
+    def requester_name(self) -> Optional[str]:
+        """Legacy compatibility: requester_name → client_name"""
+        return self.client_name
+        
+    @property
+    def company_name(self) -> Optional[str]:
+        """Legacy compatibility: company_name → client_company"""
+        return self.client_company
+    
+    @property
+    def email(self) -> Optional[str]:
+        """Legacy compatibility: email → client_email"""
+        return self.client_email
+    
+    @validator('location')
+    def validate_location(cls, v):
+        """Validate and clean location field"""
+        if v:
+            return v.strip()
+        return v
+
+    class Config:
+        use_enum_values = True
 
     @validator('name', 'client_name')
     def validate_names(cls, v):
         return v.strip() if v else v
+
+# ========================
+# LEGACY ALIASES FOR BACKWARD COMPATIBILITY
+# ========================
+
+# Legacy class aliases to maintain import compatibility
+RFXInput = ProjectInput
+RFXProcessed = ProjectModel
+
+# Legacy response/input aliases
+class RFXResponse(BaseModel):
+    """Legacy RFX Response wrapper"""
+    status: str = "success"
+    data: Optional[ProjectModel] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+class ProjectResponse(BaseModel):
+    """Modern Project Response"""
+    status: str = "success"
+    data: Optional[ProjectModel] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+# ========================
+# ADDITIONAL MODELS FOR API COMPATIBILITY
+# ========================
+
+class RFXHistoryItem(BaseModel):
+    """RFX history item for legacy compatibility"""
+    id: Optional[str] = None
+    event_type: str = "created"
+    event_data: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = Field(default_factory=datetime.now)
+
+class PaginationInfo(BaseModel):
+    """Pagination information"""
+    page: int = 1
+    per_page: int = 10
+    total: int = 0
+    pages: int = 0
+
+class RFXListResponse(BaseModel):
+    """RFX list response for legacy compatibility"""
+    status: str = "success"
+    data: List[ProjectModel] = Field(default_factory=list)
+    pagination: Optional[PaginationInfo] = None
+
+class LoadMoreRequest(BaseModel):
+    """Load more request for pagination"""
+    page: int = Field(1, ge=1)
+    per_page: int = Field(10, ge=1, le=100)
+    search: Optional[str] = None
 
     class Config:
         use_enum_values = True

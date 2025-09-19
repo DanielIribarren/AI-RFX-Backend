@@ -12,11 +12,12 @@ logger = logging.getLogger(__name__)
 
 
 class DatabaseClient:
-    """Enhanced Supabase client for V2.0 English schema with connection management"""
+    """Enhanced Supabase client V3.0 - Hybrid Schema Support (rfx_v2 + budy-ai-schema)"""
     
     def __init__(self):
         self._client: Optional[Client] = None
         self._config = get_database_config()
+        self._schema_mode: Optional[str] = None  # Will be 'legacy' or 'modern'
     
     @property
     def client(self) -> Client:
@@ -28,16 +29,46 @@ class DatabaseClient:
                     self._config.anon_key
                 )
                 logger.info("✅ Database client connected successfully")
+                # Auto-detect schema mode
+                self._detect_schema_mode()
             except Exception as e:
                 logger.error(f"❌ Failed to connect to database: {e}")
                 raise
         return self._client
     
-    def health_check(self) -> bool:
-        """Check database connection health using budy-ai-schema"""
+    def _detect_schema_mode(self) -> None:
+        """Auto-detect which database schema is available"""
         try:
-            # Test with projects table (main table in new schema)
+            # Try new schema first
             response = self.client.table("projects").select("id").limit(1).execute()
+            self._schema_mode = "modern"
+            logger.info("🆕 Modern schema detected (budy-ai-schema)")
+        except Exception:
+            try:
+                # Fallback to legacy schema
+                response = self.client.table("rfx_v2").select("id").limit(1).execute()
+                self._schema_mode = "legacy"
+                logger.info("📚 Legacy schema detected (rfx_v2)")
+            except Exception as e:
+                logger.error(f"❌ No compatible schema found: {e}")
+                self._schema_mode = "unknown"
+    
+    @property
+    def schema_mode(self) -> str:
+        """Get current schema mode"""
+        if self._schema_mode is None:
+            self._detect_schema_mode()
+        return self._schema_mode or "unknown"
+    
+    def health_check(self) -> bool:
+        """Check database connection health - hybrid mode"""
+        try:
+            if self.schema_mode == "modern":
+                response = self.client.table("projects").select("id").limit(1).execute()
+            elif self.schema_mode == "legacy":
+                response = self.client.table("rfx_v2").select("id").limit(1).execute()
+            else:
+                return False
             return True
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
@@ -48,25 +79,42 @@ class DatabaseClient:
     # ========================
     
     def insert_organization(self, org_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert new organization (updated from company)"""
+        """Insert new organization (hybrid mode: modern=organizations, legacy=companies)"""
         try:
-            if 'id' not in org_data:
-                org_data['id'] = str(uuid4())
-            
-            # Set defaults for new organization
-            if 'plan_type' not in org_data:
-                org_data['plan_type'] = 'free'
-            if 'default_currency' not in org_data:
-                org_data['default_currency'] = 'USD'
-            if 'language_preference' not in org_data:
-                org_data['language_preference'] = 'es'
-            
-            response = self.client.table("organizations").insert(org_data).execute()
-            if response.data:
-                logger.info(f"✅ Organization inserted: {org_data.get('name')} (ID: {response.data[0]['id']})")
-                return response.data[0]
+            if self.schema_mode == "modern":
+                # Modern schema: organizations table
+                if 'id' not in org_data:
+                    org_data['id'] = str(uuid4())
+                if 'plan_type' not in org_data:
+                    org_data['plan_type'] = 'free'
+                if 'default_currency' not in org_data:
+                    org_data['default_currency'] = 'USD'
+                if 'language_preference' not in org_data:
+                    org_data['language_preference'] = 'es'
+                
+                response = self.client.table("organizations").insert(org_data).execute()
+                if response.data:
+                    logger.info(f"✅ Organization inserted (modern): {org_data.get('name')} (ID: {response.data[0]['id']})")
+                    return response.data[0]
+                else:
+                    raise Exception("No data returned from organization insert")
             else:
-                raise Exception("No data returned from organization insert")
+                # Legacy schema: companies table
+                company_data = {
+                    'id': org_data.get('id', str(uuid4())),
+                    'name': org_data.get('name'),
+                    'industry': org_data.get('business_sector'),
+                    'country': org_data.get('country_code', 'Mexico'),
+                    'email': org_data.get('email'),
+                    'phone': org_data.get('phone')
+                }
+                
+                response = self.client.table("companies").insert(company_data).execute()
+                if response.data:
+                    logger.info(f"✅ Organization inserted (legacy): {company_data.get('name')} (ID: {response.data[0]['id']})")
+                    return response.data[0]
+                else:
+                    raise Exception("No data returned from company insert")
         except Exception as e:
             logger.error(f"❌ Failed to insert organization: {e}")
             raise
@@ -187,14 +235,28 @@ class DatabaseClient:
             raise
     
     def get_project_by_id(self, project_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
-        """Get project by ID with full context"""
+        """Get project by ID with full context (hybrid mode)"""
         try:
-            response = self.client.table("projects")\
-                .select("*, organizations(*), users!projects_created_by_fkey(*)")\
-                .eq("id", str(project_id))\
-                .execute()
-            
-            return response.data[0] if response.data else None
+            if self.schema_mode == "modern":
+                # Modern schema: projects table with joins
+                response = self.client.table("projects")\
+                    .select("*, organizations(*), users!projects_created_by_fkey(*)")\
+                    .eq("id", str(project_id))\
+                    .execute()
+                
+                return response.data[0] if response.data else None
+            else:
+                # Legacy schema: rfx_v2 table with joins
+                response = self.client.table("rfx_v2")\
+                    .select("*, companies(*), requesters(*)")\
+                    .eq("id", str(project_id))\
+                    .execute()
+                
+                if response.data:
+                    # Map legacy data to modern format
+                    rfx_data = response.data[0]
+                    return self._map_rfx_to_project(rfx_data)
+                return None
         except Exception as e:
             logger.error(f"❌ Failed to get project {project_id}: {e}")
             return None
@@ -868,37 +930,6 @@ class DatabaseClient:
     def insert_client(self, client_data: Dict[str, Any]) -> Dict[str, Any]:
         """Legacy alias for insert_requester"""
         return self.insert_requester(client_data)
-    
-    def save_generated_document(self, doc_data: Dict[str, Any]) -> str:
-        """Legacy alias for insert_generated_document returning ID with enhanced error logging"""
-        try:
-            logger.debug(f"🔍 save_generated_document called with keys: {list(doc_data.keys())}")
-            
-            # Validate required fields before attempting database operation
-            required_fields = ["id", "rfx_id", "document_type", "content_html"]
-            missing_fields = [field for field in required_fields if field not in doc_data or doc_data[field] is None]
-            
-            if missing_fields:
-                logger.error(f"❌ Missing required fields for document: {missing_fields}")
-                logger.error(f"❌ Available fields: {list(doc_data.keys())}")
-                raise ValueError(f"Missing required fields: {missing_fields}")
-            
-            # Check for valid UUID format
-            try:
-                from uuid import UUID
-                UUID(doc_data["id"])
-                UUID(doc_data["rfx_id"])
-            except ValueError as e:
-                logger.error(f"❌ Invalid UUID format: {e}")
-                raise ValueError(f"Invalid UUID format in document data: {e}")
-            
-            result = self.insert_generated_document(doc_data)
-            return result.get("id", "")
-        except Exception as e:
-            logger.error(f"❌ save_generated_document failed: {e}")
-            logger.error(f"❌ Problematic document data: {doc_data}")
-            raise
-
 
 # Global database client instance
 _db_client: Optional[DatabaseClient] = None
@@ -937,12 +968,7 @@ def _map_document_to_quote_fields(self, doc_data: Dict[str, Any]) -> Dict[str, A
 # Add legacy compatibility methods
 DatabaseClient._map_document_to_quote_fields = _map_document_to_quote_fields
 
-# Legacy method aliases
-def insert_rfx(self, rfx_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Legacy alias: RFX -> Project"""
-    # Map legacy RFX fields to new project fields
-    project_data = self._map_rfx_to_project(rfx_data)
-    return self.insert_project(project_data)
+# Legacy method aliases (only keep actively used methods)
 
 def get_rfx_by_id(self, rfx_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
     """Legacy alias: RFX -> Project"""
@@ -961,64 +987,193 @@ def get_latest_rfx(self, limit: int = 10, offset: int = 0) -> List[Dict[str, Any
     logger.warning("⚠️ get_latest_rfx called - requires organization context in new schema")
     return []
 
-def insert_rfx_products(self, rfx_id: Union[str, UUID], products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Legacy alias: RFX Products -> Project Items"""
-    return self.insert_project_items(rfx_id, products)
-
 def get_rfx_products(self, rfx_id: Union[str, UUID]) -> List[Dict[str, Any]]:
-    """Legacy alias: Project Items -> RFX Products"""
-    items = self.get_project_items(rfx_id)
-    return self._map_items_to_products(items)
-
-def save_generated_document(self, doc_data: Dict[str, Any]) -> str:
-    """Legacy alias: Generated Document -> Quote"""
-    result = self.insert_quote(doc_data)
-    return result.get("id", "")
+    """Legacy alias: Project Items -> RFX Products with simple mapping"""
+    try:
+        items = self.get_project_items(rfx_id)
+        # Simple mapping from project_items to rfx products format
+        products = []
+        for item in items:
+            product = {
+                'id': item.get('id'),
+                'product_name': item.get('name', ''),
+                'quantity': item.get('quantity', 1),
+                'unit': item.get('unit', 'unidades'),
+                'unit_price': item.get('unit_price', 0.0),
+                'total_price': item.get('quantity', 1) * item.get('unit_price', 0.0),
+                'specifications': item.get('description', ''),
+                'category': item.get('category', 'general')
+            }
+            products.append(product)
+        return products
+    except Exception as e:
+        logger.warning(f"⚠️ get_rfx_products failed for {rfx_id}: {e}")
+        return []
 
 def get_document_by_id(self, doc_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
-    """Legacy alias: Quote -> Document"""
-    quote = self.get_quote_by_id(doc_id)
-    if quote:
-        return self._map_quote_to_document(quote)
+    """Legacy alias: Quote -> Document with simple mapping"""
+    try:
+        quote = self.get_quote_by_id(doc_id)
+        if quote:
+            # Simple mapping from quote to document format
+            document = {
+                'id': quote.get('id'),
+                'rfx_id': quote.get('project_id'),  # project_id -> rfx_id
+                'title': quote.get('title', ''),
+                'content_html': quote.get('html_content', ''),
+                'total_amount': quote.get('total_amount', 0.0),
+                'currency': quote.get('currency', 'USD'),
+                'status': quote.get('status', 'generated'),
+                'created_at': quote.get('created_at'),
+                'updated_at': quote.get('updated_at'),
+                'notes': quote.get('notes', ''),
+                'metadata': quote.get('generation_data', {})
+            }
+            return document
+    except Exception as e:
+        logger.warning(f"⚠️ get_document_by_id failed for {doc_id}: {e}")
     return None
 
 def get_proposals_by_rfx_id(self, rfx_id: Union[str, UUID]) -> List[Dict[str, Any]]:
-    """Legacy alias: Get quotes for project"""
-    quotes = self.get_quotes_by_project(rfx_id)
-    documents = []
-    for quote in quotes:
-        document = self._map_quote_to_document(quote)
-        documents.append(document)
-    return documents
+    """Legacy alias: Get quotes for project with simple mapping"""
+    try:
+        quotes = self.get_quotes_by_project(rfx_id)
+        documents = []
+        for quote in quotes:
+            # Use the same mapping as get_document_by_id
+            document = {
+                'id': quote.get('id'),
+                'rfx_id': quote.get('project_id'),
+                'title': quote.get('title', ''),
+                'content_html': quote.get('html_content', ''),
+                'total_amount': quote.get('total_amount', 0.0),
+                'currency': quote.get('currency', 'USD'),
+                'status': quote.get('status', 'generated'),
+                'created_at': quote.get('created_at'),
+                'updated_at': quote.get('updated_at'),
+                'notes': quote.get('notes', ''),
+                'metadata': quote.get('generation_data', {})
+            }
+            documents.append(document)
+        return documents
+    except Exception as e:
+        logger.warning(f"⚠️ get_proposals_by_rfx_id failed for {rfx_id}: {e}")
+        return []
 
 def find_rfx_by_identifier(self, identifier: str) -> Optional[Dict[str, Any]]:
-    """Legacy alias: Smart project lookup"""
-    project = self.find_project_by_identifier(identifier)
-    if project:
-        return self._map_project_to_rfx(project)
+    """Legacy alias: Smart project lookup using modern method"""
+    try:
+        # For now, delegate to find_project_by_identifier if it exists, 
+        # otherwise use get_project_by_id directly
+        if hasattr(self, 'find_project_by_identifier'):
+            project = self.find_project_by_identifier(identifier)
+        else:
+            # Fallback to direct ID lookup
+            project = self.get_project_by_id(identifier)
+        
+        if project:
+            # Use unified adapter to convert to RFX format
+            from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter
+            adapter = UnifiedLegacyAdapter()
+            return adapter.convert_to_format(project, 'rfx')
+    except Exception as e:
+        logger.warning(f"⚠️ find_rfx_by_identifier failed for {identifier}: {e}")
     return None
 
 def update_rfx_status(self, rfx_id: Union[str, UUID], status: str) -> bool:
     """Legacy alias: Update project status"""
     return self.update_project_status(rfx_id, status)
 
-def update_rfx_data(self, rfx_id: Union[str, UUID], update_data: Dict[str, Any]) -> bool:
-    """Legacy alias: Update project data"""  
-    return self.update_project_data(rfx_id, update_data)
-
-# Add legacy methods to DatabaseClient
-DatabaseClient.insert_rfx = insert_rfx
+# Add legacy methods to DatabaseClient (only actively used ones)
 DatabaseClient.get_rfx_by_id = get_rfx_by_id
 DatabaseClient.get_rfx_history = get_rfx_history
 DatabaseClient.get_latest_rfx = get_latest_rfx
-DatabaseClient.insert_rfx_products = insert_rfx_products
 DatabaseClient.get_rfx_products = get_rfx_products
-DatabaseClient.save_generated_document = save_generated_document
 DatabaseClient.get_document_by_id = get_document_by_id
 DatabaseClient.get_proposals_by_rfx_id = get_proposals_by_rfx_id
 DatabaseClient.find_rfx_by_identifier = find_rfx_by_identifier
 DatabaseClient.update_rfx_status = update_rfx_status
-DatabaseClient.update_rfx_data = update_rfx_data
+
+# ========================
+# NEW BUDY AGENT METHODS
+# ========================
+
+def insert_project_context(self, project_id: Union[str, UUID], context_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Insert project context data (for BudyAgent)"""
+    try:
+        if self._schema_mode == 'legacy':
+            # For legacy schema, store as metadata in projects table or skip
+            logger.warning("⚠️ Project context not supported in legacy schema - skipping")
+            return {'id': str(uuid4()), 'project_id': str(project_id)}
+        
+        # For modern schema
+        if 'id' not in context_data:
+            context_data['id'] = str(uuid4())
+        
+        context_data['project_id'] = str(project_id)
+        
+        response = self.client.table("project_context").insert(context_data).execute()
+        if response.data:
+            logger.info(f"✅ Project context inserted for project: {project_id}")
+            return response.data[0]
+        else:
+            raise Exception("No data returned from context insert")
+    except Exception as e:
+        logger.error(f"❌ Failed to insert project context: {e}")
+        # Don't raise - this is not critical for functionality
+        return {'id': str(uuid4()), 'project_id': str(project_id)}
+
+def insert_workflow_state(self, state_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Insert workflow state tracking"""
+    try:
+        if self._schema_mode == 'legacy':
+            # For legacy schema, store as metadata or skip
+            logger.warning("⚠️ Workflow states not supported in legacy schema - skipping")
+            return {'id': str(uuid4()), 'project_id': state_data.get('project_id')}
+        
+        # For modern schema
+        if 'id' not in state_data:
+            state_data['id'] = str(uuid4())
+        
+        response = self.client.table("workflow_states").insert(state_data).execute()
+        if response.data:
+            logger.info(f"✅ Workflow state inserted: {state_data.get('step_name')}")
+            return response.data[0]
+        else:
+            raise Exception("No data returned from workflow state insert")
+    except Exception as e:
+        logger.error(f"❌ Failed to insert workflow state: {e}")
+        # Don't raise - this is not critical for functionality
+        return {'id': str(uuid4()), 'project_id': state_data.get('project_id')}
+
+def update_project_status(self, project_id: Union[str, UUID], status: str) -> bool:
+    """Update project status"""
+    try:
+        if self._schema_mode == 'legacy':
+            # Update legacy table
+            response = self.client.table("rfx_v2")\
+                .update({"status": status})\
+                .eq("id", str(project_id))\
+                .execute()
+        else:
+            # Update modern table
+            response = self.client.table("projects")\
+                .update({"status": status})\
+                .eq("id", str(project_id))\
+                .execute()
+        
+        if response.data:
+            logger.info(f"✅ Project status updated to: {status}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"❌ Failed to update project status: {e}")
+        return False
+
+# Add new methods to DatabaseClient
+DatabaseClient.insert_project_context = insert_project_context
+DatabaseClient.insert_workflow_state = insert_workflow_state  
+DatabaseClient.update_project_status = update_project_status
 
 # Alias for backward compatibility
 def get_supabase() -> Client:

@@ -49,7 +49,7 @@ def get_pricing_configuration(project_id: str):
                 project_record = db_client.find_rfx_by_identifier(project_id)
                 logger.info(f"📚 Using legacy RFX lookup for {project_id}")
             elif hasattr(db_client, 'get_rfx_by_id'):
-                project_record = db_client.get_rfx_by_id(project_id)
+                project_record = db_client.get_project_by_id(project_id)
                 logger.info(f"📚 Using legacy RFX direct lookup for {project_id}")
         
         if not project_record:
@@ -192,7 +192,7 @@ def update_pricing_configuration(project_id: str):
                 project_record = db_client.find_rfx_by_identifier(project_id)
                 logger.info(f"📚 Using legacy RFX lookup for update: {project_id}")
             elif hasattr(db_client, 'get_rfx_by_id'):
-                project_record = db_client.get_rfx_by_id(project_id)
+                project_record = db_client.get_project_by_id(project_id)
         
         if not project_record:
             logger.error(f"❌ Project/RFX not found for identifier: {project_id}")

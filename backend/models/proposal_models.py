@@ -105,49 +105,87 @@ class ItemizedCost(BaseModel):
 # ========================
 
 class QuoteRequest(BaseModel):
-    """Request to generate a quote (updated from ProposalRequest)"""
-    project_id: str = Field(..., min_length=1, description="Project ID (updated from rfx_id)")
+    """
+    🎯 UNIFIED Quote Request Model
+    Consolidates ProposalRequest + QuoteRequest with backward compatibility
+    """
+    # Core identification (supporting both project_id and rfx_id)
+    project_id: str = Field(..., min_length=1, description="Project/RFX ID")
     organization_id: Optional[str] = Field(None, min_length=1, description="Organization ID")
     template_id: Optional[str] = Field(None, description="Template ID to use")
     
     # Quote content
-    title: str = Field(..., min_length=1, max_length=255)
+    title: str = Field(..., min_length=1, max_length=255, description="Quote title")
     description: Optional[str] = Field(None, max_length=2000)
     
-    # Cost information
-    itemized_costs: List[ItemizedCost] = Field(default_factory=list)
-    subtotal: float = Field(..., ge=0)
-    coordination_amount: float = Field(0.0, ge=0)
-    tax_amount: float = Field(0.0, ge=0)
-    discount_amount: float = Field(0.0, ge=0)
-    total_amount: float = Field(..., ge=0)
+    # Cost information (unified from both models)
+    itemized_costs: List[ItemizedCost] = Field(default_factory=list, description="Itemized cost breakdown")
+    item_costs: List[ItemizedCost] = Field(default_factory=list, description="Legacy alias for itemized_costs")
+    subtotal: float = Field(..., ge=0, description="Subtotal before taxes/coordination")
+    coordination_amount: float = Field(0.0, ge=0, description="Coordination fee amount")
+    tax_amount: float = Field(0.0, ge=0, description="Tax amount")
+    discount_amount: float = Field(0.0, ge=0, description="Discount amount")
+    total_amount: float = Field(..., ge=0, description="Final total amount")
     currency: CurrencyEnum = CurrencyEnum.USD
     
-    # Quote metadata
-    notes: Optional[QuoteNotes] = Field(default_factory=QuoteNotes)
+    # Quote metadata and notes
+    notes: Optional[QuoteNotes] = Field(default_factory=QuoteNotes, description="Additional notes")
     generation_method: GenerationMethodEnum = GenerationMethodEnum.AI_ASSISTED
-    version: int = 1
+    version: int = Field(1, description="Quote version number")
     
     # Business terms
-    payment_terms: Optional[str] = Field(None, max_length=1000)
-    terms_and_conditions: Optional[str] = Field(None, max_length=2000)
-    valid_until: Optional[datetime] = None
+    payment_terms: Optional[str] = Field(None, max_length=1000, description="Payment terms")
+    terms_and_conditions: Optional[str] = Field(None, max_length=2000, description="Terms and conditions")
+    valid_until: Optional[datetime] = Field(None, description="Quote validity date")
     
     # Generation options
-    include_itemized_costs: bool = True
-    include_terms_conditions: bool = True
-    custom_template_content: Optional[str] = Field(None, max_length=10000)
-
+    include_itemized_costs: bool = Field(True, description="Include itemized cost breakdown")
+    include_terms_conditions: bool = Field(True, description="Include terms and conditions")
+    custom_template_content: Optional[str] = Field(None, max_length=10000, description="Custom template content")
+    
+    # Legacy compatibility properties
+    @property
+    def rfx_id(self) -> str:
+        """Legacy compatibility: rfx_id → project_id"""
+        return self.project_id
+    
+    @rfx_id.setter
+    def rfx_id(self, value: str):
+        """Legacy compatibility: rfx_id ← project_id"""
+        self.project_id = value
+    
     @validator('total_amount')
     def validate_total_amount(cls, v, values):
-        if 'subtotal' in values and 'coordination_amount' in values and 'tax_amount' in values and 'discount_amount' in values:
+        """Validate that total_amount matches calculated total"""
+        if all(key in values for key in ['subtotal', 'coordination_amount', 'tax_amount', 'discount_amount']):
             expected = values['subtotal'] + values['coordination_amount'] + values['tax_amount'] - values['discount_amount']
             if abs(v - expected) > 0.01:  # 1 cent tolerance
                 raise ValueError('Total amount does not match calculated total')
         return v
+    
+    @validator('item_costs', always=True)
+    def sync_item_costs(cls, v, values):
+        """Sync item_costs with itemized_costs for backward compatibility"""
+        if not v and 'itemized_costs' in values and values['itemized_costs']:
+            return values['itemized_costs']
+        elif v and not values.get('itemized_costs'):
+            # Update itemized_costs if item_costs is provided
+            values['itemized_costs'] = v
+        return v
+    
+    @validator('itemized_costs', always=True)
+    def sync_itemized_costs(cls, v, values):
+        """Sync itemized_costs with item_costs for backward compatibility"""
+        if not v and 'item_costs' in values and values['item_costs']:
+            return values['item_costs']
+        elif v and not values.get('item_costs'):
+            # Update item_costs if itemized_costs is provided
+            values['item_costs'] = v
+        return v
 
     @validator('title')
     def validate_title(cls, v):
+        """Clean and validate title"""
         return v.strip() if v else v
 
     class Config:
@@ -467,12 +505,12 @@ def map_legacy_proposal_status(status_value: str) -> QuoteStatusEnum:
     return legacy_mapping.get(status_value.lower(), QuoteStatusEnum.DRAFT)
 
 
-def map_legacy_quote_request(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Map legacy proposal request data to new quote request format"""
-    mapped_data = {}
+def map_legacy_quote_request(legacy_data: Dict[str, Any]) -> QuoteRequest:
+    """Map legacy proposal request data to QuoteRequest"""
+    mapped_data = legacy_data.copy()
     
     # Handle RFX -> Project mapping
-    if 'rfx_id' in legacy_data:
+    if 'rfx_id' in legacy_data and 'project_id' not in legacy_data:
         mapped_data['project_id'] = legacy_data['rfx_id']
     
     # Handle company -> organization mapping
@@ -524,4 +562,31 @@ def map_legacy_quote_request(legacy_data: Dict[str, Any]) -> Dict[str, Any]:
         if field in legacy_data:
             mapped_data[field] = legacy_data[field]
     
-    return mapped_data
+    # Create and return QuoteRequest instance
+    return QuoteRequest(**mapped_data)
+
+# ========================
+# LEGACY ALIASES FOR BACKWARD COMPATIBILITY
+# ========================
+
+# Legacy class aliases to maintain import compatibility
+ProposalRequest = QuoteRequest
+PropuestaGenerada = QuoteModel
+
+# Legacy notes alias
+NotasPropuesta = QuoteNotes
+
+# Legacy response models for backward compatibility
+class ProposalResponse(BaseModel):
+    """Legacy Proposal Response wrapper"""
+    status: str = "success"
+    data: Optional[QuoteModel] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+
+class QuoteResponse(BaseModel):
+    """Modern Quote Response"""
+    status: str = "success"
+    data: Optional[QuoteModel] = None
+    message: Optional[str] = None
+    error: Optional[str] = None

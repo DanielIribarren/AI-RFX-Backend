@@ -21,6 +21,8 @@ from backend.models.project_models import (
 )
 from backend.core.config import get_file_upload_config
 from backend.core.database import get_database_client
+from backend.services.project_processor import get_project_processor
+from backend.services.ai_context_service import get_ai_context_service
 
 logger = logging.getLogger(__name__)
 
@@ -1290,3 +1292,423 @@ def project_webhook_compatibility():
     """
     logger.info("📡 Legacy webhook endpoint called, redirecting to new create project endpoint")
     return create_project()
+
+
+# ========================
+# 🧠 AI CONTEXTUAL ANALYSIS ENDPOINTS (DÍA 6)
+# ========================
+
+@projects_bp.route("/<project_id>/analyze-context", methods=["POST"])
+def analyze_project_context(project_id):
+    """
+    🆕 NUEVA FUNCIONALIDAD: Análisis contextual del proyecto
+    Implementación completa del Día 6 según implementation_plan_a.md
+    """
+    try:
+        logger.info(f"🧠 Starting context analysis for project: {project_id}")
+        
+        db_client = get_database_client()
+        ai_context_service = get_ai_context_service()
+        
+        # Obtener proyecto
+        project_result = db_client.get_project_by_id(project_id)
+        if not project_result:
+            return jsonify({
+                "status": "error", 
+                "message": "Project not found",
+                "error_code": "PROJECT_NOT_FOUND"
+            }), 404
+        
+        # Convertir a ProjectInput para análisis
+        project_input = ProjectInput(**project_result)
+        
+        # Obtener documentos relacionados si están disponibles
+        documents_text = request.json.get('documents_text', '') if request.is_json else ''
+        
+        # Análisis contextual con IA (usar asyncio para correr función async)
+        start_time = time.time()
+        
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        context_analysis = loop.run_until_complete(
+            ai_context_service.analyze_project_context(
+                project=project_input,
+                documents_text=documents_text,
+                project_id=project_id
+            )
+        )
+        
+        # Calcular duración
+        processing_duration = time.time() - start_time
+        context_analysis['analysis_metadata']['processing_duration_seconds'] = round(processing_duration, 2)
+        
+        # Generar workflow inteligente
+        workflow_steps = loop.run_until_complete(
+            ai_context_service.generate_workflow_steps(
+                project_id=project_id,
+                context_analysis=context_analysis
+            )
+        )
+        
+        logger.info(f"✅ Context analysis completed in {processing_duration:.2f}s")
+        
+        return jsonify({
+            "status": "success",
+            "message": "Context analysis completed successfully",
+            "data": {
+                "project_id": project_id,
+                "context_analysis": context_analysis,
+                "workflow_steps": workflow_steps,
+                "recommendations": _generate_actionable_recommendations(context_analysis),
+                "next_steps": _determine_next_steps(workflow_steps),
+                "processing_time": processing_duration
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error in context analysis: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Context analysis failed: {str(e)}",
+            "error_code": "CONTEXT_ANALYSIS_FAILED"
+        }), 500
+
+
+@projects_bp.route("/<project_id>/workflow", methods=["GET"])
+def get_project_workflow(project_id):
+    """
+    🔄 Obtener workflow actual del proyecto
+    """
+    try:
+        db_client = get_database_client()
+        
+        # Verificar que el proyecto existe
+        project_result = db_client.get_project_by_id(project_id)
+        if not project_result:
+            return jsonify({
+                "status": "error",
+                "message": "Project not found"
+            }), 404
+        
+        # Obtener pasos del workflow desde BD
+        try:
+            workflow_steps = db_client.table('workflow_steps')\
+                .select('*')\
+                .eq('project_id', project_id)\
+                .order('step_number')\
+                .execute()
+            
+            steps_data = workflow_steps.data if workflow_steps.data else []
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch workflow from modern schema: {e}")
+            steps_data = []
+        
+        # Calcular progreso
+        total_steps = len(steps_data)
+        completed_steps = len([s for s in steps_data if s.get('status') == 'completed'])
+        progress_percentage = (completed_steps / total_steps * 100) if total_steps > 0 else 0
+        
+        # Determinar próximo paso
+        next_step = None
+        for step in steps_data:
+            if step.get('status') == 'pending':
+                next_step = step
+                break
+        
+        return jsonify({
+            "status": "success",
+            "data": {
+                "project_id": project_id,
+                "workflow_steps": steps_data,
+                "progress": {
+                    "total_steps": total_steps,
+                    "completed_steps": completed_steps,
+                    "progress_percentage": round(progress_percentage, 1),
+                    "current_status": "in_progress" if next_step else "completed"
+                },
+                "next_step": next_step,
+                "estimated_remaining_time": _calculate_remaining_time(steps_data)
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting workflow: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get workflow: {str(e)}"
+        }), 500
+
+
+@projects_bp.route("/<project_id>/workflow/<int:step_number>", methods=["POST"])
+def update_workflow_step(project_id, step_number):
+    """
+    ✅ Actualizar estado de un paso del workflow
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "status": "error",
+                "message": "JSON data required"
+            }), 400
+        
+        new_status = data.get('status')
+        step_data = data.get('step_data', {})
+        
+        if new_status not in ['pending', 'in_progress', 'completed', 'skipped', 'error']:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid status. Must be: pending, in_progress, completed, skipped, or error"
+            }), 400
+        
+        db_client = get_database_client()
+        
+        # Actualizar paso en BD
+        try:
+            update_data = {
+                'status': new_status,
+                'updated_at': datetime.utcnow().isoformat()
+            }
+            
+            if new_status == 'completed':
+                update_data['completed_at'] = datetime.utcnow().isoformat()
+            elif new_status == 'in_progress':
+                update_data['started_at'] = datetime.utcnow().isoformat()
+            
+            if step_data:
+                update_data['output_data'] = step_data
+            
+            result = db_client.table('workflow_steps')\
+                .update(update_data)\
+                .eq('project_id', project_id)\
+                .eq('step_number', step_number)\
+                .execute()
+            
+            if not result.data:
+                return jsonify({
+                    "status": "error",
+                    "message": "Workflow step not found"
+                }), 404
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not update workflow in modern schema: {e}")
+            return jsonify({
+                "status": "error",
+                "message": "Database update failed"
+            }), 500
+        
+        logger.info(f"✅ Workflow step {step_number} updated to {new_status}")
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Workflow step {step_number} updated to {new_status}",
+            "data": result.data[0] if result.data else {}
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating workflow step: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to update workflow step: {str(e)}"
+        }), 500
+
+
+@projects_bp.route("/<project_id>/context", methods=["GET"])
+def get_project_context(project_id):
+    """
+    📊 Obtener análisis contextual guardado del proyecto
+    """
+    try:
+        db_client = get_database_client()
+        
+        # Verificar que el proyecto existe
+        project_result = db_client.get_project_by_id(project_id)
+        if not project_result:
+            return jsonify({
+                "status": "error",
+                "message": "Project not found"
+            }), 404
+        
+        # Obtener contexto desde BD
+        try:
+            context_result = db_client.table('project_context')\
+                .select('*')\
+                .eq('project_id', project_id)\
+                .order('created_at', desc=True)\
+                .limit(1)\
+                .execute()
+            
+            if not context_result.data:
+                return jsonify({
+                    "status": "error",
+                    "message": "No context analysis found for this project"
+                }), 404
+            
+            context_data = context_result.data[0]
+        except Exception as e:
+            logger.warning(f"⚠️ Could not fetch context from modern schema: {e}")
+            return jsonify({
+                "status": "error",
+                "message": "Context data not available"
+            }), 404
+        
+        return jsonify({
+            "status": "success",
+            "data": {
+                "project_id": project_id,
+                "context_analysis": context_data.get('context_data', {}),
+                "last_updated": context_data.get('created_at'),
+                "context_type": context_data.get('context_type', 'ai_analysis')
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting project context: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": f"Failed to get project context: {str(e)}"
+        }), 500
+
+
+# ========================
+# 🧠 HELPER FUNCTIONS FOR AI CONTEXTUAL ENDPOINTS
+# ========================
+
+def _generate_actionable_recommendations(context_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """Genera recomendaciones accionables basadas en análisis contextual"""
+    
+    industry = context_analysis.get("industry_analysis", {}).get("detected_industry", "general")
+    complexity_level = context_analysis.get("complexity_analysis", {}).get("complexity_level", "medium")
+    
+    recommendations = {
+        "immediate_actions": [],
+        "strategic_considerations": [],
+        "risk_mitigations": [],
+        "optimization_opportunities": []
+    }
+    
+    # Recomendaciones por industria
+    if industry == "catering":
+        recommendations["immediate_actions"].extend([
+            "Confirm guest count and dietary restrictions",
+            "Verify venue accessibility and kitchen facilities",
+            "Review service timeline and setup requirements"
+        ])
+        recommendations["strategic_considerations"].extend([
+            "Consider seasonal menu pricing",
+            "Plan for service staff coordination",
+            "Include equipment and logistics costs"
+        ])
+    elif industry == "construction":
+        recommendations["immediate_actions"].extend([
+            "Conduct site survey and feasibility assessment",
+            "Verify permits and regulatory requirements",
+            "Review technical specifications and materials"
+        ])
+        recommendations["strategic_considerations"].extend([
+            "Factor in seasonal construction constraints",
+            "Plan for material procurement lead times",
+            "Include safety and compliance costs"
+        ])
+    elif industry == "it_services":
+        recommendations["immediate_actions"].extend([
+            "Define technical architecture and stack",
+            "Assess integration requirements",
+            "Plan development methodology and timeline"
+        ])
+        recommendations["strategic_considerations"].extend([
+            "Consider scalability and maintenance",
+            "Plan for testing and quality assurance",
+            "Include ongoing support and updates"
+        ])
+    
+    # Ajustes por complejidad
+    if complexity_level == "high":
+        recommendations["risk_mitigations"].extend([
+            "Implement staged delivery approach",
+            "Increase stakeholder communication frequency",
+            "Add buffer time for unexpected challenges",
+            "Consider bringing in additional expertise"
+        ])
+        recommendations["optimization_opportunities"].extend([
+            "Break project into smaller, manageable phases",
+            "Implement rigorous change management process",
+            "Consider premium pricing for high complexity"
+        ])
+    elif complexity_level == "low":
+        recommendations["optimization_opportunities"].extend([
+            "Streamline approval processes",
+            "Consider bulk pricing efficiencies", 
+            "Automate routine tasks where possible"
+        ])
+    
+    return recommendations
+
+def _determine_next_steps(workflow_steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Determina próximos pasos basado en workflow"""
+    
+    if not workflow_steps:
+        return {
+            "action": "create_workflow",
+            "description": "Generate workflow steps for this project",
+            "priority": "high"
+        }
+    
+    # Encontrar próximo paso pendiente
+    next_pending = None
+    for step in workflow_steps:
+        if step.get('status') == 'pending':
+            next_pending = step
+            break
+    
+    if next_pending:
+        return {
+            "action": "execute_step",
+            "step_number": next_pending.get('step_number'),
+            "step_name": next_pending.get('step_name'),
+            "description": next_pending.get('description', ''),
+            "requires_human_input": next_pending.get('requires_human_input', False),
+            "estimated_duration": next_pending.get('estimated_duration_minutes', 0),
+            "priority": "high" if next_pending.get('requires_human_input') else "medium"
+        }
+    
+    # Si todos están completos
+    completed_count = len([s for s in workflow_steps if s.get('status') == 'completed'])
+    if completed_count == len(workflow_steps):
+        return {
+            "action": "project_ready",
+            "description": "All workflow steps completed - project ready for next phase",
+            "priority": "low"
+        }
+    
+    return {
+        "action": "review_workflow",
+        "description": "Review workflow status and resolve any blocked steps",
+        "priority": "medium"
+    }
+
+def _calculate_remaining_time(workflow_steps: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Calcula tiempo restante estimado"""
+    
+    pending_steps = [s for s in workflow_steps if s.get('status') == 'pending']
+    
+    if not pending_steps:
+        return {
+            "estimated_minutes": 0,
+            "estimated_hours": 0,
+            "status": "completed"
+        }
+    
+    total_minutes = sum(step.get('estimated_duration_minutes', 10) for step in pending_steps)
+    
+    return {
+        "estimated_minutes": total_minutes,
+        "estimated_hours": round(total_minutes / 60, 1),
+        "pending_steps_count": len(pending_steps),
+        "status": "in_progress"
+    }

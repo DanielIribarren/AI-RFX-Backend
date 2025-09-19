@@ -11,14 +11,23 @@ import time
 import random
 from datetime import datetime
 
-from backend.models.rfx_models import (
-    RFXInput, RFXResponse, RFXType, RFXHistoryItem,
-    PaginationInfo, RFXListResponse, LoadMoreRequest,
-    # Legacy aliases
-    TipoRFX
+from backend.models.project_models import (
+    # Unified models (with legacy aliases)
+    ProjectInput as RFXInput, ProjectModel as RFXProcessed,
+    ProjectTypeEnum as RFXType, ProjectStatusEnum as RFXStatus,
+    # Legacy types that were in rfx_models
+    RFXType as TipoRFX, PriorityLevel,
+    # Response and utility models
+    RFXResponse, ProjectResponse, RFXHistoryItem, 
+    PaginationInfo, RFXListResponse, LoadMoreRequest
 )
-from backend.services.rfx_processor import RFXProcessorService
+# from backend.services.rfx_processor import RFXProcessorService  # REMOVED: Replaced by BudyAgent
+from backend.services.budy_agent import get_budy_agent  # NEW: BudyAgent integration
+from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter  # UPDATED: Unified adapter
 from backend.core.config import get_file_upload_config
+from backend.core.database import get_database_client  # NEW: BD integration
+from uuid import uuid4
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -155,24 +164,240 @@ def process_rfx():
         logger.info(f"🚀 Starting RFX processing: {rfx_id} (type: {tipo_rfx})")
         logger.info(f"📊 Processing summary: {len(valid_files)} files, total_size: {total_size} bytes")
 
-        processor_service = RFXProcessorService()
-        # 🆕 PIPELINE FLEXIBLE: Procesa archivos Y/O texto
-        rfx_processed = processor_service.process_rfx_case(rfx_input, valid_files)
+        # 🤖 PROCESAR CON BUDY AGENT - NUEVO WORKFLOW INTELIGENTE
+        logger.info(f"🤖 Starting processing with BudyAgent (MOMENTO 1)")
         
-        # NOTE: Proposal generation is now handled separately by user request
-        # The user will review extracted data, set product costs, then request proposal generation
+        # Preparar documento/contenido para BudyAgent
+        document_content = ""
         
-        # Create response using new models (without automatic proposal)
-        response = RFXResponse(
-            status="success",
-            message="RFX data extracted and saved successfully. Review the extracted data and set product costs to generate proposal.",
-            data=rfx_processed,
-            propuesta_id=None,  # No automatic proposal generated
-            propuesta_url=None  # User will generate proposal manually
-        )
+        # Si hay contenido de texto, usarlo directamente
+        if contenido_extraido:
+            document_content = contenido_extraido
+            logger.info("📝 Using provided text content for BudyAgent")
         
-        logger.info(f"✅ RFX processed successfully: {rfx_id}")
-        return jsonify({"status":"success","data":rfx_processed.model_dump(mode='json')}), 200
+        # Si hay archivos, extraer texto (fallback al procesador legacy si es necesario)
+        if valid_files and not document_content:
+            logger.info("📄 Extracting text from files for BudyAgent")
+            try:
+                # Usar RFXProcessorService solo para extracción de texto
+                processor_service = RFXProcessorService()
+                temp_result = processor_service.process_rfx_case(rfx_input, valid_files)
+                
+                # Extraer texto del resultado legacy
+                if hasattr(temp_result, 'extracted_content'):
+                    document_content = temp_result.extracted_content
+                elif isinstance(temp_result, dict) and 'extracted_content' in temp_result:
+                    document_content = temp_result['extracted_content']
+                else:
+                    document_content = str(temp_result)
+                    
+                logger.info(f"📄 Extracted {len(document_content)} characters from files")
+            except Exception as e:
+                logger.warning(f"⚠️ File extraction failed, using basic content: {e}")
+                document_content = f"Archivos subidos: {[f.filename for f in valid_files]}"
+        
+        # Preparar metadatos del request
+        metadata = {
+            'rfx_id': rfx_id,
+            'tipo_rfx': tipo_rfx,
+            'files_info': [{'filename': f.filename if hasattr(f, 'filename') else str(f)} for f in valid_files] if valid_files else [],
+            'processing_mode': 'files_and_text' if (valid_files and contenido_extraido) else 'files_only' if valid_files else 'text_only',
+            'request_timestamp': datetime.utcnow().isoformat()
+        }
+        
+        # Ejecutar BudyAgent MOMENTO 1: Análisis y Extracción
+        budy_agent = get_budy_agent()
+        
+        # Limpiar contexto previo para nuevo proyecto
+        budy_agent.clear_project_context()
+        
+        # Ejecutar análisis inteligente
+        import asyncio
+        budy_result = asyncio.run(budy_agent.analyze_and_extract(document_content, metadata))
+        
+        logger.info(f"✅ BudyAgent MOMENTO 1 completed successfully")
+        
+        # 🗄️ GUARDAR EN BUDY-AI-SCHEMA DATABASE
+        db_client = get_database_client()
+        
+        # Extraer datos para guardar en BD
+        extracted_data = budy_result.get('extracted_data', {})
+        project_details = extracted_data.get('project_details', {})
+        client_info = extracted_data.get('client_information', {})
+        timeline = extracted_data.get('timeline', {})
+        budget_financial = extracted_data.get('budget_financial', {})
+        requirements = extracted_data.get('requirements', {})
+        location_logistics = extracted_data.get('location_logistics', {})
+        requested_products = extracted_data.get('requested_products', [])
+        
+        # 1. GUARDAR ORGANIZACIÓN (si no existe)
+        organization_data = {
+            'name': client_info.get('company', 'Empresa No Especificada'),
+            'email': client_info.get('company_email'),
+            'phone': client_info.get('company_phone'),
+            'industry': project_details.get('industry_domain', 'general'),
+            'created_at': datetime.utcnow().isoformat()
+        }
+        
+        try:
+            # Buscar organización existente por nombre o crear nueva
+            existing_org = None
+            if organization_data['name'] != 'Empresa No Especificada':
+                # Intentar buscar por nombre similar
+                all_orgs = db_client.get_organizations()
+                for org in all_orgs:
+                    if org.get('name', '').lower() == organization_data['name'].lower():
+                        existing_org = org
+                        break
+            
+            if existing_org:
+                organization_id = existing_org['id']
+                logger.info(f"🏢 Using existing organization: {existing_org['name']} ({organization_id})")
+            else:
+                created_org = db_client.insert_organization(organization_data)
+                organization_id = created_org['id']
+                logger.info(f"🏢 Created new organization: {created_org['name']} ({organization_id})")
+        except Exception as e:
+            logger.warning(f"⚠️ Organization handling failed: {e}, proceeding without organization")
+            organization_id = None
+        
+        # 2. GUARDAR USUARIO (si no existe)
+        user_data = {
+            'name': client_info.get('name', 'Usuario No Especificado'),
+            'email': client_info.get('requester_email'),
+            'phone': client_info.get('requester_phone'),
+            'position': client_info.get('requester_position'),
+            'organization_id': organization_id,
+            'created_at': datetime.utcnow().isoformat()
+        }
+        
+        try:
+            # Buscar usuario existente por email o crear nuevo
+            existing_user = None
+            if user_data['email']:
+                existing_user = db_client.get_user_by_email(user_data['email'])
+            
+            if existing_user:
+                user_id = existing_user['id']
+                logger.info(f"👤 Using existing user: {existing_user['name']} ({user_id})")
+            else:
+                created_user = db_client.insert_user(user_data)
+                user_id = created_user['id']
+                logger.info(f"👤 Created new user: {created_user['name']} ({user_id})")
+        except Exception as e:
+            logger.warning(f"⚠️ User handling failed: {e}, proceeding without user")
+            user_id = None
+        
+        # 3. GUARDAR PROYECTO
+        project_data = {
+            'id': metadata.get('project_id', str(uuid4())),
+            'name': project_details.get('title', 'Proyecto Sin Título'),
+            'description': project_details.get('description', ''),
+            'project_type': project_details.get('industry_domain', 'general'),
+            'status': 'analyzed',  # Estado después del análisis
+            'priority': 3,  # Por defecto
+            'organization_id': organization_id,
+            'user_id': user_id,
+            'project_number': f"PROJ-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:8].upper()}",
+            'requirements': requirements.get('functional', []) + requirements.get('technical', []),
+            'estimated_budget': budget_financial.get('estimated_budget'),
+            'budget_range_min': budget_financial.get('budget_range_min'),
+            'budget_range_max': budget_financial.get('budget_range_max'),
+            'currency': budget_financial.get('currency', 'USD'),
+            'delivery_date': timeline.get('delivery_date'),
+            'start_date': timeline.get('start_date'),
+            'end_date': timeline.get('end_date'),
+            'location': location_logistics.get('primary_location'),
+            'created_at': datetime.utcnow().isoformat(),
+            'updated_at': datetime.utcnow().isoformat()
+        }
+        
+        try:
+            saved_project = db_client.insert_project(project_data)
+            project_id = saved_project['id']
+            logger.info(f"📋 Project saved successfully: {saved_project['name']} ({project_id})")
+        except Exception as e:
+            logger.error(f"❌ Failed to save project: {e}")
+            project_id = project_data['id']  # Use original ID as fallback
+        
+        # 4. GUARDAR PRODUCTOS/SERVICIOS (PROJECT_ITEMS)
+        if requested_products:
+            try:
+                project_items_data = []
+                for product in requested_products:
+                    item_data = {
+                        'project_id': project_id,
+                        'name': product.get('product_name', 'Producto Sin Nombre'),
+                        'description': product.get('specifications', ''),
+                        'quantity': product.get('quantity', 1),
+                        'unit': product.get('unit', 'unidades'),
+                        'unit_price': 0.0,  # Será actualizado posteriormente
+                        'category': product.get('category', 'general'),
+                        'created_at': datetime.utcnow().isoformat()
+                    }
+                    project_items_data.append(item_data)
+                
+                saved_items = db_client.insert_project_items(project_id, project_items_data)
+                logger.info(f"📦 Saved {len(saved_items)} project items")
+            except Exception as e:
+                logger.error(f"❌ Failed to save project items: {e}")
+        
+        # 5. GUARDAR CONTEXTO DEL AGENTE
+        try:
+            agent_context = budy_agent.get_project_context()
+            if agent_context:
+                context_data = {
+                    'project_id': project_id,
+                    'context_type': 'analysis_result',
+                    'context_data': agent_context,
+                    'created_at': datetime.utcnow().isoformat()
+                }
+                db_client.insert_project_context(project_id, context_data)
+                logger.info(f"🧠 Saved BudyAgent context for project {project_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to save agent context: {e}")
+        
+        # 6. GUARDAR ESTADO DEL WORKFLOW
+        try:
+            workflow_state = {
+                'project_id': project_id,
+                'step_name': 'momento_1_analysis',
+                'step_status': 'completed',
+                'step_data': {
+                    'model_used': budy_result.get('metadata', {}).get('model_used', 'gpt-4o'),
+                    'generation_time': budy_result.get('metadata', {}).get('generation_time', 0),
+                    'confidence_level': budy_result.get('quality_assessment', {}).get('confidence_level', 0),
+                    'extraction_method': 'budy_agent_v1.0'
+                },
+                'created_at': datetime.utcnow().isoformat()
+            }
+            db_client.insert_workflow_state(workflow_state)
+            logger.info(f"🔄 Saved workflow state for MOMENTO 1")
+        except Exception as e:
+            logger.error(f"❌ Failed to save workflow state: {e}")
+        
+        # 🔄 CONVERTIR A FORMATO LEGACY CON ADAPTADOR UNIFICADO
+        unified_adapter = UnifiedLegacyAdapter()
+        
+        # Agregar IDs de BD al resultado de BudyAgent para el adaptador
+        budy_result['database_ids'] = {
+            'project_id': project_id,
+            'organization_id': organization_id,
+            'user_id': user_id
+        }
+        
+        # Usar API unificada del nuevo adaptador
+        legacy_result = unified_adapter.convert_to_format(budy_result, target_format='rfx')
+        
+        # Asegurar que el ID del proyecto esté en la respuesta legacy
+        legacy_result['id'] = project_id
+        legacy_result['project_id'] = project_id
+        
+        logger.info(f"🔄 Successfully converted to legacy format with BD integration")
+        logger.info(f"✅ Complete RFX processing finished: Analysis + BD Save + Legacy Format")
+        
+        # 📤 RESPUESTA EN FORMATO TOTALMENTE COMPATIBLE CON FRONTEND EXISTENTE
+        return jsonify(legacy_result), 200
     except Exception as e:
         logger.exception("❌ Error processing RFX")
         return jsonify({"status":"error","message":str(e),"error":"internal"}), 500
@@ -381,7 +606,15 @@ def get_rfx_by_id(rfx_id: str):
         from ..core.database import get_database_client
         db_client = get_database_client()
         
-        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        # Use modern method and ensure legacy format
+        project_record = db_client.get_project_by_id(rfx_id)
+        if project_record:
+            # Convert to RFX format for backward compatibility
+            from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter
+            adapter = UnifiedLegacyAdapter()
+            rfx_record = adapter.convert_to_format(project_record, 'rfx')
+        else:
+            rfx_record = None
         
         if not rfx_record:
             return jsonify({
@@ -506,7 +739,15 @@ def get_rfx_products(rfx_id: str):
         db_client = get_database_client()
         
         # Verificar que el RFX existe y obtener su moneda
-        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        # Use modern method and ensure legacy format
+        project_record = db_client.get_project_by_id(rfx_id)
+        if project_record:
+            # Convert to RFX format for backward compatibility
+            from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter
+            adapter = UnifiedLegacyAdapter()
+            rfx_record = adapter.convert_to_format(project_record, 'rfx')
+        else:
+            rfx_record = None
         if not rfx_record:
             return jsonify({
                 "status": "error",
@@ -598,7 +839,15 @@ def update_rfx_currency(rfx_id: str):
         db_client = get_database_client()
         
         # Verificar que el RFX existe
-        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        # Use modern method and ensure legacy format
+        project_record = db_client.get_project_by_id(rfx_id)
+        if project_record:
+            # Convert to RFX format for backward compatibility
+            from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter
+            adapter = UnifiedLegacyAdapter()
+            rfx_record = adapter.convert_to_format(project_record, 'rfx')
+        else:
+            rfx_record = None
         if not rfx_record:
             return jsonify({
                 "status": "error",
@@ -737,7 +986,15 @@ def update_rfx_data(rfx_id: str):
         logger.info(f"🔄 DEBUG: Database client obtained, checking if RFX exists: {rfx_id}")
         
         # Verificar que el RFX existe
-        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        # Use modern method and ensure legacy format
+        project_record = db_client.get_project_by_id(rfx_id)
+        if project_record:
+            # Convert to RFX format for backward compatibility
+            from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter
+            adapter = UnifiedLegacyAdapter()
+            rfx_record = adapter.convert_to_format(project_record, 'rfx')
+        else:
+            rfx_record = None
         if not rfx_record:
             logger.error(f"❌ DEBUG: RFX not found: {rfx_id}")
             return jsonify({
@@ -958,7 +1215,15 @@ def update_product_costs(rfx_id: str):
         db_client = get_database_client()
         
         # Verificar que el RFX existe
-        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        # Use modern method and ensure legacy format
+        project_record = db_client.get_project_by_id(rfx_id)
+        if project_record:
+            # Convert to RFX format for backward compatibility
+            from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter
+            adapter = UnifiedLegacyAdapter()
+            rfx_record = adapter.convert_to_format(project_record, 'rfx')
+        else:
+            rfx_record = None
         if not rfx_record:
             return jsonify({
                 "status": "error",
@@ -977,7 +1242,15 @@ def update_product_costs(rfx_id: str):
         # Si no hay productos reales, verificar si hay productos en el RFX principal
         if not real_products:
             # Intentar obtener el RFX completo para ver si hay productos en requested_products
-            rfx_record = db_client.get_rfx_by_id(rfx_id)
+            # Use modern method and ensure legacy format
+            project_record = db_client.get_project_by_id(rfx_id)
+            if project_record:
+                # Convert to RFX format for backward compatibility
+                from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter
+                adapter = UnifiedLegacyAdapter()
+                rfx_record = adapter.convert_to_format(project_record, 'rfx')
+            else:
+                rfx_record = None
             requested_products = rfx_record.get("requested_products", []) if rfx_record else []
             
             logger.warning(f"No structured products found for RFX {rfx_id}")
@@ -1144,7 +1417,15 @@ def update_rfx_product(rfx_id: str, product_id: str):
         db_client = get_database_client()
         
         # Verificar que el RFX existe
-        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        # Use modern method and ensure legacy format
+        project_record = db_client.get_project_by_id(rfx_id)
+        if project_record:
+            # Convert to RFX format for backward compatibility
+            from backend.adapters.unified_legacy_adapter import UnifiedLegacyAdapter
+            adapter = UnifiedLegacyAdapter()
+            rfx_record = adapter.convert_to_format(project_record, 'rfx')
+        else:
+            rfx_record = None
         if not rfx_record:
             return jsonify({
                 "status": "error",
