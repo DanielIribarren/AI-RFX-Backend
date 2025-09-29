@@ -599,7 +599,10 @@ Usa la función extract_rfx_data para proporcionar respuestas estructuradas y pr
                     # Metadatos
                     'industry': orchestration_analysis.get('primary_industry', 'general'),
                     'urgency_level': orchestration_analysis.get('urgency_level', 'medium'),
-                    'client_profile': orchestration_analysis.get('client_profile', 'standard')
+                    'client_profile': orchestration_analysis.get('client_profile', 'standard'),
+                    
+                    # Items/productos extraídos
+                    'items': extracted_data.get('requested_products', [])
                 },
                 'suggestions': [
                     f"Proyecto identificado como: {orchestration_analysis.get('primary_industry', 'general')}",

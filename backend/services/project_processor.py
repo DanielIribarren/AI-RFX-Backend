@@ -112,10 +112,13 @@ class ProjectProcessorService:
             
             # 5. Crear modelo de proyecto enriquecido
             project_model = await self._build_enriched_project_model(
-                project_input, budy_result, context_analysis
+                project_input, budy_result, context_analysis, metadata
             )
             
-            # 6. Guardar contexto en BD
+            # 6. Extraer y guardar items del proyecto si los hay
+            await self._save_extracted_items(project_model.id, budy_result)
+            
+            # 7. Guardar contexto en BD
             await self._save_project_context(project_model.id, context_analysis)
             
             logger.info(f"✅ Project processing completed: {project_model.id}")
@@ -195,8 +198,24 @@ class ProjectProcessorService:
             quality_assessment = budy_result.get('quality_assessment', {})
             
             # Detectar tipo de proyecto y cliente basado en el análisis
-            detected_project_type = self._detect_project_type_from_analysis(extracted_data)
-            detected_client_type = self._detect_client_type_from_analysis(extracted_data)
+            detected_project_type_str = self._detect_project_type_from_analysis(extracted_data)
+            detected_client_type_str = self._detect_client_type_from_analysis(extracted_data)
+            
+            # Convertir strings a enums
+            detected_project_type = None
+            if detected_project_type_str:
+                try:
+                    detected_project_type = ProjectTypeEnum(detected_project_type_str)
+                except ValueError:
+                    detected_project_type = None
+                    
+            detected_client_type = None  
+            if detected_client_type_str:
+                try:
+                    from backend.models.project_models import ClientTypeEnum
+                    detected_client_type = ClientTypeEnum(detected_client_type_str)
+                except ValueError:
+                    detected_client_type = None
             
             # Calcular score de complejidad
             complexity_score = self._calculate_complexity_score(project_input, extracted_data)
@@ -385,11 +404,61 @@ class ProjectProcessorService:
         
         return risks
     
+    def _detect_project_type_from_analysis(self, extracted_data: Dict[str, Any]) -> Optional[str]:
+        """Detecta el tipo de proyecto basado en el análisis"""
+        try:
+            project_details = extracted_data.get('project_details', {})
+            industry_domain = project_details.get('industry_domain', '').lower()
+            
+            # Mapeo de dominios a tipos de proyecto
+            type_mapping = {
+                'catering': 'catering',
+                'food': 'catering',
+                'restaurant': 'catering',
+                'events': 'events',
+                'event': 'events',
+                'construction': 'construction',
+                'building': 'construction',
+                'consulting': 'consulting',
+                'technology': 'consulting',
+                'marketing': 'marketing',
+                'general': 'general'
+            }
+            
+            for keyword, project_type in type_mapping.items():
+                if keyword in industry_domain:
+                    return project_type
+            
+            return 'general'
+        except Exception as e:
+            logger.warning(f"⚠️ Error detecting project type: {e}")
+            return 'general'
+    
+    def _detect_client_type_from_analysis(self, extracted_data: Dict[str, Any]) -> Optional[str]:
+        """Detecta el tipo de cliente basado en el análisis"""
+        try:
+            client_info = extracted_data.get('client_information', {})
+            company = client_info.get('company', '').lower()
+            
+            # Mapeo básico de tipos de cliente
+            if any(keyword in company for keyword in ['corp', 'inc', 'ltd', 'llc', 'sa']):
+                return 'medium_business'
+            elif any(keyword in company for keyword in ['startup', 'tech']):
+                return 'startup'
+            elif not company:
+                return 'individual'
+            else:
+                return 'small_business'
+        except Exception as e:
+            logger.warning(f"⚠️ Error detecting client type: {e}")
+            return 'individual'
+    
     async def _build_enriched_project_model(
         self,
         project_input: ProjectInput,
         budy_result: Dict[str, Any],
-        context_analysis: ProjectContextModel
+        context_analysis: ProjectContextModel,
+        metadata: Dict[str, Any] = None
     ) -> ProjectModel:
         """Construye modelo de proyecto enriquecido con análisis"""
         
@@ -398,14 +467,22 @@ class ProjectProcessorService:
         client_info = extracted_data.get('client_information', {})
         
             # Crear ProjectModel con datos enriquecidos
+        from uuid import uuid4
+        
+        # Generate valid UUID if input ID is not a valid UUID
+        try:
+            from uuid import UUID
+            project_id = UUID(getattr(project_input, 'id', None)) if getattr(project_input, 'id', None) else uuid4()
+        except (ValueError, TypeError):
+            project_id = uuid4()
+        
         project_model = ProjectModel(
-            id=getattr(project_input, 'id', None),
-            name=project_details.get('title', project_input.title),
-            description=project_details.get('description', project_input.description),
+            id=project_id,
+            name=project_details.get('title') or project_input.name or f"Project {project_input.project_type.value} - {str(project_id)[:8]}",
+            description=project_details.get('description') or project_input.requirements or f"Project created via API upload for {project_input.project_type.value}",
             project_type=project_input.project_type,
-            complexity_score=context_analysis.complexity_score,
-            status=ProjectStatusEnum.ANALYZED,  # Estado después del análisis
-            priority=PriorityLevel.MEDIUM,
+            status=ProjectStatusEnum.ACTIVE,  # Estado después del análisis
+            priority=3,  # Use integer instead of enum
             
             # Información del cliente (enriquecida)
             client_name=client_info.get('name', ''),
@@ -413,27 +490,21 @@ class ProjectProcessorService:
             client_email=client_info.get('email', ''),
             client_phone=client_info.get('phone', ''),
             
-            # Fechas (priorizando datos extraídos)
-            proposal_deadline=project_input.proposal_deadline,
-            service_start_date=project_input.service_start_date,
-            service_end_date=project_input.service_end_date,
+            # Fechas y servicio
+            service_date=getattr(project_input, 'service_date', None),
+            deadline=getattr(project_input, 'deadline', None),
             
             # Presupuesto
-            budget_range_min=project_input.budget_range_min,
-            budget_range_max=project_input.budget_range_max,
-            currency=project_input.currency,
+            estimated_budget=getattr(project_input, 'estimated_budget', None),
+            currency=getattr(project_input, 'currency', 'USD'),
             
             # Ubicación
-            service_location=project_input.service_location,
-            service_city=project_input.service_city,
-            service_state=project_input.service_state,
-            service_country=project_input.service_country,
+            service_location=getattr(project_input, 'service_location', ''),
+            location=getattr(project_input, 'location', ''),
             
-            # Alcance enriquecido
-            estimated_scope_size=project_input.estimated_scope_size,
-            scope_unit=project_input.scope_unit,
-            service_category=project_input.service_category,
-            target_audience=project_input.target_audience,
+            # Alcance
+            estimated_attendees=getattr(project_input, 'estimated_attendees', None),
+            service_duration_hours=getattr(project_input, 'service_duration_hours', None),
             
             # Análisis y contexto
             requirements=project_input.requirements,
@@ -452,8 +523,8 @@ class ProjectProcessorService:
             # Timestamps
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
-            created_by=getattr(project_input, 'created_by', None),
-            organization_id=getattr(project_input, 'organization_id', None)
+            created_by=metadata.get('created_by') if metadata else None,
+            organization_id=metadata.get('organization_id') if metadata else None
         )
         
         return project_model
@@ -468,45 +539,111 @@ class ProjectProcessorService:
             return
             
         try:
+            # Preparar datos para la tabla project_context según budy-ai-schema
             context_data = {
                 'project_id': str(project_id),
-                'context_type': 'ai_analysis',
-                'context_data': context_analysis.dict(),
-                'created_at': datetime.utcnow().isoformat()
+                'detected_project_type': getattr(context_analysis.detected_project_type, 'value', None) if context_analysis.detected_project_type else None,
+                'detected_client_type': getattr(context_analysis.detected_client_type, 'value', None) if context_analysis.detected_client_type else None,
+                'complexity_score': context_analysis.complexity_score,
+                'key_requirements': context_analysis.key_requirements or [],
+                'implicit_needs': context_analysis.implicit_needs or [],
+                'risk_factors': context_analysis.risk_factors or [],
+                'analysis_confidence': context_analysis.analysis_confidence,
+                'analysis_reasoning': context_analysis.analysis_reasoning,
+                'ai_model_used': context_analysis.ai_model_used,
+                'tokens_consumed': context_analysis.tokens_consumed,
+                'analyzed_at': context_analysis.analyzed_at.isoformat() if context_analysis.analyzed_at else datetime.utcnow().isoformat()
             }
             
-            self.db_client.insert_project_context(project_id, context_data)
-            logger.info(f"💾 Project context saved for: {project_id}")
+            # Usar método directo de Supabase ya que insert_project_context tiene problemas
+            response = self.db_client.client.table("project_context").insert(context_data).execute()
+            if response.data:
+                logger.info(f"💾 Project context saved for: {project_id}")
+            else:
+                logger.warning(f"⚠️ No data returned when saving context for: {project_id}")
             
         except Exception as e:
             logger.error(f"❌ Error saving project context: {str(e)}")
+            # No hacer raise - este error no es crítico
+    
+    async def _save_extracted_items(
+        self, 
+        project_id: Optional[UUID], 
+        budy_result: Dict[str, Any]
+    ):
+        """Guarda items extraídos por BudyAgent en la tabla project_items"""
+        if not project_id:
+            return
+            
+        try:
+            extracted_data = budy_result.get('extracted_data', {})
+            items_data = extracted_data.get('items', [])
+            
+            if not items_data:
+                logger.info(f"ℹ️ No items extracted for project: {project_id}")
+                return
+            
+            # Convertir items extraídos al formato de project_items
+            project_items = []
+            for i, item in enumerate(items_data):
+                if isinstance(item, dict):
+                    item_data = {
+                        'project_id': str(project_id),
+                        'name': item.get('name', item.get('product_name', f'Item {i+1}')),
+                        'description': item.get('description', item.get('specifications', '')),
+                        'category': item.get('category', 'general'),
+                        'quantity': float(item.get('quantity', 1)),
+                        'unit_of_measure': item.get('unit', item.get('unit_of_measure', 'pieces')),
+                        'unit_price': float(item.get('unit_price', 0)) if item.get('unit_price') else None,
+                        'total_price': float(item.get('total_price', 0)) if item.get('total_price') else None,
+                        'extracted_from_ai': True,
+                        'extraction_confidence': float(item.get('confidence', 0.8)),
+                        'extraction_method': 'budy_agent_v1.0',
+                        'is_validated': False,
+                        'is_included': True,
+                        'sort_order': i
+                    }
+                    project_items.append(item_data)
+            
+            if project_items:
+                # Usar método directo de inserción
+                response = self.db_client.client.table("project_items").insert(project_items).execute()
+                if response.data:
+                    logger.info(f"💾 {len(response.data)} project items saved for: {project_id}")
+                else:
+                    logger.warning(f"⚠️ No data returned when saving items for: {project_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error saving extracted items: {str(e)}")
+            # No hacer raise - este error no es crítico
     
     def _create_fallback_project_model(self, project_input: ProjectInput) -> ProjectModel:
         """Crea modelo de proyecto básico como fallback"""
+        from uuid import uuid4, UUID
+        
+        # Generate valid UUID if input ID is not a valid UUID
+        try:
+            project_id = UUID(getattr(project_input, 'id', None)) if getattr(project_input, 'id', None) else uuid4()
+        except (ValueError, TypeError):
+            project_id = uuid4()
+        
         return ProjectModel(
-            id=getattr(project_input, 'id', None),
-            name=project_input.title,
-            description=project_input.description,
+            id=project_id,
+            name=project_input.name or f"Project {project_input.project_type.value} - {str(project_id)[:8]}",
+            description=project_input.requirements or f"Project created via API upload for {project_input.project_type.value}",
             project_type=project_input.project_type,
-            complexity_score=0.5,  # Score medio por defecto
             status=ProjectStatusEnum.DRAFT,
-            priority=PriorityLevel.MEDIUM,
+            priority=3,  # Use integer instead of enum
             
             # Datos básicos del input
-            proposal_deadline=project_input.proposal_deadline,
-            service_start_date=project_input.service_start_date,
-            service_end_date=project_input.service_end_date,
-            budget_range_min=project_input.budget_range_min,
-            budget_range_max=project_input.budget_range_max,
-            currency=project_input.currency,
-            service_location=project_input.service_location,
-            service_city=project_input.service_city,
-            service_state=project_input.service_state,
-            service_country=project_input.service_country,
-            estimated_scope_size=project_input.estimated_scope_size,
-            scope_unit=project_input.scope_unit,
-            service_category=project_input.service_category,
-            target_audience=project_input.target_audience,
+            service_date=getattr(project_input, 'service_date', None),
+            deadline=getattr(project_input, 'deadline', None),
+            estimated_budget=getattr(project_input, 'estimated_budget', None),
+            currency=getattr(project_input, 'currency', 'USD'),
+            service_location=getattr(project_input, 'service_location', ''),
+            location=getattr(project_input, 'location', ''),
+            estimated_attendees=getattr(project_input, 'estimated_attendees', None),
+            service_duration_hours=getattr(project_input, 'service_duration_hours', None),
             requirements=project_input.requirements,
             requirements_confidence=0.3,  # Baja confianza sin análisis
             
@@ -519,8 +656,8 @@ class ProjectProcessorService:
             
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
-            created_by=getattr(project_input, 'created_by', None),
-            organization_id=getattr(project_input, 'organization_id', None)
+            created_by=None,  # Fallback no tiene info de usuario
+            organization_id=None  # Fallback no tiene info de organización
         )
 
 

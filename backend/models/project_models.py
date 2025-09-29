@@ -341,6 +341,102 @@ class ProjectInput(BaseModel):
     
     # Legacy compatibility properties
     @property
+    def title(self) -> str:
+        """Legacy compatibility: title → name"""
+        return self.name or ""
+    
+    @title.setter
+    def title(self, value: str):
+        """Legacy compatibility: title ← name"""
+        self.name = value
+    
+    @property
+    def description(self) -> str:
+        """Legacy compatibility: description → requirements"""
+        return self.requirements or ""
+    
+    @description.setter
+    def description(self, value: str):
+        """Legacy compatibility: description ← requirements"""
+        self.requirements = value
+    
+    # Additional legacy compatibility properties for ProjectProcessorService
+    @property
+    def proposal_deadline(self):
+        """Legacy compatibility: proposal_deadline - not available in input"""
+        return None
+    
+    @property
+    def service_start_date(self):
+        """Legacy compatibility: service_start_date - not available in input"""
+        return None
+    
+    @property
+    def service_end_date(self):
+        """Legacy compatibility: service_end_date - not available in input"""
+        return None
+    
+    @property
+    def budget_range_min(self):
+        """Legacy compatibility: budget_range_min - not available in input"""
+        return None
+    
+    @property
+    def budget_range_max(self):
+        """Legacy compatibility: budget_range_max - not available in input"""
+        return None
+    
+    @property
+    def currency(self):
+        """Legacy compatibility: currency - default to USD"""
+        return "USD"
+    
+    @property
+    def service_location(self):
+        """Legacy compatibility: service_location - not available in input"""
+        return None
+    
+    @property
+    def service_city(self):
+        """Legacy compatibility: service_city - not available in input"""
+        return None
+    
+    @property
+    def service_state(self):
+        """Legacy compatibility: service_state - not available in input"""
+        return None
+    
+    @property
+    def service_country(self):
+        """Legacy compatibility: service_country - not available in input"""
+        return None
+    
+    @property
+    def estimated_scope_size(self):
+        """Legacy compatibility: estimated_scope_size - not available in input"""
+        return None
+    
+    @property
+    def scope_unit(self):
+        """Legacy compatibility: scope_unit - not available in input"""
+        return None
+    
+    @property
+    def target_audience(self):
+        """Legacy compatibility: target_audience - not available in input"""
+        return None
+    
+    @property
+    def created_by(self):
+        """Legacy compatibility: created_by - not available in input"""
+        return None
+    
+    @property
+    def organization_id(self):
+        """Legacy compatibility: organization_id - not available in input"""
+        return None
+    
+    @property
     def rfx_type(self) -> str:
         """Legacy compatibility: rfx_type → project_type"""
         return self.project_type.value if hasattr(self.project_type, 'value') else self.project_type if hasattr(self.project_type, 'value') else self.project_type
@@ -884,8 +980,9 @@ RequesterModel = UserModel
 RFXProductRequest = ProjectItemModel
 
 # Additional aliases needed by APIs
-ProjectInput = ProjectCreateRequest
-RFXInput = ProjectCreateRequest
+# ProjectInput is already defined above as the unified model
+# RFXInput should point to ProjectInput (not ProjectCreateRequest) for backward compatibility
+RFXInput = ProjectInput
 RFXResponse = ProjectResponse
 
 # Legacy field mappings for migration

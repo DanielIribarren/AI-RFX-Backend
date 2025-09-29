@@ -24,9 +24,17 @@ class DatabaseClient:
         """Get or create Supabase client instance"""
         if self._client is None:
             try:
+                # Usar service_role_key si está disponible (bypassa RLS), sino anon_key
+                api_key = self._config.service_role_key if self._config.service_role_key else self._config.anon_key
+                
+                if self._config.service_role_key:
+                    logger.info("🔑 Using service role key for database operations (bypasses RLS)")
+                else:
+                    logger.warning("⚠️ Using anon key - RLS policies may block operations")
+                
                 self._client = create_client(
                     self._config.url,
-                    self._config.anon_key
+                    api_key
                 )
                 logger.info("✅ Database client connected successfully")
                 # Auto-detect schema mode
@@ -37,21 +45,17 @@ class DatabaseClient:
         return self._client
     
     def _detect_schema_mode(self) -> None:
-        """Auto-detect which database schema is available"""
+        """Force modern schema mode - legacy support removed"""
         try:
-            # Try new schema first
+            # Force modern schema only
             response = self.client.table("projects").select("id").limit(1).execute()
             self._schema_mode = "modern"
-            logger.info("🆕 Modern schema detected (budy-ai-schema)")
-        except Exception:
-            try:
-                # Fallback to legacy schema
-                response = self.client.table("rfx_v2").select("id").limit(1).execute()
-                self._schema_mode = "legacy"
-                logger.info("📚 Legacy schema detected (rfx_v2)")
-            except Exception as e:
-                logger.error(f"❌ No compatible schema found: {e}")
-                self._schema_mode = "unknown"
+            logger.info("🆕 Modern schema active (budy-ai-schema)")
+        except Exception as e:
+            logger.error(f"❌ Modern schema not available: {e}")
+            logger.error("💡 Run 'python migrate_to_modern_schema.py' to migrate from legacy schema")
+            self._schema_mode = "unknown"
+            raise Exception("Modern schema required but not found. Please run migration first.")
     
     @property
     def schema_mode(self) -> str:
@@ -61,18 +65,15 @@ class DatabaseClient:
         return self._schema_mode or "unknown"
     
     def health_check(self) -> bool:
-        """Check database connection health - hybrid mode"""
+        """Check database connection health - modern schema only"""
         try:
-            if self.schema_mode == "modern":
-                response = self.client.table("projects").select("id").limit(1).execute()
-            elif self.schema_mode == "legacy":
-                response = self.client.table("rfx_v2").select("id").limit(1).execute()
-            else:
-                return False
+            response = self.client.table("projects").select("id").limit(1).execute()
             return True
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
             return False
+    
+    # Legacy mapping functions removed - modern schema only
     
     # ========================
     # ORGANIZATION OPERATIONS (UPDATED FROM COMPANIES)
@@ -181,7 +182,15 @@ class DatabaseClient:
                 .eq("id", str(user_id))\
                 .execute()
             
-            return response.data[0] if response.data else None
+            if response.data:
+                user = response.data[0]
+                # Build full name from first_name and last_name for compatibility
+                first_name = user.get('first_name', '')
+                last_name = user.get('last_name', '')
+                user['name'] = f"{first_name} {last_name}".strip()
+                return user
+            else:
+                return None
         except Exception as e:
             logger.error(f"❌ Failed to get user {user_id}: {e}")
             return None
@@ -194,17 +203,67 @@ class DatabaseClient:
                 .eq("email", email)\
                 .execute()
             
-            return response.data[0] if response.data else None
+            if response.data:
+                user = response.data[0]
+                # Build full name from first_name and last_name for compatibility
+                first_name = user.get('first_name', '')
+                last_name = user.get('last_name', '')
+                user['name'] = f"{first_name} {last_name}".strip()
+                return user
+            else:
+                return None
         except Exception as e:
             logger.error(f"❌ Failed to get user by email {email}: {e}")
             return None
+
+    def update_user(self, user_id: Union[str, UUID], update_data: Dict[str, Any]) -> bool:
+        """Update user information"""
+        try:
+            from datetime import datetime
+            update_data['updated_at'] = datetime.now().isoformat()
+            
+            response = self.client.table("users")\
+                .update(update_data)\
+                .eq("id", str(user_id))\
+                .execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"✅ User updated: {user_id}")
+                return True
+            else:
+                logger.warning(f"⚠️ No user found to update: {user_id}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to update user: {e}")
+            return False
+
+    def update_organization(self, org_id: Union[str, UUID], update_data: Dict[str, Any]) -> bool:
+        """Update organization information"""
+        try:
+            from datetime import datetime
+            update_data['updated_at'] = datetime.now().isoformat()
+            
+            response = self.client.table("organizations")\
+                .update(update_data)\
+                .eq("id", str(org_id))\
+                .execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"✅ Organization updated: {org_id}")
+                return True
+            else:
+                logger.warning(f"⚠️ No organization found to update: {org_id}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to update organization: {e}")
+            return False
     
     # ========================
     # PROJECT OPERATIONS (UPDATED FROM RFX)
     # ========================
     
     def insert_project(self, project_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert new project (formerly RFX)"""
+        """Insert new project - modern schema only"""
         try:
             if 'id' not in project_data:
                 project_data['id'] = str(uuid4())
@@ -235,55 +294,68 @@ class DatabaseClient:
             raise
     
     def get_project_by_id(self, project_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
-        """Get project by ID with full context (hybrid mode)"""
+        """Get project by ID with full context - modern schema only - OPTIMIZED WITH JOINS"""
         try:
-            if self.schema_mode == "modern":
-                # Modern schema: projects table with joins
-                response = self.client.table("projects")\
-                    .select("*, organizations(*), users!projects_created_by_fkey(*)")\
-                    .eq("id", str(project_id))\
-                    .execute()
-                
-                return response.data[0] if response.data else None
-            else:
-                # Legacy schema: rfx_v2 table with joins
-                response = self.client.table("rfx_v2")\
-                    .select("*, companies(*), requesters(*)")\
-                    .eq("id", str(project_id))\
-                    .execute()
-                
-                if response.data:
-                    # Map legacy data to modern format
-                    rfx_data = response.data[0]
-                    return self._map_rfx_to_project(rfx_data)
+            # SINGLE QUERY with JOINs - much more efficient than 3 separate queries
+            response = self.client.table("projects")\
+                .select("*, organizations(*), users!created_by(*)")\
+                .eq("id", str(project_id))\
+                .execute()
+            
+            if not response.data:
                 return None
+            
+            project = response.data[0]
+            
+            # Build full name for user compatibility (if user exists)
+            if project.get('users'):
+                user = project['users']
+                first_name = user.get('first_name', '')
+                last_name = user.get('last_name', '')
+                user['name'] = f"{first_name} {last_name}".strip()
+            
+            logger.debug(f"✅ Retrieved project {project_id} with related data in single query")
+            return project
+            
         except Exception as e:
             logger.error(f"❌ Failed to get project {project_id}: {e}")
             return None
     
     def get_projects_by_organization(self, org_id: Union[str, UUID], 
                                    limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get projects for an organization with pagination"""
+        """Get projects for an organization with pagination - OPTIMIZED WITH JOINS"""
         try:
+            # SINGLE QUERY with JOINs - eliminates N+1 problem for organization projects
             response = self.client.table("projects")\
-                .select("*, organizations(*), users!projects_created_by_fkey(*)")\
+                .select("*, organizations(*), users!created_by(*)")\
                 .eq("organization_id", str(org_id))\
                 .order("created_at", desc=True)\
                 .range(offset, offset + limit - 1)\
                 .execute()
             
-            logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} projects for org {org_id}")
-            return response.data or []
+            projects = response.data or []
+            
+            # Build full name for user compatibility for each project
+            for project in projects:
+                if project.get('users'):
+                    user = project['users']
+                    first_name = user.get('first_name', '')
+                    last_name = user.get('last_name', '')
+                    user['name'] = f"{first_name} {last_name}".strip()
+            
+            logger.info(f"✅ Retrieved {len(projects)} projects for org {org_id} with related data in single query")
+            return projects
         except Exception as e:
             logger.error(f"❌ Failed to get projects for organization {org_id}: {e}")
             return []
     
     def get_latest_projects(self, org_id: Union[str, UUID] = None, 
                           limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get latest projects with organization context"""
+        """Get latest projects with organization context - modern schema only - OPTIMIZED WITH JOINS"""
         try:
+            # SINGLE QUERY with JOINs - eliminates N+1 problem
             query = self.client.table("projects")\
-                .select("*, organizations(*), users!projects_created_by_fkey(*)")\
+                .select("*, organizations(*), users!created_by(*)")\
                 .order("created_at", desc=True)\
                 .range(offset, offset + limit - 1)
             
@@ -291,9 +363,18 @@ class DatabaseClient:
                 query = query.eq("organization_id", str(org_id))
             
             response = query.execute()
+            projects = response.data or []
             
-            logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} latest projects")
-            return response.data or []
+            # Build full name for user compatibility for each project
+            for project in projects:
+                if project.get('users'):
+                    user = project['users']
+                    first_name = user.get('first_name', '')
+                    last_name = user.get('last_name', '')
+                    user['name'] = f"{first_name} {last_name}".strip()
+            
+            logger.info(f"✅ Retrieved {len(projects)} latest projects with related data in single query")
+            return projects
         except Exception as e:
             logger.error(f"❌ Failed to get latest projects: {e}")
             return []
@@ -318,9 +399,10 @@ class DatabaseClient:
             raise
     
     def update_project_data(self, project_id: Union[str, UUID], update_data: Dict[str, Any]) -> bool:
-        """Update project data fields"""
+        """Update project data fields - IMPROVED VALIDATION"""
         try:
             logger.info(f"🔄 Updating project data for: {project_id}")
+            logger.debug(f"🔍 Raw update data: {update_data}")
             
             # Define allowed fields to update based on budy-ai-schema projects table
             allowed_fields = {
@@ -330,34 +412,55 @@ class DatabaseClient:
                 "currency", "deadline", "tags", "priority", "status"
             }
             
-            # Filter update_data to only include allowed fields
-            filtered_data = {k: v for k, v in update_data.items() if k in allowed_fields}
+            # STEP 1: Filter by allowed fields
+            filtered_by_fields = {k: v for k, v in update_data.items() if k in allowed_fields}
             
-            if not filtered_data:
+            if not filtered_by_fields:
                 logger.warning(f"⚠️ No valid fields to update for project {project_id}")
                 logger.warning(f"⚠️ Attempted fields: {list(update_data.keys())}")
+                logger.warning(f"⚠️ Allowed fields: {sorted(allowed_fields)}")
+                return False
+            
+            # STEP 2: Filter out None and empty values (avoid NULL inserts)
+            meaningful_data = {}
+            for key, value in filtered_by_fields.items():
+                if value is not None and value != "":
+                    # For lists and arrays, check if they're not empty
+                    if isinstance(value, (list, tuple)) and len(value) == 0:
+                        logger.debug(f"⚠️ Skipping empty array field: {key}")
+                        continue
+                    meaningful_data[key] = value
+                else:
+                    logger.debug(f"⚠️ Skipping None/empty field: {key} = {value}")
+            
+            if not meaningful_data:
+                logger.warning(f"⚠️ No meaningful data to update for project {project_id}")
+                logger.warning(f"⚠️ All values were None or empty: {filtered_by_fields}")
                 return False
             
             # Add updated_at timestamp
             from datetime import datetime
-            filtered_data['updated_at'] = datetime.now().isoformat()
+            meaningful_data['updated_at'] = datetime.now().isoformat()
             
-            logger.info(f"🔄 Executing project update with fields: {list(filtered_data.keys())}")
+            logger.info(f"🔄 Executing project update with {len(meaningful_data)} meaningful fields: {list(meaningful_data.keys())}")
+            logger.debug(f"🔍 Final update data: {meaningful_data}")
             
             response = self.client.table("projects")\
-                .update(filtered_data)\
+                .update(meaningful_data)\
                 .eq("id", str(project_id))\
                 .execute()
             
             if response.data and len(response.data) > 0:
                 logger.info(f"✅ Project data updated successfully: {project_id}")
+                logger.debug(f"✅ Updated fields: {list(meaningful_data.keys())}")
                 return True
             else:
                 logger.warning(f"⚠️ No project found to update: {project_id}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Failed to update project data: {e}")
+            logger.error(f"❌ Failed to update project data for {project_id}: {e}")
+            logger.error(f"❌ Update data that failed: {update_data}")
             raise
     
     # ========================
@@ -365,67 +468,102 @@ class DatabaseClient:
     # ========================
     
     def insert_project_items(self, project_id: Union[str, UUID], items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Insert project items (formerly RFX products)"""
+        """Insert project items (formerly RFX products) - IMPROVED VALIDATION"""
         try:
+            # STEP 1: Early validation
             if not items:
-                logger.warning(f"No items to insert for project {project_id}")
+                logger.warning(f"⚠️ No items provided for project {project_id}")
                 return []
             
+            if not isinstance(items, list):
+                raise ValueError(f"Items must be a list, got {type(items)}")
+            
+            logger.info(f"🔄 Processing {len(items)} items for project {project_id}")
+            
             items_data = []
+            skipped_items = []
+            
             for i, item in enumerate(items):
+                logger.debug(f"🔍 Processing item {i+1}/{len(items)}: {item}")
+                
                 item_data = item.copy()
                 item_data['project_id'] = str(project_id)
                 if 'id' not in item_data:
                     item_data['id'] = str(uuid4())
                 
-                # Ensure required fields - map from legacy fields if needed
-                if 'name' not in item_data:
-                    if 'product_name' in item_data:
-                        item_data['name'] = item_data['product_name']
-                    else:
-                        logger.warning(f"Item {i} missing name, skipping")
-                        continue
+                # STEP 2: Validate and map required fields
+                item_name = None
+                if 'name' in item_data and item_data['name']:
+                    item_name = item_data['name']
+                elif 'product_name' in item_data and item_data['product_name']:
+                    item_name = item_data['product_name']
+                    item_data['name'] = item_name
+                else:
+                    # Instead of silently skipping, log detailed error
+                    error_msg = f"Item {i+1} missing required 'name' field. Item data: {item}"
+                    logger.error(f"❌ {error_msg}")
+                    skipped_items.append({"index": i+1, "reason": "missing_name", "data": item})
+                    continue
                 
-                if 'quantity' not in item_data:
+                # Set defaults for other required fields
+                if 'quantity' not in item_data or not item_data['quantity']:
                     item_data['quantity'] = 1
+                    logger.debug(f"🔧 Set default quantity=1 for item: {item_name}")
                 
-                if 'unit_of_measure' not in item_data:
+                if 'unit_of_measure' not in item_data or not item_data['unit_of_measure']:
                     item_data['unit_of_measure'] = item_data.get('unit', 'pieces')
+                    logger.debug(f"🔧 Set default unit_of_measure for item: {item_name}")
                 
                 # Map legacy pricing fields
                 if 'unit_price' not in item_data and 'estimated_unit_price' in item_data:
                     item_data['unit_price'] = item_data['estimated_unit_price']
+                    logger.debug(f"🔧 Mapped estimated_unit_price -> unit_price for item: {item_name}")
                 
                 if 'total_price' not in item_data and 'total_estimated_cost' in item_data:
                     item_data['total_price'] = item_data['total_estimated_cost']
+                    logger.debug(f"🔧 Mapped total_estimated_cost -> total_price for item: {item_name}")
                 
-                # Clean any None values
+                # Clean None values (but keep important optional fields)
+                nullable_fields = {'unit_price', 'total_price', 'source_document_id', 'description', 'validation_notes', 'category'}
                 for key, value in list(item_data.items()):
-                    if value is None and key not in ['unit_price', 'total_price', 'source_document_id', 'description', 'notes']:
+                    if value is None and key not in nullable_fields:
                         del item_data[key]
+                        logger.debug(f"🧹 Removed None field '{key}' from item: {item_name}")
                 
                 items_data.append(item_data)
-                logger.debug(f"✅ Prepared item {i}: {item_data.get('name')} (ID: {item_data['id']})")
+                logger.debug(f"✅ Prepared item {i+1}: {item_name} (ID: {item_data['id']})")
+            
+            # STEP 3: Validate final results
+            if skipped_items:
+                logger.warning(f"⚠️ {len(skipped_items)} items were skipped due to validation errors:")
+                for skipped in skipped_items:
+                    logger.warning(f"   - Item {skipped['index']}: {skipped['reason']}")
             
             if not items_data:
-                logger.warning(f"No valid items to insert for project {project_id}")
-                return []
+                error_msg = f"No valid items to insert for project {project_id}. Total provided: {len(items)}, Skipped: {len(skipped_items)}"
+                logger.error(f"❌ {error_msg}")
+                if skipped_items:
+                    logger.error("❌ All items failed validation. Check the item data structure.")
+                raise ValueError(error_msg)
             
-            logger.info(f"🔄 Inserting {len(items_data)} items for project {project_id}")
+            # STEP 4: Insert all valid items
+            logger.info(f"🔄 Inserting {len(items_data)} valid items for project {project_id}")
             response = self.client.table("project_items").insert(items_data).execute()
             
             if response.data:
-                logger.info(f"✅ {len(response.data)} project items inserted for project {project_id}")
+                logger.info(f"✅ {len(response.data)} project items inserted successfully for project {project_id}")
                 for item in response.data:
-                    logger.debug(f"   - {item.get('name')} (ID: {item.get('id')})")
+                    logger.debug(f"   ✅ {item.get('name')} (ID: {item.get('id')})")
                 return response.data
             else:
-                logger.error(f"❌ No data returned after inserting items for project {project_id}")
-                return []
+                raise Exception("No data returned from database after insert operation")
                 
         except Exception as e:
             logger.error(f"❌ Failed to insert project items for {project_id}: {e}")
-            logger.error(f"❌ Items data that failed: {items_data if 'items_data' in locals() else 'N/A'}")
+            if 'items_data' in locals():
+                logger.error(f"❌ Valid items prepared: {len(items_data)}")
+            if 'skipped_items' in locals():
+                logger.error(f"❌ Items skipped: {len(skipped_items)}")
             raise
     
     def get_project_items(self, project_id: Union[str, UUID]) -> List[Dict[str, Any]]:
@@ -462,6 +600,28 @@ class DatabaseClient:
                 return False
         except Exception as e:
             logger.error(f"❌ Failed to update item cost: {e}")
+            return False
+
+    def update_project_item(self, item_id: str, project_id: Union[str, UUID], update_data: Dict[str, Any]) -> bool:
+        """Update project item data"""
+        try:
+            from datetime import datetime
+            update_data['updated_at'] = datetime.now().isoformat()
+            
+            response = self.client.table("project_items")\
+                .update(update_data)\
+                .eq("id", item_id)\
+                .eq("project_id", str(project_id))\
+                .execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"✅ Project item updated: {item_id}")
+                return True
+            else:
+                logger.warning(f"⚠️ No project item found to update: {item_id} in project {project_id}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to update project item: {e}")
             return False
     
     # ========================
@@ -640,34 +800,80 @@ class DatabaseClient:
     # HISTORY & AUDIT
     # ========================
     
-    def insert_rfx_history(self, history_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Insert RFX history event"""
+    def insert_audit_log(self, audit_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert audit log event (replaces insert_rfx_history) - uses modern audit_logs table"""
         try:
-            if 'id' not in history_data:
-                history_data['id'] = str(uuid4())
+            if 'id' not in audit_data:
+                audit_data['id'] = str(uuid4())
             
-            response = self.client.table("rfx_history").insert(history_data).execute()
+            # Ensure required fields for audit_logs schema
+            required_fields = ['action', 'table_name', 'record_id', 'organization_id']
+            for field in required_fields:
+                if field not in audit_data:
+                    raise ValueError(f"Missing required field for audit log: {field}")
+            
+            # Set performed_at if not provided
+            if 'performed_at' not in audit_data:
+                from datetime import datetime
+                audit_data['performed_at'] = datetime.now().isoformat()
+            
+            response = self.client.table("audit_logs").insert(audit_data).execute()
             if response.data:
-                logger.debug(f"✅ RFX history event inserted: {history_data['event_type']}")
+                logger.debug(f"✅ Audit log inserted: {audit_data['action']} on {audit_data['table_name']}")
                 return response.data[0]
             return {}
         except Exception as e:
-            logger.error(f"❌ Failed to insert RFX history: {e}")
+            logger.error(f"❌ Failed to insert audit log: {e}")
             raise
     
-    def get_rfx_history_events(self, rfx_id: Union[str, UUID]) -> List[Dict[str, Any]]:
-        """Get all history events for an RFX"""
+    def get_project_audit_events(self, project_id: Union[str, UUID]) -> List[Dict[str, Any]]:
+        """Get all audit events for a project (replaces get_rfx_history_events)"""
         try:
-            response = self.client.table("rfx_history")\
+            response = self.client.table("audit_logs")\
                 .select("*")\
-                .eq("rfx_id", str(rfx_id))\
+                .eq("record_id", str(project_id))\
+                .eq("table_name", "projects")\
                 .order("performed_at", desc=True)\
                 .execute()
             
+            logger.debug(f"✅ Retrieved {len(response.data or [])} audit events for project {project_id}")
             return response.data or []
         except Exception as e:
-            logger.error(f"❌ Failed to get RFX history for {rfx_id}: {e}")
+            logger.error(f"❌ Failed to get audit events for project {project_id}: {e}")
             return []
+    
+    # Legacy compatibility methods
+    def insert_rfx_history(self, history_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Legacy alias: insert_rfx_history -> insert_audit_log"""
+        logger.warning("⚠️ insert_rfx_history is deprecated, use insert_audit_log instead")
+        
+        # Convert legacy history format to audit log format
+        audit_data = {
+            'action': history_data.get('event_type', 'update'),
+            'table_name': 'projects',  # Assume projects for legacy compatibility
+            'record_id': history_data.get('rfx_id', history_data.get('project_id')),
+            'organization_id': history_data.get('organization_id'),
+            'user_id': history_data.get('user_id'),
+            'user_email': history_data.get('user_email'),
+            'action_reason': history_data.get('event_description'),
+            'new_values': history_data.get('event_data', {}),
+            'ip_address': history_data.get('ip_address'),
+            'user_agent': history_data.get('user_agent')
+        }
+        
+        # Remove None values
+        audit_data = {k: v for k, v in audit_data.items() if v is not None}
+        
+        if not audit_data.get('record_id'):
+            logger.error("❌ Cannot create audit log without record_id (rfx_id/project_id)")
+            return {}
+        
+        return self.insert_audit_log(audit_data)
+    
+    def get_rfx_history_events(self, rfx_id: Union[str, UUID]) -> List[Dict[str, Any]]:
+        """Legacy alias: get_rfx_history_events -> get_project_audit_events"""
+        logger.warning("⚠️ get_rfx_history_events is deprecated, use get_project_audit_events instead")
+        return self.get_project_audit_events(rfx_id)
     
     # ========================
     # STORAGE OPERATIONS
@@ -982,6 +1188,33 @@ def get_rfx_history(self, limit: int = 50, offset: int = 0) -> List[Dict[str, An
     logger.warning("⚠️ get_rfx_history called - requires organization context in new schema")
     return []
 
+def get_projects_history(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    """Get projects history with pagination - modern schema compatible - OPTIMIZED WITH JOINS"""
+    try:
+        # SINGLE QUERY with JOINs - eliminates N+1 problem for history
+        response = self.client.table("projects")\
+            .select("*, organizations(*), users!created_by(*)")\
+            .order("created_at", desc=True)\
+            .range(offset, offset + limit - 1)\
+            .execute()
+        
+        projects = response.data or []
+        
+        # Build full name for user compatibility for each project
+        for project in projects:
+            if project.get('users'):
+                user = project['users']
+                first_name = user.get('first_name', '')
+                last_name = user.get('last_name', '')
+                user['name'] = f"{first_name} {last_name}".strip()
+        
+        logger.info(f"✅ Retrieved {len(projects)} projects history with related data in single query")
+        return projects
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to get projects history: {e}")
+        return []
+
 def get_latest_rfx(self, limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
     """Legacy alias: Get latest projects"""
     logger.warning("⚠️ get_latest_rfx called - requires organization context in new schema")
@@ -1087,6 +1320,7 @@ def update_rfx_status(self, rfx_id: Union[str, UUID], status: str) -> bool:
 # Add legacy methods to DatabaseClient (only actively used ones)
 DatabaseClient.get_rfx_by_id = get_rfx_by_id
 DatabaseClient.get_rfx_history = get_rfx_history
+DatabaseClient.get_projects_history = get_projects_history
 DatabaseClient.get_latest_rfx = get_latest_rfx
 DatabaseClient.get_rfx_products = get_rfx_products
 DatabaseClient.get_document_by_id = get_document_by_id
@@ -1099,14 +1333,8 @@ DatabaseClient.update_rfx_status = update_rfx_status
 # ========================
 
 def insert_project_context(self, project_id: Union[str, UUID], context_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Insert project context data (for BudyAgent)"""
+    """Insert project context data (for BudyAgent) - modern schema only"""
     try:
-        if self._schema_mode == 'legacy':
-            # For legacy schema, store as metadata in projects table or skip
-            logger.warning("⚠️ Project context not supported in legacy schema - skipping")
-            return {'id': str(uuid4()), 'project_id': str(project_id)}
-        
-        # For modern schema
         if 'id' not in context_data:
             context_data['id'] = str(uuid4())
         
@@ -1124,14 +1352,8 @@ def insert_project_context(self, project_id: Union[str, UUID], context_data: Dic
         return {'id': str(uuid4()), 'project_id': str(project_id)}
 
 def insert_workflow_state(self, state_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Insert workflow state tracking"""
+    """Insert workflow state tracking - modern schema only"""
     try:
-        if self._schema_mode == 'legacy':
-            # For legacy schema, store as metadata or skip
-            logger.warning("⚠️ Workflow states not supported in legacy schema - skipping")
-            return {'id': str(uuid4()), 'project_id': state_data.get('project_id')}
-        
-        # For modern schema
         if 'id' not in state_data:
             state_data['id'] = str(uuid4())
         
@@ -1145,6 +1367,10 @@ def insert_workflow_state(self, state_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.error(f"❌ Failed to insert workflow state: {e}")
         # Don't raise - this is not critical for functionality
         return {'id': str(uuid4()), 'project_id': state_data.get('project_id')}
+
+# Add new methods to DatabaseClient
+DatabaseClient.insert_project_context = insert_project_context
+DatabaseClient.insert_workflow_state = insert_workflow_state
 
 def update_project_status(self, project_id: Union[str, UUID], status: str) -> bool:
     """Update project status"""

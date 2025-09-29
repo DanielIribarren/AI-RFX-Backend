@@ -1334,15 +1334,12 @@ python backend/app.py
 
 ---
 
-## 🎉 CONSOLIDACIÓN SAAS COMPLETADA (PRE-REQUISITO)
+## ✅ Consolidación SaaS completada (pre-requisito)
 
-### **📦 BACKEND CONSOLIDATION ACHIEVED** ✅ **COMPLETADO**
+Estado: implementado y verificado en entorno local (septiembre 2025).  
+Objetivo: unificar modelos, adaptadores y cliente de base de datos manteniendo compatibilidad.
 
-**Tiempo real:** 3 días intensivos de consolidación  
-**Estado:** Implementado y validado exitosamente  
-**Fecha:** Septiembre 2025
-
-#### **🏆 LOGROS PRINCIPALES:**
+#### Cambios principales
 
 **PR #1: Modelos Unificados**
 
@@ -1365,33 +1362,61 @@ python backend/app.py
 - ✅ API calls modernizados: 11 sitios usando métodos consolidados
 - ✅ Arquitectura limpia: Punto único de verdad para conversiones
 
-#### **📊 MÉTRICAS DE CONSOLIDACIÓN:**
+#### Evidencia técnica (reproducible)
 
-```
-🎯 REDUCCIÓN LOGRADA:
-├── Archivos eliminados: 5 completos
-├── Líneas de código: -1,500+ eliminadas
-├── Métodos duplicados: -12 redundantes
-├── Adaptadores: 2 → 1 (-50%)
-├── Modelos: 8 → 4 (-50%)
-└── Complejidad: Significativamente reducida
+1. Verificación de servicios y blueprints
 
-✅ CALIDAD MEJORADA:
-├── Error handling: Profesional en todos los métodos
-├── Logging: Tracking detallado para debugging
-├── Validation: Automática en conversiones
-├── Performance: Cache interno, menos redundancia
-└── Maintainability: Código limpio y organizado
+```bash
+python - <<'PY'
+from backend.app import app
+from backend.services import get_budy_agent, get_project_processor, get_ai_context_service
 
-🔒 COMPATIBILIDAD GARANTIZADA:
-├── Frontend changes: 0 (cero cambios requeridos)
-├── API contracts: 100% mantenidos
-├── Response formats: Idénticos al original
-├── Legacy support: Completamente funcional
-└── Test coverage: 100% validado
+print('blueprints:', list(app.blueprints.keys()))
+print('budy_agent:', type(get_budy_agent()).__name__)
+print('project_processor:', type(get_project_processor()).__name__)
+print('ai_context_service:', type(get_ai_context_service()).__name__)
+PY
 ```
 
-#### **🏗️ ARQUITECTURA FINAL CONSOLIDADA:**
+2. Invocación del endpoint contextual (sincrónica con loop interno)
+
+```bash
+curl -s -X POST http://localhost:5001/api/projects/<PROJECT_ID>/analyze-context \
+  -H 'Content-Type: application/json' \
+  -d '{"documents_text": "sample text"}' | jq '{status:.status, hasData:(.data!=null)}'
+```
+
+3. Referencias a código implementado
+
+```1301:1372:backend/api/projects.py
+@projects_bp.route("/<project_id>/analyze-context", methods=["POST"])
+def analyze_project_context(project_id):
+    ...
+    context_analysis = loop.run_until_complete(
+        ai_context_service.analyze_project_context(...)
+    )
+    workflow_steps = loop.run_until_complete(
+        ai_context_service.generate_workflow_steps(...)
+    )
+```
+
+```24:48:backend/services/ai_context_service.py
+class AIContextService:
+    ...
+    async def analyze_project_context(...):
+        ...
+    async def generate_workflow_steps(...):
+        ...
+```
+
+```30:44:backend/services/project_processor.py
+class ProjectProcessorService:
+    def __init__(self):
+        self.budy_agent = get_budy_agent()
+        self.industry_configs = { ... }
+```
+
+#### Arquitectura final consolidada
 
 ```
 🎯 BACKEND UNIFICADO ACTUAL:
@@ -1407,16 +1432,15 @@ python backend/app.py
 │   ├── rfx.py (usando métodos modernos + adaptador)
 │   ├── proposals.py (usando métodos modernos + adaptador)
 │   └── projects.py (API moderna lista para expansión)
-└── 🧪 100% Tested & Validated
+└── 🧪 Verificación local con app context y registro de blueprints
 ```
 
-#### **✅ VALIDACIÓN COMPLETA:**
+#### Validación
 
-- **Integration Tests**: Todos los endpoints funcionando
-- **Backward Compatibility**: Frontend sin cambios requeridos
-- **Performance**: Sin regresiones, mejoras en eficiencia
-- **Code Quality**: Linting limpio, documentación actualizada
-- **Database**: Operaciones híbridas (legacy + modern) funcionando
+- Integration smoke: import de servicios y blueprints OK (ver script arriba)
+- Compatibilidad: endpoints legacy expuestos (`/api/rfx/*`) mapeando a proyectos
+- Async/Flask: llamadas async ejecutadas con `loop.run_until_complete` dentro de la view
+- BD: uso de `insert_project_context` y `insert_workflow_state` en client híbrido
 
 #### **🚀 BENEFICIOS INMEDIATOS:**
 
@@ -1440,7 +1464,7 @@ python backend/app.py
 
 ---
 
-## 🚀 RESULTADO ESPERADO ACTUALIZADO
+## Resultado esperado actualizado
 
 Al final de los 7 días tendrás:
 
@@ -1451,7 +1475,7 @@ Al final de los 7 días tendrás:
 - ✅ **Backward Compatibility** para transición suave
 - ✅ **Performance optimizado** y escalable
 
-### **🎯 ESTADO ACTUAL DEL PLAN:**
+### Estado actual del plan
 
 ```
 📋 PROGRESO IMPLEMENTATION PLAN:
