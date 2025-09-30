@@ -484,11 +484,11 @@ class ProjectProcessorService:
             status=ProjectStatusEnum.ACTIVE,  # Estado después del análisis
             priority=3,  # Use integer instead of enum
             
-            # Información del cliente (enriquecida)
-            client_name=client_info.get('name', ''),
-            client_company=client_info.get('company', ''),
-            client_email=client_info.get('email', ''),
-            client_phone=client_info.get('phone', ''),
+            # Información del cliente (enriquecida) - usar None para campos vacíos
+            client_name=client_info.get('name') or None,
+            client_company=client_info.get('company') or None,
+            client_email=client_info.get('email').strip() if client_info.get('email') and client_info.get('email').strip() else None,
+            client_phone=client_info.get('phone') or None,
             
             # Fechas y servicio
             service_date=getattr(project_input, 'service_date', None),

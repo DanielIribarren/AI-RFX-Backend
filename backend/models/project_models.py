@@ -484,7 +484,7 @@ class ProjectModel(BaseModel):
     
     # Client information (unified from both models)
     client_name: Optional[str] = Field(None, max_length=255, description="Contact person name")
-    client_email: Optional[str] = Field(None, pattern=r'^[^@]+@[^@]+\.[^@]+$')
+    client_email: Optional[str] = Field(None, max_length=255, description="Client email (optional)")
     client_phone: Optional[str] = Field(None, max_length=50)
     client_company: Optional[str] = Field(None, max_length=255, description="Client organization name")
     client_type: Optional[ClientTypeEnum] = None
@@ -585,12 +585,23 @@ class ProjectModel(BaseModel):
             return v.strip()
         return v
 
-    class Config:
-        use_enum_values = True
-
     @validator('name', 'client_name')
     def validate_names(cls, v):
         return v.strip() if v else v
+    
+    @validator('client_email')
+    def validate_client_email(cls, v):
+        """Validate client email - allow empty string or None, but validate format if provided"""
+        if v and v.strip():
+            # Only validate if email is provided and not empty
+            import re
+            if not re.match(r'^[^@]+@[^@]+\.[^@]+$', v):
+                raise ValueError('Invalid email format')
+            return v.strip()
+        return None  # Return None for empty strings
+
+    class Config:
+        use_enum_values = True
 
 # ========================
 # LEGACY ALIASES FOR BACKWARD COMPATIBILITY

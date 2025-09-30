@@ -190,46 +190,131 @@ def create_project():
             
             default_user_id = _ensure_default_user(db_client, organization_id)
             
-            # 3. EJECUTAR ANÁLISIS IA PRIMERO (antes de insertar en BD)
-            logger.info(f"🤖 Starting BudyAgent analysis BEFORE project insertion: {project_id}")
+            # 3. PREPARAR CONTENIDO SEGÚN TIPO DE ENTRADA
+            logger.info(f"📄 Processing {len(valid_files)} files - detecting content type")
             
-            # Preparar contenido para análisis
+            from backend.services.document_parser import get_document_parser
+            doc_parser = get_document_parser()
+            
+            pre_parsed_results = []
             combined_content = ""
-            for file_data in valid_files:
-                content_str = file_data["content"].decode('utf-8', errors='ignore') if isinstance(file_data["content"], bytes) else str(file_data["content"])
-                combined_content += f"\n--- {file_data['filename']} ---\n{content_str}\n"
+            needs_parsing = False
             
-            # Ejecutar análisis
-            metadata = {
-                "project_id": project_id,
-                "project_type": project_type,
-                "files_count": len(valid_files),
-                "total_size": total_size,
-                "organization_id": organization_id,
-                "created_by": default_user_id
-            }
+            for file_data in valid_files:
+                filename = file_data["filename"]
+                content = file_data["content"]
+                mime_type = _get_mime_type(filename)
+                file_ext = filename.split('.')[-1].lower() if '.' in filename else ''
+                
+                # DECISIÓN: ¿Necesita parsing o es texto plano?
+                is_text_file = (
+                    file_ext == 'txt' or 
+                    'text/plain' in (mime_type or '') or
+                    filename.endswith('_text_content.txt')  # Texto enviado directamente
+                )
+                
+                if is_text_file:
+                    # ✅ TEXTO PLANO: No parsear, solo decodificar
+                    logger.info(f"📝 Text file detected: {filename} - skipping parser")
+                    try:
+                        parsed = doc_parser._parse_text(content, filename, mime_type)
+                        pre_parsed_results.append(parsed)
+                        
+                        # Agregar al contenido combinado
+                        combined_content += f"\n\n===== FILE: {filename} (text) =====\n\n{parsed['text']}\n"
+                        
+                        logger.info(f"✅ Text processed: {parsed['char_count']} chars")
+                    except Exception as e:
+                        logger.error(f"❌ Error processing text file {filename}: {e}")
+                        combined_content += f"\n\n===== FILE: {filename} (text) =====\n\n[Error reading text]\n"
+                else:
+                    # 📄 DOCUMENTO: Necesita parsing (PDF, DOCX, XLSX, etc.)
+                    logger.info(f"📄 Document detected: {filename} ({mime_type}) - parsing required")
+                    needs_parsing = True
+                    
+                    try:
+                        parsed = doc_parser.parse_document(
+                            content=content,
+                            filename=filename,
+                            mime_type=mime_type
+                        )
+                        pre_parsed_results.append(parsed)
+                        
+                        # Usar texto completo extraído del documento
+                        combined_content += f"\n\n===== FILE: {filename} ({parsed['format']}) =====\n\n{parsed['text']}\n"
+                        
+                        logger.info(f"✅ Document deserialized: {filename} - {parsed['char_count']} chars")
+                    except Exception as e:
+                        logger.error(f"❌ Error deserializing document {filename}: {e}")
+                        # Fallback: intentar como texto
+                        try:
+                            text_fallback = content.decode('utf-8', errors='ignore')
+                            combined_content += f"\n\n===== FILE: {filename} (fallback) =====\n\n{text_fallback}\n"
+                        except:
+                            combined_content += f"\n\n===== FILE: {filename} (error) =====\n\n[Error deserializing document]\n"
+            
+            # Calcular estadísticas del contenido combinado
+            total_chars = len(combined_content)
+            total_words = len(combined_content.split())
+            
+            logger.info(f"📊 Content prepared: {total_chars} chars, {total_words} words from {len(pre_parsed_results)} files")
+            logger.info(f"🔍 Parsing was {'REQUIRED' if needs_parsing else 'SKIPPED (text only)'}")
+            
+            # 4. ORQUESTADOR + ANÁLISIS IA
+            # El orquestador recibe TEXTO COMPLETO sin extracciones previas
+            # El LLM hace TODA la extracción inteligente con contexto completo
+            logger.info(f"🎯 Starting Orchestrator + Analyst with FULL TEXT (no pre-extractions): {project_id}")
+            
+            # Ejecutar análisis usando BudyAgent directamente (sin persistencia automática)
+            from backend.services.budy_agent import get_budy_agent
+            budy_agent = get_budy_agent()
             
             # Variable para almacenar resultado del análisis
             analysis_result = None
+            budy_raw_result = None
             
             try:
-                # Usar el project processor para análisis completo
+                # Análisis directo con BudyAgent (MOMENTO 1) - SOLO TEXTO
                 import asyncio
-                if asyncio.iscoroutinefunction(project_processor.process_project_documents):
-                    analysis_result = asyncio.run(project_processor.process_project_documents(
-                        project_input, valid_files, metadata
+                metadata_context = {
+                    "project_id": project_id,
+                    "project_type": project_type,
+                    "extraction_strategy": "catering_focused" if project_type == "catering" else "general_purpose",
+                    "total_chars": total_chars,
+                    "total_words": total_words,
+                    "files_count": len(pre_parsed_results)
+                }
+                
+                if asyncio.iscoroutinefunction(budy_agent.analyze_and_extract):
+                    budy_raw_result = asyncio.run(budy_agent.analyze_and_extract(
+                        document=combined_content,
+                        metadata=metadata_context
                     ))
                 else:
-                    analysis_result = project_processor.process_project_documents(
-                        project_input, valid_files, metadata
+                    budy_raw_result = budy_agent.analyze_and_extract(
+                        document=combined_content,
+                        metadata=metadata_context
                     )
                 
-                logger.info(f"✅ BudyAgent analysis completed for project: {project_id}")
+                logger.info(f"✅ BudyAgent raw analysis completed for project: {project_id}")
+                logger.info(f"📊 Raw result keys: {list(budy_raw_result.keys()) if isinstance(budy_raw_result, dict) else 'Not a dict'}")
+                
+                # Extraer datos del resultado - EL LLM ES LA ÚNICA FUENTE DE VERDAD
+                analysis_result = budy_raw_result.get('extracted_data', {}) if isinstance(budy_raw_result, dict) else {}
+                
+                # Log de lo que extrajo el LLM
+                if analysis_result:
+                    items_count = len(analysis_result.get('items', []))
+                    client_name = analysis_result.get('client_information', {}).get('name', 'N/A')
+                    location = analysis_result.get('project_details', {}).get('service_location', 'N/A')
+                    logger.info(f"📊 LLM extracted: {items_count} items, client={client_name}, location={location}")
                 
             except Exception as e:
-                logger.warning(f"⚠️ BudyAgent analysis failed: {e}")
-                # Continuar sin análisis - usar datos básicos
+                logger.error(f"❌ BudyAgent analysis failed: {e}", exc_info=True)
+                # Si el LLM falla completamente, no hay fallback - devolver error
+                logger.error(f"❌ No fallback available - LLM analysis is required")
                 analysis_result = None
+                budy_raw_result = None
             
             # 4. Preparar datos COMPLETOS del proyecto (análisis + básicos)
             complete_project_data = {
@@ -245,24 +330,34 @@ def create_project():
             }
             
             # Enriquecer con datos del análisis IA (si está disponible)
-            if analysis_result and hasattr(analysis_result, 'client_name'):
-                if analysis_result.client_name:
-                    complete_project_data["client_name"] = analysis_result.client_name
-                if analysis_result.client_email:
-                    complete_project_data["client_email"] = analysis_result.client_email
-                if analysis_result.client_phone:
-                    complete_project_data["client_phone"] = analysis_result.client_phone
-                if analysis_result.client_company:
-                    complete_project_data["client_company"] = analysis_result.client_company
-                if analysis_result.service_location:
-                    complete_project_data["service_location"] = analysis_result.service_location
-                if hasattr(analysis_result, 'estimated_scope_size') and analysis_result.estimated_scope_size:
-                    complete_project_data["estimated_attendees"] = analysis_result.estimated_scope_size
-                if hasattr(analysis_result, 'budget_range_max') and analysis_result.budget_range_max:
-                    complete_project_data["estimated_budget"] = analysis_result.budget_range_max
+            if analysis_result and isinstance(analysis_result, dict):
+                # Extraer información del cliente
+                client_info = analysis_result.get('client_information', {})
+                if client_info:
+                    if client_info.get('name'):
+                        complete_project_data["client_name"] = client_info.get('name')
+                    # Solo agregar email si tiene valor válido (no vacío)
+                    if client_info.get('email') and client_info.get('email').strip():
+                        complete_project_data["client_email"] = client_info.get('email').strip()
+                    if client_info.get('phone'):
+                        complete_project_data["client_phone"] = client_info.get('phone')
+                    if client_info.get('company'):
+                        complete_project_data["client_company"] = client_info.get('company')
                 
-                # Actualizar status si se analizó correctamente
-                complete_project_data["status"] = "analyzed"
+                # Extraer detalles del proyecto
+                project_details = analysis_result.get('project_details', {})
+                if project_details:
+                    if project_details.get('service_location'):
+                        complete_project_data["service_location"] = project_details.get('service_location')
+                    if project_details.get('estimated_attendees'):
+                        complete_project_data["estimated_attendees"] = int(project_details.get('estimated_attendees'))
+                    if project_details.get('estimated_budget'):
+                        complete_project_data["estimated_budget"] = float(project_details.get('estimated_budget'))
+                
+                # Actualizar status si se analizó correctamente - usar 'active' en lugar de 'analyzed'
+                complete_project_data["status"] = "active"
+                
+                logger.info(f"📊 Enriched project data with analysis: client={client_info.get('name', 'N/A')}, location={project_details.get('service_location', 'N/A')}")
             
             logger.info(f"💾 Inserting COMPLETE project with analysis data: {project_id}")
             inserted_project = db_client.insert_project(complete_project_data)
@@ -317,61 +412,137 @@ def create_project():
             except Exception as e:
                 logger.error(f"❌ Failed to save workflow state: {e}")
             
-            # 7. Guardar contexto de análisis (si está disponible)
-            if analysis_result and hasattr(analysis_result, 'context_analysis') and analysis_result.context_analysis:
-                context_data = {
-                    "project_id": project_id,
-                    "detected_project_type": project_type,
-                    "complexity_score": getattr(analysis_result, 'requirements_confidence', 0.5),
-                    "analysis_confidence": getattr(analysis_result, 'requirements_confidence', 0.5),
-                    "analysis_reasoning": "Analysis completed via BudyAgent - project created with complete data",
-                    "ai_model_used": "gpt-4o",
-                    "key_requirements": [],
-                    "implicit_needs": [],
-                    "market_context": {},
-                    "risk_factors": []
-                }
-                
+            # 7. Guardar items extraídos (si están disponibles en el análisis)
+            if analysis_result and isinstance(analysis_result, dict):
                 try:
+                    # Log completo del resultado para debugging
+                    logger.info(f"🔍 Analysis result structure: {list(analysis_result.keys())}")
+                    
+                    # Intentar extraer items del resultado del análisis
+                    items_to_save = []
+                    
+                    # Buscar items en diferentes ubicaciones posibles
+                    if 'items' in analysis_result:
+                        items_to_save = analysis_result['items']
+                        logger.info(f"📦 Found {len(items_to_save)} items in 'items' key")
+                    elif 'requested_products' in analysis_result:
+                        items_to_save = analysis_result['requested_products']
+                        logger.info(f"📦 Found {len(items_to_save)} items in 'requested_products' key")
+                    elif 'products' in analysis_result:
+                        items_to_save = analysis_result['products']
+                        logger.info(f"📦 Found {len(items_to_save)} items in 'products' key")
+                    elif 'project_details' in analysis_result and 'items' in analysis_result['project_details']:
+                        items_to_save = analysis_result['project_details']['items']
+                        logger.info(f"📦 Found {len(items_to_save)} items in 'project_details.items' key")
+                    
+                    # También verificar en budy_raw_result si está disponible
+                    if not items_to_save and budy_raw_result and isinstance(budy_raw_result, dict):
+                        if 'extracted_data' in budy_raw_result:
+                            extracted = budy_raw_result['extracted_data']
+                            if isinstance(extracted, dict) and 'items' in extracted:
+                                items_to_save = extracted['items']
+                                logger.info(f"📦 Found {len(items_to_save)} items in budy_raw_result.extracted_data.items")
+                    
+                    if items_to_save and isinstance(items_to_save, list):
+                        logger.info(f"📦 Saving {len(items_to_save)} extracted items to database")
+                        saved_count = 0
+                        
+                        for i, item in enumerate(items_to_save):
+                            if isinstance(item, dict):
+                                try:
+                                    item_data = {
+                                        "project_id": project_id,
+                                        "name": item.get('name', item.get('product_name', item.get('item_name', f'Item {i+1}'))),
+                                        "description": item.get('description', item.get('specifications', item.get('details', ''))),
+                                        "category": item.get('category', 'general'),
+                                        "quantity": float(item.get('quantity', 1)),
+                                        "unit_of_measure": item.get('unit', item.get('unit_of_measure', 'pieces')),
+                                        "unit_price": float(item.get('unit_price', 0)) if item.get('unit_price') else None,
+                                        "total_price": float(item.get('total_price', 0)) if item.get('total_price') else None,
+                                        "extracted_from_ai": True,
+                                        "extraction_confidence": float(item.get('confidence', 0.8)),
+                                        "extraction_method": 'budy_agent_v1.0',
+                                        "is_validated": False,
+                                        "is_included": True,
+                                        "sort_order": i
+                                    }
+                                    
+                                    saved_item = db_client.client.table("project_items").insert(item_data).execute()
+                                    saved_count += 1
+                                    logger.info(f"✅ Item {i+1} saved: {item_data['name']}")
+                                except Exception as e:
+                                    logger.error(f"❌ Failed to save item {i+1}: {e}")
+                        
+                        logger.info(f"✅ Successfully saved {saved_count}/{len(items_to_save)} items")
+                    else:
+                        logger.warning(f"⚠️ No items found in analysis result. Available keys: {list(analysis_result.keys())}")
+                        
+                except Exception as e:
+                    logger.error(f"❌ Error processing extracted items: {e}", exc_info=True)
+            
+            # 8. Guardar contexto de análisis (DESPUÉS de insertar proyecto)
+            if analysis_result and isinstance(analysis_result, dict) and budy_raw_result:
+                try:
+                    # Extraer métricas de calidad
+                    quality_assessment = budy_raw_result.get('quality_assessment', {})
+                    
+                    context_data = {
+                        "project_id": project_id,
+                        "detected_project_type": project_type,
+                        "complexity_score": quality_assessment.get('complexity_score', 0.5),
+                        "analysis_confidence": quality_assessment.get('confidence_level', 0.5),
+                        "analysis_reasoning": "Analysis completed via BudyAgent - project created with complete data",
+                        "ai_model_used": "gpt-4o",
+                        "key_requirements": analysis_result.get('requirements', {}).get('functional', [])[:5] if 'requirements' in analysis_result else [],
+                        "implicit_needs": [],
+                        "market_context": {},
+                        "risk_factors": [],
+                        "tokens_consumed": budy_raw_result.get('metadata', {}).get('tokens_used', 0)
+                    }
+                    
                     saved_context = db_client.client.table("project_context").insert(context_data).execute()
                     logger.info(f"✅ Project context saved: {project_id}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to save project context: {e}")
+                    logger.error(f"❌ Failed to save project context: {e}", exc_info=True)
             
-            # 8. Crear resultado compatible (análisis ya completado)
+            # 9. Crear resultado compatible (análisis ya completado)
+            # Extraer datos del análisis si está disponible
+            client_info = analysis_result.get('client_information', {}) if analysis_result else {}
+            project_details = analysis_result.get('project_details', {}) if analysis_result else {}
+            
             processed_result = {
                 "id": project_id,
                 "project_id": project_id,
-                "status": "analyzed" if analysis_result else "basic_processed",
+                "status": "active" if analysis_result else "draft",
                 "extraction_method": "budy_agent_complete_v1.0" if analysis_result else "basic_upload_only",
                 
                 # Project information from analysis
-                "project_title": getattr(analysis_result, 'name', f"Project {project_type} - {project_id[:8]}") if analysis_result else f"Project {project_type} - {project_id[:8]}",
-                "project_description": getattr(analysis_result, 'description', f"Project created via API upload for {project_type}") if analysis_result else f"Project created via API upload for {project_type}",
+                "project_title": project_details.get('title', f"Project {project_type} - {project_id[:8]}"),
+                "project_description": project_details.get('description', f"Project created via API upload for {project_type}"),
                 "project_type": project_type,
-                "complexity_score": getattr(analysis_result, 'requirements_confidence', 0.5) if analysis_result else 0.5,
+                "complexity_score": budy_raw_result.get('quality_assessment', {}).get('complexity_score', 0.5) if budy_raw_result else 0.5,
                 
                 # Client information from analysis
-                "client_name": getattr(analysis_result, 'client_name', '') if analysis_result else '',
-                "client_company": getattr(analysis_result, 'client_company', '') if analysis_result else '',
-                "client_email": getattr(analysis_result, 'client_email', '') if analysis_result else '',
-                "client_phone": getattr(analysis_result, 'client_phone', '') if analysis_result else '',
+                "client_name": client_info.get('name', ''),
+                "client_company": client_info.get('company', ''),
+                "client_email": client_info.get('email', ''),
+                "client_phone": client_info.get('phone', ''),
                 
                 # Timeline from analysis
-                "proposal_deadline": getattr(analysis_result, 'proposal_deadline', None) if analysis_result else None,
-                "service_start_date": getattr(analysis_result, 'service_start_date', None) if analysis_result else None,
-                "service_end_date": getattr(analysis_result, 'service_end_date', None) if analysis_result else None,
+                "proposal_deadline": project_details.get('proposal_deadline'),
+                "service_start_date": project_details.get('service_start_date'),
+                "service_end_date": project_details.get('service_end_date'),
                 
                 # Budget from analysis
-                "budget_range_min": getattr(analysis_result, 'budget_range_min', None) if analysis_result else None,
-                "budget_range_max": getattr(analysis_result, 'budget_range_max', None) if analysis_result else None,
-                "currency": getattr(analysis_result, 'currency', 'USD') if analysis_result else 'USD',
+                "budget_range_min": project_details.get('budget_range_min'),
+                "budget_range_max": project_details.get('estimated_budget'),
+                "currency": project_details.get('currency', 'USD'),
                 
                 # Location from analysis
-                "service_location": getattr(analysis_result, 'service_location', '') if analysis_result else '',
-                "service_city": getattr(analysis_result, 'service_city', '') if analysis_result else '',
-                "service_state": getattr(analysis_result, 'service_state', '') if analysis_result else '',
-                "service_country": getattr(analysis_result, 'service_country', '') if analysis_result else '',
+                "service_location": project_details.get('service_location', ''),
+                "service_city": project_details.get('service_city', ''),
+                "service_state": project_details.get('service_state', ''),
+                "service_country": project_details.get('service_country', ''),
                 
                 # Processing metadata
                 "processing_timestamp": datetime.utcnow().isoformat(),

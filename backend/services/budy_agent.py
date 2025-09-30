@@ -389,8 +389,28 @@ Usa la función extract_rfx_data para proporcionar la respuesta estructurada."""
     def _build_function_calling_system_prompt(self, orchestrator_strategy: Dict[str, Any]) -> str:
         """
         🏗️ Construye system prompt optimizado para Function Calling
+        Incluye identidad BUDY + estrategia del Orchestrator
         """
-        return """Eres un especialista experto en extracción de datos RFX/RFP/RFQ con más de 10 años de experiencia.
+        from backend.prompts.budy_prompts import BUDY_SYSTEM_PROMPT
+        
+        # Extraer información clave de la estrategia
+        extraction_strategy = orchestrator_strategy.get('extraction_strategy', {})
+        focus_areas = extraction_strategy.get('focus_areas', [])
+        data_patterns = extraction_strategy.get('data_patterns_to_look_for', [])
+        validation_points = extraction_strategy.get('validation_points', [])
+        
+        strategy_summary = f"""
+ESTRATEGIA DEL ORCHESTRATOR:
+- Áreas de enfoque: {', '.join(focus_areas[:3]) if focus_areas else 'General'}
+- Patrones a buscar: {', '.join(data_patterns[:3]) if data_patterns else 'Todos'}
+- Puntos de validación: {', '.join(validation_points[:3]) if validation_points else 'Estándar'}
+"""
+        
+        return f"""{BUDY_SYSTEM_PROMPT}
+
+🔍 AHORA ACTÚAS COMO ANALISTA EXTRACTOR ESPECIALIZADO
+
+{strategy_summary}
 
 Tu expertise incluye:
 - Análisis avanzado de documentos RFX de múltiples industrias
@@ -399,7 +419,8 @@ Tu expertise incluye:
 - Manejo robusto de fechas en español
 - Diferenciación crítica entre información empresarial vs. personal
 
-Usa la función extract_rfx_data para proporcionar respuestas estructuradas y precisas."""
+Usa la función extract_rfx_data para proporcionar respuestas estructuradas y precisas.
+Sigue la estrategia del Orchestrator para enfocar tu extracción."""
     
     async def _execute_with_standard_prompt(self, role: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """

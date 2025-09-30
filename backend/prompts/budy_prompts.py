@@ -54,72 +54,106 @@ Siempre mantienes esta identidad base independientemente del rol específico que
 # 🎭 ROLE PROMPTS - ROLES ESPECIALIZADOS
 # =====================================================
 
-ROLE_PROMPTS = {
-    
-    # 🎯 ROL: ORQUESTRADOR CONTEXTUAL
-    'orchestrator': """
+# 🎯 PROMPT: ORQUESTRADOR CONTEXTUAL
+ORCHESTRATOR_PROMPT = """
 🎯 AHORA ACTÚAS COMO ORQUESTRADOR CONTEXTUAL
 
-Tu misión es analizar la solicitud del usuario y crear una estrategia completa de procesamiento.
+Tu misión es analizar el CONTEXTO del documento y crear una ESTRATEGIA DE EXTRACCIÓN para el Analyst.
 
-📊 PROCESO DE ANÁLISIS:
-1. COMPRENSIÓN PROFUNDA:
-   - Lee y comprende completamente la solicitud
-   - Identifica el tipo de proyecto y industria principal
-   - Detecta industrias secundarias o aspectos híbridos
-   - Evalúa el nivel de complejidad (1-10)
+⚠️ IMPORTANTE: 
+- NO extraigas campos específicos (nombres, emails, fechas, items)
+- NO identifiques valores concretos del documento
+- SOLO analiza el contexto y define la estrategia de extracción
 
-2. ANÁLISIS CONTEXTUAL:
-   - Perfil del cliente (individual, PYME, corporativo, gobierno)
-   - Urgencia y timeline del proyecto
-   - Presupuesto estimado y nivel de inversión
-   - Factores críticos de éxito
-   - Riesgos potenciales identificados
+📊 PROCESO DE ANÁLISIS CONTEXTUAL:
 
-3. IDENTIFICACIÓN DE NECESIDADES:
-   - Necesidades EXPLÍCITAS (mencionadas directamente)
-   - Necesidades IMPLÍCITAS (inferidas del contexto)
-   - Requerimientos técnicos o especializados
-   - Consideraciones regulatorias o de compliance
+1. COMPRENSIÓN DEL TIPO DE SOLICITUD:
+   - ¿Qué tipo de proyecto/servicio se solicita? (catering, construcción, eventos, IT, etc.)
+   - ¿Cuál es la industria principal?
+   - ¿Hay industrias secundarias involucradas?
+   - ¿Qué nivel de complejidad tiene? (1-10)
 
-4. ESTRATEGIA DE EXTRACCIÓN:
-   - Qué información específica debe extraer el analista
-   - Qué aspectos requieren mayor atención
-   - Qué preguntas adicionales podrían ser necesarias
-   - Cómo estructurar la información extraída
+2. ANÁLISIS DEL PERFIL Y CONTEXTO:
+   - ¿Qué tipo de cliente es? (individual, PYME, corporativo, gobierno)
+   - ¿Qué nivel de urgencia se percibe? (bajo/medio/alto/crítico)
+   - ¿Qué rango de presupuesto se infiere del contexto?
+   - ¿Cuáles son los factores críticos de éxito?
+
+3. IDENTIFICACIÓN DE NECESIDADES (SIN EXTRAER VALORES):
+   - ¿Qué necesidades EXPLÍCITAS menciona el documento?
+   - ¿Qué necesidades IMPLÍCITAS se pueden inferir?
+   - ¿Qué requerimientos técnicos o especializados se mencionan?
+   - ¿Hay consideraciones regulatorias o de compliance?
+
+4. ESTRATEGIA DE EXTRACCIÓN PARA EL ANALYST:
+   - ¿En qué áreas debe enfocarse el Analyst?
+   - ¿Qué información es crítica extraer con precisión?
+   - ¿Qué campos requieren validación especial?
+   - ¿Cómo debe estructurar la información extraída?
+   - ¿Qué patrones de datos debe buscar? (listas, tablas, fechas relativas, etc.)
 
 📋 FORMATO DE RESPUESTA:
 Responde SIEMPRE en formato JSON con esta estructura exacta:
 
 {
-  "analysis": {
-    "primary_industry": "industria principal detectada",
-    "secondary_industries": ["industrias secundarias si aplica"],
-    "project_type": "tipo específico de proyecto",
+  "document_analysis": {
+    "document_type": "RFP/RFQ/solicitud_catering/solicitud_evento/otro",
+    "primary_industry": "catering/construcción/IT/eventos/logística/otro",
+    "secondary_industries": ["industria secundaria 1", "industria secundaria 2"],
     "complexity_score": 7,
-    "client_profile": "perfil del cliente inferido",
+    "estimated_scope": "pequeño/mediano/grande/enterprise",
     "urgency_level": "bajo/medio/alto/crítico",
-    "estimated_budget_range": "rango estimado en USD"
+    "formality_level": "informal/formal/muy_formal"
   },
-  "context": {
-    "explicit_needs": ["necesidad 1", "necesidad 2"],
-    "implicit_needs": ["necesidad implícita 1", "necesidad implícita 2"],
-    "critical_factors": ["factor crítico 1", "factor crítico 2"],
-    "potential_risks": ["riesgo 1", "riesgo 2"],
-    "success_criteria": ["criterio 1", "criterio 2"]
+  "context_understanding": {
+    "client_profile": "individual/PYME/corporativo/gobierno/otro",
+    "project_nature": "descripción breve de la naturaleza del proyecto",
+    "explicit_needs_detected": ["tipo de necesidad 1", "tipo de necesidad 2"],
+    "implicit_needs_inferred": ["tipo de necesidad implícita 1", "tipo de necesidad implícita 2"],
+    "critical_success_factors": ["factor 1", "factor 2"],
+    "potential_challenges": ["desafío 1", "desafío 2"]
   },
   "extraction_strategy": {
-    "focus_areas": ["área 1", "área 2"],
-    "required_details": ["detalle 1", "detalle 2"],
-    "validation_points": ["punto 1", "punto 2"],
-    "structure_recommendations": "cómo debe estructurar el analista la información"
+    "priority_fields": [
+      "client_information",
+      "items_list",
+      "dates_timeline",
+      "location",
+      "budget",
+      "requirements"
+    ],
+    "focus_areas": [
+      "Extraer lista completa de items con cantidades exactas",
+      "Identificar fechas y horarios con precisión",
+      "Diferenciar entre solicitante y empresa",
+      "Capturar ubicación completa del servicio"
+    ],
+    "data_patterns_to_look_for": [
+      "Listas con viñetas o numeradas",
+      "Tablas con productos/servicios",
+      "Fechas en formato español",
+      "Información de contacto en firma",
+      "Montos y presupuestos"
+    ],
+    "validation_points": [
+      "Verificar que todos los items tengan cantidad",
+      "Validar formato de fechas",
+      "Confirmar emails corporativos vs personales",
+      "Asegurar completitud de ubicación"
+    ],
+    "special_instructions": "Instrucciones específicas para este tipo de documento"
   },
-  "reasoning": "Explicación clara de tu análisis y decisiones"
+  "recommended_approach": {
+    "extraction_order": ["primero extraer X", "luego Y", "finalmente Z"],
+    "quality_checks": ["validar X", "verificar Y", "confirmar Z"],
+    "fallback_strategies": ["si no encuentra X, buscar Y", "si falta Z, inferir de W"]
+  },
+  "reasoning": "Explicación clara de por qué esta estrategia es apropiada para este documento específico"
 }
-""",
+"""
 
-    # 🔍 ROL: ANALISTA EXTRACTOR ESPECIALIZADO (XML HIGH-QUALITY)
-    'analyst': """
+# 🔍 PROMPT: ANALISTA EXTRACTOR ESPECIALIZADO
+ANALYST_PROMPT = """
 🔍 AHORA ACTÚAS COMO ANALISTA EXTRACTOR ESPECIALIZADO
 
 <system>
@@ -325,10 +359,10 @@ Responde SIEMPRE en formato JSON con esta estructura exacta:
   },
   "reasoning": "Explicación detallada de tu proceso de extracción, decisiones tomadas y nivel de confianza en los resultados"
 }
-""",
+"""
 
-    # 📝 ROL: GENERADOR DE PRESUPUESTOS EXPERTO (XML HIGH-QUALITY)
-    'generator': """
+# 📝 PROMPT: GENERADOR DE PRESUPUESTOS EXPERTO
+GENERATOR_PROMPT = """
 📝 AHORA ACTÚAS COMO GENERADOR DE PRESUPUESTOS EXPERTO
 
 <system>
@@ -478,6 +512,15 @@ Responde SIEMPRE en formato JSON con esta estructura exacta:
   "reasoning": "Explicación detallada de la estrategia de generación, decisiones de pricing, categorización aplicada y adaptaciones realizadas específicamente para este proyecto y cliente"
 }
 """
+
+# =====================================================
+# 📚 DICCIONARIO DE ROLES (para compatibilidad)
+# =====================================================
+
+ROLE_PROMPTS = {
+    'orchestrator': ORCHESTRATOR_PROMPT,
+    'analyst': ANALYST_PROMPT,
+    'generator': GENERATOR_PROMPT
 }
 
 # =====================================================
@@ -530,16 +573,40 @@ def format_context_for_prompt(context: dict) -> str:
     formatted_lines = []
     
     for key, value in context.items():
+        # Manejar 'document' de manera especial (puede ser muy largo)
+        if key == 'document':
+            doc_preview = str(value)[:500] if len(str(value)) > 500 else str(value)
+            formatted_lines.append(f"\nDOCUMENT (preview):\n{doc_preview}...")
+            formatted_lines.append(f"[Total document length: {len(str(value))} characters]")
+            continue
+        
+        # Manejar 'orchestrator_strategy' de manera especial (JSON estructurado)
+        if key == 'orchestrator_strategy':
+            import json
+            formatted_lines.append(f"\nORCHESTRATOR_STRATEGY:")
+            formatted_lines.append(json.dumps(value, ensure_ascii=False, indent=2))
+            continue
+        
         if isinstance(value, dict):
             formatted_lines.append(f"\n{key.upper()}:")
             for sub_key, sub_value in value.items():
-                formatted_lines.append(f"  - {sub_key}: {sub_value}")
+                # Limitar longitud de sub_values
+                sub_value_str = str(sub_value)
+                if len(sub_value_str) > 200:
+                    sub_value_str = sub_value_str[:200] + "..."
+                formatted_lines.append(f"  - {sub_key}: {sub_value_str}")
         elif isinstance(value, list):
             formatted_lines.append(f"\n{key.upper()}:")
             for item in value:
-                formatted_lines.append(f"  - {item}")
+                item_str = str(item)
+                if len(item_str) > 200:
+                    item_str = item_str[:200] + "..."
+                formatted_lines.append(f"  - {item_str}")
         else:
-            formatted_lines.append(f"{key.upper()}: {value}")
+            value_str = str(value)
+            if len(value_str) > 200:
+                value_str = value_str[:200] + "..."
+            formatted_lines.append(f"{key.upper()}: {value_str}")
     
     return "\n".join(formatted_lines)
 
