@@ -4,6 +4,8 @@
 Flask==3.0.0
 flask-cors==4.0.0
 Werkzeug==3.0.1
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
 
 # ========================
 # Environment & Configuration
@@ -39,8 +41,8 @@ markdown==3.5.1
 # OCR & Image Processing (Optional)
 # ========================
 pytesseract==0.3.10
-Pillow==10.1.0
-pdf2image==1.16.3
+Pillow==10.1.0  # 🆕 También usado para branding (extracción de colores)
+pdf2image==1.16.3  # 🆕 También usado para branding (análisis de templates PDF)
 
 # ========================
 # Template Engine
@@ -104,6 +106,11 @@ uvicorn==0.24.0
 # ========================
 cryptography>=42.0.0
 PyJWT==2.8.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt>=4.0.0,<5.0.0
+python-multipart==0.0.6
+asyncpg==0.29.0
 
 # ========================
 # Utilities

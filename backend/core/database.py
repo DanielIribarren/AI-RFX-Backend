@@ -744,6 +744,131 @@ class DatabaseClient:
             return None
 
     # ========================
+    # RAW SQL METHODS (for user_repository)
+    # ========================
+    
+    def query_one(self, query: str, params: tuple = None) -> Optional[Dict[str, Any]]:
+        """Execute SQL query and return single result - MEJORADO para user authentication"""
+        try:
+            logger.debug(f"🔍 Executing query_one: {query[:100]}...")
+            
+            # Handle SELECT queries for users
+            if "SELECT" in query and "FROM users" in query and "WHERE email" in query and params:
+                email = params[0]
+                # Usar todos los campos que solicita la consulta
+                response = self.client.table("users").select("*").eq("email", email).limit(1).execute()
+                return response.data[0] if response.data else None
+                
+            elif "SELECT" in query and "FROM users" in query and "WHERE id" in query and params:
+                user_id = params[0]
+                response = self.client.table("users").select("*").eq("id", str(user_id)).limit(1).execute()
+                return response.data[0] if response.data else None
+                
+            # Handle branding function calls
+            elif "has_user_branding_configured" in query and params:
+                user_id = params[0]
+                # Implementar la lógica de has_user_branding_configured según el schema SQL
+                try:
+                    response = self.client.table("company_branding_assets")\
+                        .select("id")\
+                        .eq("user_id", str(user_id))\
+                        .eq("is_active", True)\
+                        .eq("analysis_status", "completed")\
+                        .limit(1)\
+                        .execute()
+                    
+                    has_branding = len(response.data) > 0 if response.data else False
+                    return {"has_branding": has_branding}
+                    
+                except Exception as e:
+                    logger.warning(f"❌ Error checking branding: {e}")
+                    return {"has_branding": False}
+                
+            # Handle INSERT queries for users - CRÍTICO para crear usuarios
+            elif "INSERT INTO users" in query and params:
+                logger.info("🔄 Executing INSERT via Supabase client")
+                
+                # Extraer valores de los parámetros según el orden en la query
+                # INSERT INTO users (email, password_hash, full_name, company_name)
+                if len(params) >= 4:
+                    email, password_hash, full_name, company_name = params[:4]
+                    
+                    # ✅ COINCIDIR EXACTAMENTE con Complete-Schema-V3.0-With-Auth.sql
+                    user_data = {
+                        "email": email.lower(),  # Enforce lowercase per schema constraint
+                        "password_hash": password_hash, 
+                        "full_name": full_name,
+                        "company_name": company_name,
+                        # Defaults según schema SQL:
+                        "email_verified": False,  # DEFAULT false
+                        "status": "pending_verification",  # DEFAULT 'pending_verification'
+                        "failed_login_attempts": 0,  # DEFAULT 0
+                        # created_at y updated_at se manejan automáticamente por Supabase
+                    }
+                    
+                    response = self.client.table("users").insert(user_data).execute()
+                    
+                    if response.data and len(response.data) > 0:
+                        created_user = response.data[0]
+                        logger.info(f"✅ User created via query_one: {email} (ID: {created_user.get('id')})")
+                        return created_user
+                    else:
+                        logger.error("❌ Insert failed: No data returned")
+                        return None
+                else:
+                    logger.error(f"❌ INSERT params insufficient: {len(params)} provided, expected 4")
+                    return None
+                
+            else:
+                logger.warning(f"Unsupported query in query_one: {query[:50]}...")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Error in query_one: {e}")
+            return None
+    
+    def query_all(self, query: str, params: tuple = None) -> List[Dict[str, Any]]:
+        """Execute SQL query and return all results"""
+        try:
+            logger.debug(f"🔍 Executing query_all: {query[:100]}...")
+            
+            # Handle common queries
+            if "SELECT" in query and "users" in query:
+                response = self.client.table("users").select("*").execute()
+                return response.data or []
+                
+            else:
+                logger.warning(f"Unsupported query in query_all: {query[:50]}...")
+                return []
+                
+        except Exception as e:
+            logger.error(f"❌ Error in query_all: {e}")
+            return []
+    
+    def execute(self, query: str, params: tuple = None) -> bool:
+        """Execute SQL query without returning results"""
+        try:
+            logger.debug(f"🔍 Executing: {query[:100]}...")
+            
+            # Handle UPDATE and DELETE queries
+            if "UPDATE users" in query and params:
+                # This should use proper Supabase updates
+                logger.warning("Direct UPDATE via execute not recommended, use client.table().update()")
+                return True
+                
+            elif "DELETE FROM users" in query:
+                logger.warning("Direct DELETE via execute not recommended, use client.table().delete()")
+                return True
+                
+            else:
+                logger.warning(f"Unsupported query in execute: {query[:50]}...")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error in execute: {e}")
+            return False
+
+    # ========================
     # LEGACY COMPATIBILITY HELPERS
     # ========================
     

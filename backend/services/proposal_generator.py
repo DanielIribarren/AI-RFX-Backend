@@ -78,6 +78,7 @@ class ProposalGenerationService:
     async def generate_proposal(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest) -> GeneratedProposal:
         """
         Método principal ultra-simplificado: Template + IA hace todo
+        🆕 Con soporte para branding personalizado (logo + template analysis)
         
         Args:
             rfx_data: Datos del RFX con cliente, productos, fechas, etc.
@@ -89,9 +90,18 @@ class ProposalGenerationService:
         logger.info(f"🚀 Generando propuesta simplificada para RFX: {proposal_request.rfx_id}")
         
         try:
-            # 1. Construir prompt con template y datos
-            ai_prompt = self._build_ai_prompt(rfx_data, proposal_request)
-            compact_prompt = self._build_compact_ai_prompt(rfx_data, proposal_request)
+            # 🆕 V3.0: Obtener branding personalizado por USUARIO
+            user_id = rfx_data.get("user_id")
+            branding_context = None
+            
+            if user_id:
+                branding_context = self._get_branding_context(user_id)
+                if branding_context:
+                    logger.info(f"✅ Using custom branding for user: {user_id}")
+            
+            # 2. Construir prompt con template y datos (+ branding si existe)
+            ai_prompt = self._build_ai_prompt(rfx_data, proposal_request, branding_context)
+            compact_prompt = self._build_compact_ai_prompt(rfx_data, proposal_request, branding_context)
 
             # Selección preventiva si el prompt es muy largo (evitar context overflow/latencia)
             prompt_to_use = ai_prompt
@@ -133,8 +143,53 @@ class ProposalGenerationService:
             # Re-raise the exception instead of using fallback
             raise Exception(f"Proposal generation failed: {e}. Fallback disabled to force fixing root cause.")
     
-    def _build_ai_prompt(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest) -> str:
-        """Construye prompt inteligente para OpenAI con template y datos del RFX"""
+    def _get_branding_context(self, user_id: str) -> Optional[Dict]:
+        """
+        🆕 V3.0: Obtiene contexto de branding con análisis cacheado POR USUARIO
+        Lectura rápida desde BD - sin llamadas a IA
+        Usa company_branding_assets con user_id (migrado en V3.0 MVP)
+        """
+        try:
+            from backend.services.user_branding_service import user_branding_service
+            
+            branding = user_branding_service.get_branding_with_analysis(user_id)
+            
+            if not branding or branding.get('analysis_status') != 'completed':
+                logger.debug(f"No completed branding analysis for user: {user_id}")
+                return None
+            
+            # Extraer información relevante del análisis
+            logo_analysis = branding.get('logo_analysis', {})
+            template_analysis = branding.get('template_analysis', {})
+            
+            context = {
+                "logo_url": branding.get('logo_url'),
+                "template_url": branding.get('template_url'),
+                "logo_analysis": logo_analysis,
+                "template_analysis": template_analysis,
+                "primary_color": logo_analysis.get('primary_color', '#2c5f7c'),
+                "secondary_color": logo_analysis.get('secondary_color', '#ffffff'),
+                "dominant_colors": logo_analysis.get('dominant_colors', []),
+                "logo_position": logo_analysis.get('recommended_position', 'top-left'),
+                "layout_structure": template_analysis.get('layout_structure'),
+                "color_scheme": template_analysis.get('color_scheme', {}),
+                "table_style": template_analysis.get('table_style', {}),
+                "typography": template_analysis.get('typography', {}),
+                "design_style": template_analysis.get('design_style', 'professional')
+            }
+            
+            logger.info(f"✅ Branding context loaded for user: {user_id}")
+            return context
+            
+        except Exception as e:
+            logger.error(f"Error loading branding context: {e}")
+            return None
+    
+    def _build_ai_prompt(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest, branding_context: Optional[Dict] = None) -> str:
+        """
+        Construye prompt inteligente para OpenAI con template y datos del RFX
+        🆕 Incluye contexto de branding si está disponible
+        """
         
         client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
         productos = rfx_data.get("productos", [])  # Usar "productos" en español para consistencia
@@ -172,6 +227,11 @@ class ProposalGenerationService:
         
         # 🆕 Preparar instrucciones de moneda para la IA
         currency_instructions = self._build_currency_instructions(rfx_currency)
+        
+        # 🆕 Preparar instrucciones de branding si existe
+        branding_instructions = ""
+        if branding_context:
+            branding_instructions = self._build_branding_instructions(branding_context)
         
         prompt = f"""
 <system>
@@ -214,6 +274,9 @@ CONFIGURACIONES DE PRICING:
 
 CONFIGURACIÓN DE MONEDA:
 {currency_instructions}
+
+{branding_instructions}
+
 TEMPLATE HTML DE REFERENCIA:
 {self.template_html}
 
@@ -510,8 +573,107 @@ RESPONDE ÚNICAMENTE CON HTML COMPLETO Y FUNCIONAL (SIN ```html NI ``` AL INICIO
         except Exception as e:
             logger.error(f"❌ Error building currency instructions: {e}")
             return f"MONEDA: Usar {currency} con símbolo correspondiente para todos los precios"
+    
+    def _build_branding_instructions(self, branding_context: Dict) -> str:
+        """
+        🆕 Construye instrucciones de branding desde análisis cacheado
+        """
+        try:
+            logo_analysis = branding_context.get('logo_analysis', {})
+            template_analysis = branding_context.get('template_analysis', {})
+            
+            instructions = [
+                "🎨 CONFIGURACIÓN DE BRANDING PERSONALIZADO (Análisis Cacheado):",
+                "",
+                "LOGO CORPORATIVO:",
+                f"- URL del logo: {branding_context.get('logo_url')}",
+                f"- Color principal: {branding_context.get('primary_color', '#2c5f7c')}",
+                f"- Color secundario: {branding_context.get('secondary_color', '#ffffff')}",
+                f"- Colores dominantes: {', '.join(branding_context.get('dominant_colors', []))}",
+                f"- Posición recomendada: {branding_context.get('logo_position', 'top-left')}",
+                f"- Dimensiones óptimas: {logo_analysis.get('optimal_dimensions', {})}",
+                f"- Tipo de logo: {logo_analysis.get('logo_type', 'combination')}",
+                "",
+                "ESTRUCTURA DEL TEMPLATE:",
+                f"- Layout: {branding_context.get('layout_structure', 'header-client-products-totals')}",
+                f"- Estilo de diseño: {branding_context.get('design_style', 'professional')}",
+            ]
+            
+            # Agregar secciones del template
+            sections = template_analysis.get('sections', [])
+            if sections:
+                instructions.append("- Secciones identificadas:")
+                for section in sections:
+                    section_name = section.get('name', 'unknown')
+                    instructions.append(f"  • {section_name}: {section.get('elements', section.get('fields', section.get('columns', [])))}")
+            
+            # Esquema de colores
+            color_scheme = branding_context.get('color_scheme', {})
+            if color_scheme:
+                instructions.extend([
+                    "",
+                    "ESQUEMA DE COLORES:",
+                    f"- Primario: {color_scheme.get('primary', '#2c5f7c')}",
+                    f"- Secundario: {color_scheme.get('secondary', '#ffffff')}",
+                    f"- Fondos: {color_scheme.get('backgrounds', [])}",
+                    f"- Bordes: {color_scheme.get('borders', '#000000')}",
+                    f"- Texto: {color_scheme.get('text', '#000000')}"
+                ])
+            
+            # Estilo de tabla
+            table_style = branding_context.get('table_style', {})
+            if table_style:
+                instructions.extend([
+                    "",
+                    "ESTILO DE TABLA:",
+                    f"- Bordes: {'Sí' if table_style.get('has_borders') else 'No'}",
+                    f"- Ancho de borde: {table_style.get('border_width', '1px')}",
+                    f"- Color de borde: {table_style.get('border_color', '#000000')}",
+                    f"- Fondo del header: {table_style.get('header_background', '#f0f0f0')}",
+                    f"- Filas alternadas: {'Sí' if table_style.get('alternating_rows') else 'No'}",
+                    f"- Padding de celdas: {table_style.get('cell_padding', 'medium')}"
+                ])
+            
+            # Tipografía
+            typography = branding_context.get('typography', {})
+            if typography:
+                instructions.extend([
+                    "",
+                    "TIPOGRAFÍA:",
+                    f"- Familia de fuente: {typography.get('font_family', 'Arial, sans-serif')}",
+                    f"- Tamaño nombre empresa: {typography.get('company_name_size', '24px')}",
+                    f"- Tamaño título: {typography.get('title_size', '18px')}",
+                    f"- Tamaño cuerpo: {typography.get('body_size', '11px')}",
+                    f"- Peso header tabla: {typography.get('table_header_weight', 'bold')}"
+                ])
+            
+            # Instrucciones críticas
+            instructions.extend([
+                "",
+                "INSTRUCCIONES CRÍTICAS DE BRANDING:",
+                f"1. INCLUIR LOGO: Usar <img src=\"{branding_context.get('logo_url')}\" class=\"company-logo\" style=\"max-width: 200px; height: auto;\">",
+                f"2. POSICIÓN DEL LOGO: Colocar en {branding_context.get('logo_position', 'top-left')} del documento",
+                f"3. COLORES: Usar EXACTAMENTE {branding_context.get('primary_color')} para elementos principales",
+                f"4. ESTRUCTURA: Replicar el layout {branding_context.get('layout_structure')}",
+                "5. TABLA: Aplicar el estilo de tabla especificado arriba",
+                "6. TIPOGRAFÍA: Usar las fuentes y tamaños especificados",
+                "7. CONSISTENCIA: Mantener la identidad visual del template de referencia",
+                "8. CSS COMPATIBLE: Asegurar que todos los estilos sean compatibles con Playwright PDF",
+                "",
+                "IMPORTANTE:",
+                "- El análisis de branding fue generado por IA y está optimizado para este cliente",
+                "- Respetar TODOS los colores y estilos especificados",
+                "- El logo DEBE aparecer visible en el documento final",
+                "- Mantener la estructura profesional mientras aplicas el branding"
+            ])
+            
+            return "\n".join(instructions)
+            
+        except Exception as e:
+            logger.error(f"❌ Error building branding instructions: {e}")
+            return ""
 
-    def _build_compact_ai_prompt(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest) -> str:
+    def _build_compact_ai_prompt(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest, branding_context: Optional[Dict] = None) -> str:
         """Versión compacta del prompt para reintento en caso de timeout.
         - No incrusta el HTML completo del template, solo instrucciones clave y marcadores.
         - Reduce tokens para acelerar la respuesta.

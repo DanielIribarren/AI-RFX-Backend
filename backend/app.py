@@ -18,6 +18,13 @@ from backend.api.rfx import rfx_bp
 from backend.api.proposals import proposals_bp
 from backend.api.download import download_bp
 from backend.api.pricing import pricing_bp
+from backend.api.branding import branding_bp  # 🆕 Branding API
+
+# 🔐 V3.0 Authentication & Security Blueprints
+from backend.api.auth_flask import auth_bp  # ✅ Flask JWT Auth
+from backend.api.rfx_secure_patch import rfx_secure_bp  # ✅ Secure RFX endpoints  
+from backend.api.user_branding import user_branding_bp  # ✅ User branding
+
 from backend.models.rfx_models import RFXResponse
 
 # Configure logging
@@ -68,16 +75,30 @@ def create_app(config_name: str = None) -> Flask:
 def _register_blueprints(app: Flask) -> None:
     """Register all application blueprints"""
     
-    # New architecture API endpoints
-    app.register_blueprint(rfx_bp)
+    # 🔐 V3.0 SECURITY: Authentication endpoints (PRIORITY)
+    app.register_blueprint(auth_bp)  # ✅ /api/auth/* - Login, signup, etc.
+    app.register_blueprint(rfx_secure_bp)  # ✅ /api/rfx-secure/* - Secure RFX endpoints
+    app.register_blueprint(user_branding_bp)  # ✅ /api/user-branding/* - User branding
+    
+    # Original API endpoints (keeping for compatibility)
+    app.register_blueprint(rfx_bp)  # ⚠️ INSECURE - use rfx_secure_bp instead
     app.register_blueprint(proposals_bp)
     app.register_blueprint(download_bp)
     app.register_blueprint(pricing_bp)
+    app.register_blueprint(branding_bp)  # ⚠️ OLD - use user_branding_bp instead
     
     # Legacy compatibility routes
     _register_legacy_routes(app)
     
     logger.info("✅ All blueprints registered successfully")
+    logger.info("🔐 V3.0 Authentication endpoints available:")
+    logger.info("   POST /api/auth/login")
+    logger.info("   POST /api/auth/signup") 
+    logger.info("   GET  /api/auth/me")
+    logger.info("🔒 V3.0 Secure endpoints available:")
+    logger.info("   GET  /api/rfx-secure/my-rfx")
+    logger.info("   POST /api/rfx-secure/create")
+    logger.info("   POST /api/user-branding/upload")
 
 
 def _register_legacy_routes(app: Flask) -> None:
