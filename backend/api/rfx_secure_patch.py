@@ -471,52 +471,76 @@ def migrate_existing_rfx():
     
     SOLO para migración inicial - eliminar después del deploy
     Headers: Authorization: Bearer <token>
+    
+    Ejemplo de uso:
+    curl -X POST http://localhost:5001/api/rfx-secure/migrate-existing \
+      -H "Authorization: Bearer YOUR_TOKEN"
     """
     try:
         current_user_id = get_current_user_id()
         
+        logger.info(f"🔄 Starting RFX migration for user: {current_user_id}")
+        
         db_client = get_database_client()
         
-        # Buscar RFX sin user_id
-        orphaned_rfx = db_client.query_all("""
-            SELECT id, title 
-            FROM rfx_v2 
-            WHERE user_id IS NULL
-            LIMIT 50
-        """)
+        # Buscar RFX sin user_id usando Supabase client
+        response = db_client.client.table("rfx_v2")\
+            .select("id, title")\
+            .is_("user_id", "null")\
+            .limit(50)\
+            .execute()
+        
+        orphaned_rfx = response.data if response.data else []
         
         if not orphaned_rfx:
+            logger.info("✅ No orphaned RFX found")
             return jsonify({
                 "status": "success",
-                "message": "No orphaned RFX found",
+                "message": "No orphaned RFX found - all RFX already have user_id assigned",
                 "migrated_count": 0
             })
         
-        # Asignar al usuario actual
-        rfx_ids = [rfx['id'] for rfx in orphaned_rfx]
+        logger.info(f"📋 Found {len(orphaned_rfx)} orphaned RFX to migrate")
         
-        db_client.execute("""
-            UPDATE rfx_v2 
-            SET user_id = %s, updated_at = NOW()
-            WHERE id = ANY(%s)
-        """, (current_user_id, rfx_ids))
+        # Asignar al usuario actual (actualizar uno por uno)
+        migrated_count = 0
+        migrated_rfx = []
         
-        migrated_count = len(rfx_ids)
+        for rfx in orphaned_rfx:
+            try:
+                update_response = db_client.client.table("rfx_v2")\
+                    .update({"user_id": current_user_id})\
+                    .eq("id", rfx['id'])\
+                    .execute()
+                
+                if update_response.data:
+                    migrated_count += 1
+                    migrated_rfx.append({
+                        "id": rfx['id'],
+                        "title": rfx.get('title', 'Untitled')
+                    })
+                    logger.info(f"✅ Migrated RFX: {rfx['id']} - {rfx.get('title', 'Untitled')}")
+            except Exception as update_error:
+                logger.error(f"❌ Failed to migrate RFX {rfx['id']}: {update_error}")
+                continue
         
-        logger.info(f"✅ Migrated {migrated_count} orphaned RFX to user {current_user_id}")
+        logger.info(f"✅ Successfully migrated {migrated_count} orphaned RFX to user {current_user_id}")
         
         return jsonify({
             "status": "success",
-            "message": f"Migrated {migrated_count} RFX to your account",
+            "message": f"Successfully migrated {migrated_count} RFX to your account",
             "migrated_count": migrated_count,
-            "migrated_rfx": [dict(rfx) for rfx in orphaned_rfx]
+            "migrated_rfx": migrated_rfx,
+            "user_id": current_user_id
         })
         
     except Exception as e:
         logger.error(f"❌ Error migrating RFX: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({
             "status": "error",
-            "message": "Internal server error",
+            "message": "Internal server error during migration",
             "error": str(e)
         }), 500
 

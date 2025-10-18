@@ -150,6 +150,17 @@ def process_rfx():
         # 🆔 Generar ID y configuración RFX
         rfx_id = request.form.get('id', f"RFX-{int(time.time())}-{random.randint(1000, 9999)}")
         tipo_rfx = request.form.get('tipo_rfx', 'catering')
+        
+        # 🆕 CRITICAL: Obtener user_id del request
+        user_id = request.form.get('user_id')
+        
+        if not user_id:
+            logger.warning(f"⚠️ No user_id provided in request for RFX {rfx_id}")
+            # Try to get from authentication context if available
+            # For now, log warning but continue (fallback will handle it)
+        else:
+            logger.info(f"✅ user_id received: {user_id}")
+        
         rfx_input = RFXInput(id=rfx_id, rfx_type=RFXType(tipo_rfx))
 
         logger.info(f"🚀 Starting RFX processing: {rfx_id} (type: {tipo_rfx})")
@@ -157,7 +168,7 @@ def process_rfx():
 
         processor_service = RFXProcessorService()
         # 🆕 PIPELINE FLEXIBLE: Procesa archivos Y/O texto
-        rfx_processed = processor_service.process_rfx_case(rfx_input, valid_files)
+        rfx_processed = processor_service.process_rfx_case(rfx_input, valid_files, user_id=user_id)
         
         # NOTE: Proposal generation is now handled separately by user request
         # The user will review extracted data, set product costs, then request proposal generation

@@ -2,7 +2,7 @@
 📄 Proposals API Endpoints - Gestión de propuestas comerciales
 Integra con el procesamiento RFX para generar propuestas automáticamente
 """
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from werkzeug.exceptions import BadRequest
 from pydantic import ValidationError
 import asyncio
@@ -12,6 +12,7 @@ import random
 
 from backend.models.proposal_models import ProposalRequest, ProposalResponse, PropuestaGenerada, NotasPropuesta
 from backend.core.database import get_database_client
+from backend.utils.auth_middleware import optional_jwt, get_current_user, get_current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +21,11 @@ proposals_bp = Blueprint("proposals_api", __name__, url_prefix="/api/proposals")
 
 
 @proposals_bp.route("/generate", methods=["POST"])
+@optional_jwt
 def generate_proposal():
     """
     🎯 Genera propuesta comercial basada en datos RFX procesados
+    🔓 Autenticación JWT opcional - puede funcionar sin autenticación si se proporciona user_id
     """
     try:
         # Validar datos de entrada
@@ -34,6 +37,47 @@ def generate_proposal():
             }), 400
         
         data = request.get_json()
+        
+        # 🔐 ESTRATEGIA MULTI-FUENTE: Obtener user_id de múltiples fuentes
+        user_id = None
+        
+        # OPCIÓN 1: Usuario autenticado con JWT (preferido)
+        current_user = get_current_user()
+        if current_user:
+            user_id = str(current_user['id'])
+            logger.info(f"✅ Authenticated user generating proposal: {current_user['email']} (ID: {user_id})")
+        
+        # OPCIÓN 2: user_id proporcionado en el request body (fallback)
+        if not user_id:
+            user_id = data.get('user_id')
+            if user_id:
+                logger.info(f"✅ Using user_id from request body: {user_id}")
+        
+        # OPCIÓN 3: Obtener user_id del RFX en la base de datos
+        if not user_id:
+            rfx_id = data.get('rfx_id')
+            if rfx_id:
+                logger.info(f"🔍 Attempting to get user_id from RFX: {rfx_id}")
+                try:
+                    db_client = get_database_client()
+                    rfx_data_temp = db_client.get_rfx_by_id(rfx_id)
+                    if rfx_data_temp:
+                        user_id = rfx_data_temp.get('user_id')
+                        if user_id:
+                            logger.info(f"✅ Retrieved user_id from RFX database: {user_id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not get user_id from RFX: {e}")
+        
+        # VALIDACIÓN FINAL: user_id es requerido
+        if not user_id:
+            logger.error("❌ No user_id available from any source (JWT, request body, or RFX database)")
+            return jsonify({
+                "status": "error",
+                "message": "user_id is required. Please authenticate or provide user_id in request.",
+                "error": "Missing user_id"
+            }), 400
+        
+        logger.info(f"🎯 Final user_id for proposal generation: {user_id}")
         
         # Validar request usando Pydantic
         try:
@@ -75,6 +119,10 @@ def generate_proposal():
         # Mapear datos BD V2.0 → estructura esperada por ProposalGenerationService
         from backend.utils.data_mappers import map_rfx_data_for_proposal
         rfx_data_mapped = map_rfx_data_for_proposal(rfx_data, rfx_products)
+        
+        # 🔐 CRITICAL: Inyectar user_id del usuario autenticado en rfx_data_mapped
+        rfx_data_mapped['user_id'] = user_id
+        logger.info(f"✅ Injected authenticated user_id into rfx_data: {user_id}")
         
         # Generar propuesta usando el servicio (lazy import para evitar fallas en startup)
         try:

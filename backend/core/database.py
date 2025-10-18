@@ -783,6 +783,38 @@ class DatabaseClient:
                 except Exception as e:
                     logger.warning(f"❌ Error checking branding: {e}")
                     return {"has_branding": False}
+            
+            # Handle full branding select queries used by UserBrandingService
+            elif "FROM company_branding_assets" in query and params:
+                user_id = params[0]
+                try:
+                    select_fields = (
+                        "user_id, "
+                        "logo_filename, logo_path, logo_url, logo_uploaded_at, "
+                        "template_filename, template_path, template_url, template_uploaded_at, "
+                        "logo_analysis, template_analysis, "
+                        "analysis_status, analysis_error, "
+                        "analysis_started_at, "
+                        "is_active, created_at, updated_at"
+                    )
+                    
+                    response = (
+                        self.client.table("company_branding_assets")
+                        .select(select_fields)
+                        .eq("user_id", str(user_id))
+                        .eq("is_active", True)
+                        .limit(1)
+                        .execute()
+                    )
+                    
+                    if response.data:
+                        logger.info(f"✅ Retrieved branding data for user: {user_id}")
+                        return response.data[0]
+                    return None
+                    
+                except Exception as e:
+                    logger.warning(f"❌ Error fetching branding data: {e}")
+                    return None
                 
             # Handle INSERT queries for users - CRÍTICO para crear usuarios
             elif "INSERT INTO users" in query and params:

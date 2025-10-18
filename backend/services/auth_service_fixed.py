@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "tu-secret-key-super-segura-cambiar-en-produccion-rfx-system-2024")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "10080"))  # 7 días por defecto
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "10080"))  # 2 horas por defecto
 
 class AuthServiceFixed:
     """Servicio de autenticación con implementación DIRECTA de bcrypt (sin passlib)"""

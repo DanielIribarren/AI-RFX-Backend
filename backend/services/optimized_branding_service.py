@@ -5,9 +5,10 @@ Upload de archivos + análisis asíncrono con IA + cache en BD
 import asyncio
 import json
 import os
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Tuple
-from werkzeug.utils import secure_filename
+from typing import Dict, Optional
+from werkzeug.datastructures import FileStorage
 import logging
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class OptimizedUserBrandingService:
         
         # Lazy import de VisionAnalysisService
         self._vision_service = None
+        self._identifier_field: Optional[str] = None
     
     @property
     def vision_service(self):
@@ -196,6 +198,36 @@ class OptimizedUserBrandingService:
             )
         
         logger.debug(f"✅ File validated: {file.filename} ({size} bytes)")
+
+    def _get_identifier_field(self, db) -> str:
+        """
+        Detecta si la tabla usa company_id o user_id.
+        Cachea el resultado para evitar múltiples queries.
+        """
+        if self._identifier_field:
+            return self._identifier_field
+
+        # Intentar primero con user_id (más común en el sistema actual)
+        try:
+            response = db.client.table("company_branding_assets").select("user_id").limit(1).execute()
+            self._identifier_field = "user_id"
+            logger.debug(f"📌 Branding assets identifier field detected: user_id")
+            return self._identifier_field
+        except Exception as user_id_error:
+            # Si falla user_id, intentar con company_id
+            try:
+                response = db.client.table("company_branding_assets").select("company_id").limit(1).execute()
+                self._identifier_field = "company_id"
+                logger.debug(f"📌 Branding assets identifier field detected: company_id")
+                return self._identifier_field
+            except Exception as company_id_error:
+                # Si ambos fallan, hay un problema con la tabla
+                logger.error(f"❌ Could not detect identifier field. user_id error: {user_id_error}, company_id error: {company_id_error}")
+                raise ValueError(
+                    "Could not detect identifier field in company_branding_assets table. "
+                    "Table must have either 'user_id' or 'company_id' column."
+                )
+
     
     async def _save_to_database(
         self, 
@@ -203,57 +235,65 @@ class OptimizedUserBrandingService:
         file_info: Dict,
         analyze_now: bool
     ):
-        """Guarda información en base de datos"""
+        """Guarda información en base de datos usando Supabase query builder"""
         from backend.core.database import get_database_client
-        
+
         db = get_database_client()
-        
-        # Preparar valores
+        identifier_field = self._get_identifier_field(db)
+
         logo_filename = file_info.get("logo_filename")
         logo_path = file_info.get("logo_path")
         logo_url = file_info.get("logo_url")
-        
+
         template_filename = file_info.get("template_filename")
         template_path = file_info.get("template_path")
         template_url = file_info.get("template_url")
-        
+
         analysis_status = 'analyzing' if analyze_now else 'pending'
-        
-        # Usar UPSERT para actualizar si existe
-        query = """
-            INSERT INTO company_branding_assets 
-                (company_id, logo_filename, logo_path, logo_url, logo_uploaded_at,
-                 template_filename, template_path, template_url, template_uploaded_at,
-                 analysis_status, analysis_started_at, is_active)
-            VALUES (%s, %s, %s, %s, NOW(), %s, %s, %s, NOW(), %s, %s, true)
-            ON CONFLICT (company_id) 
-            DO UPDATE SET 
-                logo_filename = COALESCE(EXCLUDED.logo_filename, company_branding_assets.logo_filename),
-                logo_path = COALESCE(EXCLUDED.logo_path, company_branding_assets.logo_path),
-                logo_url = COALESCE(EXCLUDED.logo_url, company_branding_assets.logo_url),
-                logo_uploaded_at = CASE WHEN EXCLUDED.logo_filename IS NOT NULL THEN NOW() ELSE company_branding_assets.logo_uploaded_at END,
-                template_filename = COALESCE(EXCLUDED.template_filename, company_branding_assets.template_filename),
-                template_path = COALESCE(EXCLUDED.template_path, company_branding_assets.template_path),
-                template_url = COALESCE(EXCLUDED.template_url, company_branding_assets.template_url),
-                template_uploaded_at = CASE WHEN EXCLUDED.template_filename IS NOT NULL THEN NOW() ELSE company_branding_assets.template_uploaded_at END,
-                analysis_status = EXCLUDED.analysis_status,
-                analysis_started_at = EXCLUDED.analysis_started_at,
-                updated_at = NOW()
-            RETURNING id
-        """
-        
-        result = db.execute(
-            query,
-            (
-                company_id,
-                logo_filename, logo_path, logo_url,
-                template_filename, template_path, template_url,
-                analysis_status,
-                datetime.now() if analyze_now else None
-            )
-        )
-        
-        logger.info(f"💾 Branding info saved to database for company: {company_id}")
+
+        # Determinar si existe registro previo
+        existing = db.client.table("company_branding_assets")\
+            .select("id")\
+            .eq(identifier_field, company_id)\
+            .limit(1)\
+            .execute()
+
+        data = {
+            identifier_field: company_id,
+            "analysis_status": analysis_status,
+            "is_active": True
+        }
+
+        if logo_filename:
+            data.update({
+                "logo_filename": logo_filename,
+                "logo_path": logo_path,
+                "logo_url": logo_url,
+                "logo_uploaded_at": datetime.now().isoformat()
+            })
+
+        if template_filename:
+            data.update({
+                "template_filename": template_filename,
+                "template_path": template_path,
+                "template_url": template_url,
+                "template_uploaded_at": datetime.now().isoformat()
+            })
+
+        if analyze_now:
+            data["analysis_started_at"] = datetime.now().isoformat()
+
+        if existing.data:
+            db.client.table("company_branding_assets")\
+                .update(data)\
+                .eq(identifier_field, company_id)\
+                .execute()
+        else:
+            db.client.table("company_branding_assets")\
+                .insert(data)\
+                .execute()
+
+        logger.info(f"💾 Branding info saved to database for {identifier_field}: {company_id}")
     
     async def _analyze_async(self, company_id: str, file_info: Dict):
         """
@@ -261,7 +301,7 @@ class OptimizedUserBrandingService:
         Ejecuta análisis de IA y guarda resultados en BD
         """
         try:
-            logger.info(f"🔍 Starting async analysis for company: {company_id}")
+            logger.info(f"🔍 Starting async analysis for identifier: {company_id}")
             
             logo_analysis = None
             template_analysis = None
@@ -284,49 +324,46 @@ class OptimizedUserBrandingService:
             
             # Guardar análisis en BD
             from backend.core.database import get_database_client
-            from datetime import datetime
-            
+
             db = get_database_client()
-            
-            query = """
-                UPDATE company_branding_assets
-                SET 
-                    logo_analysis = COALESCE(%s, logo_analysis),
-                    template_analysis = COALESCE(%s, template_analysis),
-                    analysis_status = 'completed',
-                    analysis_completed_at = NOW(),
-                    updated_at = NOW()
-                WHERE company_id = %s
-            """
-            
-            db.execute(
-                query,
-                (
-                    json.dumps(logo_analysis) if logo_analysis else None,
-                    json.dumps(template_analysis) if template_analysis else None,
-                    company_id
-                )
-            )
-            
-            logger.info(f"✅ Analysis completed and saved for company: {company_id}")
+            identifier_field = self._get_identifier_field(db)
+
+            update_data = {
+                "analysis_status": "completed",
+                "updated_at": datetime.now().isoformat()
+            }
+
+            if logo_analysis is not None:
+                update_data["logo_analysis"] = json.dumps(logo_analysis)
+
+            if template_analysis is not None:
+                update_data["template_analysis"] = json.dumps(template_analysis)
+
+            db.client.table("company_branding_assets")\
+                .update(update_data)\
+                .eq(identifier_field, company_id)\
+                .execute()
+
+            logger.info(f"✅ Analysis completed and saved for identifier: {company_id}")
             
         except Exception as e:
-            logger.error(f"❌ Error in async analysis for {company_id}: {e}")
-            
+            logger.error(f"❌ Error in async analysis for identifier {company_id}: {e}")
+
             # Marcar como fallido en BD
             try:
                 from backend.core.database import get_database_client
                 db = get_database_client()
-                
-                db.execute("""
-                    UPDATE company_branding_assets
-                    SET 
-                        analysis_status = 'failed',
-                        analysis_error = %s,
-                        updated_at = NOW()
-                    WHERE company_id = %s
-                """, (str(e), company_id))
-            except:
+
+                identifier_field = self._get_identifier_field(db)
+
+                db.client.table("company_branding_assets")\
+                    .update({
+                        "analysis_status": "failed",
+                        "analysis_error": str(e)
+                    })\
+                    .eq(identifier_field, company_id)\
+                    .execute()
+            except Exception:
                 pass
     
     def get_branding_with_analysis(self, company_id: str) -> Optional[Dict]:
@@ -344,40 +381,36 @@ class OptimizedUserBrandingService:
         
         db = get_database_client()
         
-        query = """
-            SELECT 
-                id,
-                logo_url, 
-                template_url,
-                logo_analysis,
-                template_analysis,
-                analysis_status,
-                analysis_error,
-                created_at,
-                updated_at
-            FROM company_branding_assets
-            WHERE company_id = %s AND is_active = true
-        """
-        
-        result = db.query_one(query, (company_id,))
-        
-        if not result:
+        identifier_field = self._get_identifier_field(db)
+
+        response = db.client.table("company_branding_assets")\
+            .select(
+                "id, logo_url, template_url, logo_analysis, template_analysis, "
+                "analysis_status, analysis_error, created_at, updated_at"
+            )\
+            .eq(identifier_field, company_id)\
+            .eq("is_active", True)\
+            .limit(1)\
+            .execute()
+
+        if not response.data:
             return None
-        
-        # Parsear JSONB a dict
+
+        result = response.data[0]
+
         if result.get('logo_analysis'):
             try:
                 result['logo_analysis'] = json.loads(result['logo_analysis']) if isinstance(result['logo_analysis'], str) else result['logo_analysis']
-            except:
+            except Exception:
                 result['logo_analysis'] = {}
-        
+
         if result.get('template_analysis'):
             try:
                 result['template_analysis'] = json.loads(result['template_analysis']) if isinstance(result['template_analysis'], str) else result['template_analysis']
-            except:
+            except Exception:
                 result['template_analysis'] = {}
-        
-        logger.debug(f"📖 Retrieved branding for company: {company_id}, status: {result.get('analysis_status')}")
+
+        logger.debug(f"📖 Retrieved branding for identifier {identifier_field}={company_id}, status: {result.get('analysis_status')}")
         return result
     
     def get_analysis_status(self, company_id: str) -> Optional[Dict]:
@@ -395,17 +428,16 @@ class OptimizedUserBrandingService:
         
         db = get_database_client()
         
-        result = db.query_one("""
-            SELECT 
-                analysis_status,
-                analysis_error,
-                analysis_started_at,
-                analysis_completed_at
-            FROM company_branding_assets
-            WHERE company_id = %s AND is_active = true
-        """, (company_id,))
-        
-        return result
+        identifier_field = self._get_identifier_field(db)
+
+        response = db.client.table("company_branding_assets")\
+            .select("analysis_status, analysis_error, analysis_started_at, updated_at")\
+            .eq(identifier_field, company_id)\
+            .eq("is_active", True)\
+            .limit(1)\
+            .execute()
+
+        return response.data[0] if response.data else None
     
     async def reanalyze(self, company_id: str) -> Dict:
         """
@@ -432,15 +464,16 @@ class OptimizedUserBrandingService:
         
         db = get_database_client()
         
-        db.execute("""
-            UPDATE company_branding_assets
-            SET 
-                analysis_status = 'analyzing',
-                analysis_started_at = NOW(),
-                analysis_error = NULL,
-                updated_at = NOW()
-            WHERE company_id = %s
-        """, (company_id,))
+        identifier_field = self._get_identifier_field(db)
+
+        db.client.table("company_branding_assets")\
+            .update({
+                "analysis_status": "analyzing",
+                "analysis_started_at": datetime.now().isoformat(),
+                "analysis_error": None
+            })\
+            .eq(identifier_field, company_id)\
+            .execute()
         
         # Preparar info para análisis
         file_info = {
@@ -472,13 +505,12 @@ class OptimizedUserBrandingService:
         
         db = get_database_client()
         
-        db.execute("""
-            UPDATE company_branding_assets
-            SET 
-                is_active = false,
-                updated_at = NOW()
-            WHERE company_id = %s
-        """, (company_id,))
+        identifier_field = self._get_identifier_field(db)
+
+        db.client.table("company_branding_assets")\
+            .update({"is_active": False})\
+            .eq(identifier_field, company_id)\
+            .execute()
         
         logger.info(f"🗑️ Branding deactivated for company: {company_id}")
         return True

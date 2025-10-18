@@ -1,4 +1,14 @@
+#!/usr/bin/env python3
 """
+Script para refactorizar el servicio de propuestas
+Genera el nuevo archivo proposal_generator.py con la arquitectura refactorizada
+"""
+
+import sys
+from pathlib import Path
+
+# Contenido del servicio refactorizado
+REFACTORED_SERVICE = '''"""
 🎯 Proposal Generation Service - REFACTORIZADO V5.0
 Arquitectura mejorada: Prompts separados + Validación por scoring + Retry automático
 """
@@ -15,8 +25,7 @@ from backend.models.proposal_models import ProposalRequest, GeneratedProposal, P
 from backend.core.config import get_openai_config
 from backend.core.database import get_database_client
 from backend.services.unified_budget_configuration_service import unified_budget_service
-from backend.services.prompts.proposal_prompts import ProposalPrompts
-from backend.utils.html_validator import HTMLValidator
+from backend.services.prompts import ProposalPrompts
 
 import logging
 
@@ -179,122 +188,6 @@ class ProposalGenerationService:
         
         return rfx_data.get("currency", "USD")
     
-    def _map_rfx_data_for_prompt(self, rfx_data: Dict, products_info: List[Dict]) -> Dict:
-        """
-        🔧 Mapea rfx_data al formato que espera el prompt
-        
-        Convierte:
-        - 'companies' → 'client_name', 'company_name'
-        - 'delivery_date' → 'event_date'
-        - 'location' → 'event_location'
-        - 'productos' + products_info → 'products'
-        """
-        # Extraer información del cliente
-        companies = rfx_data.get('companies', {})
-        if isinstance(companies, dict):
-            client_name = companies.get('name', 'N/A')
-            company_name = companies.get('name', 'N/A')
-        else:
-            client_name = 'N/A'
-            company_name = 'N/A'
-        
-        # Extraer información del solicitante
-        requesters = rfx_data.get('requesters', {})
-        if isinstance(requesters, dict):
-            requester_name = requesters.get('name', 'N/A')
-            requester_email = requesters.get('email', 'N/A')
-        else:
-            requester_name = 'N/A'
-            requester_email = 'N/A'
-        
-        # Usar products_info que ya viene preparado
-        products = products_info if products_info else []
-        
-        # Mapear datos
-        mapped_data = {
-            'client_name': client_name,
-            'company_name': company_name,
-            'requester_name': requester_name,
-            'requester_email': requester_email,
-            'event_date': rfx_data.get('delivery_date', 'N/A'),
-            'event_location': rfx_data.get('location', 'N/A'),
-            'num_people': rfx_data.get('metadata', {}).get('num_people', 'N/A') if isinstance(rfx_data.get('metadata'), dict) else 'N/A',
-            'products': products,
-            'title': rfx_data.get('title', ''),
-            'description': rfx_data.get('description', ''),
-            'user_id': rfx_data.get('user_id')
-        }
-        
-        return mapped_data
-    
-    def _get_company_info(self, user_id: str) -> Dict[str, str]:
-        """Obtiene información de la empresa del usuario"""
-        try:
-            # Aquí deberías obtener la info real de la BD
-            # Por ahora retornamos un placeholder
-            return {
-                'name': 'Sabra Corporation',
-                'address': 'Dirección de la empresa',
-                'phone': '+1 (555) 123-4567',
-                'email': 'contacto@sabracorp.com'
-            }
-        except Exception as e:
-            logger.error(f"Error getting company info: {e}")
-            return {
-                'name': 'Empresa',
-                'address': 'N/A',
-                'phone': 'N/A',
-                'email': 'N/A'
-            }
-    
-    def _format_pricing_data(self, pricing_calculation: Any, currency: str) -> Dict[str, str]:
-        """Formatea datos de pricing para los prompts"""
-        try:
-            # Obtener símbolo de moneda
-            symbols = {
-                'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥',
-                'MXN': '$', 'CAD': 'C$', 'AUD': 'A$', 'BRL': 'R$',
-                'COP': '$', 'CHF': 'CHF', 'CNY': '¥', 'INR': '₹'
-            }
-            symbol = symbols.get(currency, '$')
-            
-            # Extraer valores con manejo seguro de None
-            if isinstance(pricing_calculation, dict):
-                subtotal = pricing_calculation.get('subtotal', 0) or 0
-                coordination = pricing_calculation.get('coordination_amount', 0) or 0
-                coordination_rate = (pricing_calculation.get('coordination_rate') or 0) * 100
-                tax = pricing_calculation.get('tax_amount', 0) or 0
-                tax_rate = (pricing_calculation.get('tax_rate') or 0) * 100
-                total = pricing_calculation.get('total', 0) or 0
-            else:
-                subtotal = getattr(pricing_calculation, 'subtotal', 0) or 0
-                coordination = getattr(pricing_calculation, 'coordination_amount', 0) or 0
-                coordination_rate = (getattr(pricing_calculation, 'coordination_rate', 0) or 0) * 100
-                tax = getattr(pricing_calculation, 'tax_amount', 0) or 0
-                tax_rate = (getattr(pricing_calculation, 'tax_rate', 0) or 0) * 100
-                total = getattr(pricing_calculation, 'total_cost', 0) or 0
-            
-            return {
-                'subtotal_formatted': f"{symbol}{subtotal:.2f}",
-                'coordination_formatted': f"{symbol}{coordination:.2f}",
-                'coordination_percentage': f"{coordination_rate:.1f}",
-                'tax_formatted': f"{symbol}{tax:.2f}",
-                'tax_percentage': f"{tax_rate:.1f}",
-                'total_formatted': f"{symbol}{total:.2f}",
-                'cost_per_person_formatted': f"{symbol}0.00"  # Calcular si es necesario
-            }
-        except Exception as e:
-            logger.error(f"Error formatting pricing data: {e}")
-            return {
-                'subtotal_formatted': '$0.00',
-                'coordination_formatted': '$0.00',
-                'coordination_percentage': '0',
-                'tax_formatted': '$0.00',
-                'tax_percentage': '0',
-                'total_formatted': '$0.00',
-                'cost_per_person_formatted': '$0.00'
-            }
-    
     def _has_complete_branding(self, user_id: str) -> bool:
         """
         🆕 Detecta si el usuario tiene branding completo (logo + análisis completado)
@@ -359,27 +252,8 @@ class ProposalGenerationService:
         logo_endpoint = f"{base_url}/api/branding/files/{user_id}/logo"
         logger.info(f"🎨 Logo endpoint: {logo_endpoint}")
         
-        # Preparar datos para el prompt
-        company_info = self._get_company_info(user_id)
-        pricing_data = self._format_pricing_data(pricing_calculation, currency)
-        
-        # DEBUG: Log de datos originales
-        logger.info(f"🔍 DEBUG rfx_data keys: {list(rfx_data.keys())}")
-        logger.info(f"🔍 DEBUG products_info count: {len(products_info)}")
-        logger.info(f"🔍 DEBUG productos count: {len(rfx_data.get('productos', []))}")
-        
-        # 🔧 MAPEAR datos al formato que espera el prompt
-        mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
-        
-        logger.info(f"✅ Mapped data - client: {mapped_rfx_data.get('client_name')}, products: {len(mapped_rfx_data.get('products', []))}")
-        
-        # Llamar al prompt con los parámetros correctos
         prompt = ProposalPrompts.get_prompt_with_branding(
-            user_id=user_id,
-            logo_endpoint=logo_endpoint,
-            company_info=company_info,
-            rfx_data=mapped_rfx_data,
-            pricing_data=pricing_data
+            rfx_data, products_info, pricing_calculation, currency, user_id, branding_config
         )
         
         return await self._call_ai(prompt)
@@ -391,19 +265,8 @@ class ProposalGenerationService:
         """📋 Genera propuesta SIN branding usando ProposalPrompts"""
         logger.info(f"📋 Building default prompt (no branding)")
         
-        # Preparar datos para el prompt
-        user_id = rfx_data.get('user_id', 'unknown')
-        company_info = self._get_company_info(user_id)
-        pricing_data = self._format_pricing_data(pricing_calculation, currency)
-        
-        # 🔧 MAPEAR datos al formato que espera el prompt
-        mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
-        
-        # Llamar al prompt con los parámetros correctos
         prompt = ProposalPrompts.get_prompt_default(
-            company_info=company_info,
-            rfx_data=mapped_rfx_data,
-            pricing_data=pricing_data
+            rfx_data, products_info, pricing_calculation, currency
         )
         
         return await self._call_ai(prompt)
@@ -416,44 +279,11 @@ class ProposalGenerationService:
         logger.info(f"🔄 Attempting retry with explicit corrections...")
         logger.info(f"🔄 Issues to fix: {issues}")
         
-        # Obtener user_id para reconstruir el prompt
-        user_id = self._get_user_id(rfx_data, rfx_data.get('id', ''))
-        has_branding = self._has_complete_branding(user_id)
-        
-        # Reconstruir el prompt original (sin llamar a AI)
-        if has_branding:
-            branding_config = self._get_branding_config(user_id)
-            base_url = os.getenv('BASE_URL', 'http://localhost:5001')
-            logo_endpoint = f"{base_url}/api/branding/files/{user_id}/logo"
-            
-            # Preparar datos para el prompt
-            company_info = self._get_company_info(user_id)
-            pricing_data = self._format_pricing_data(pricing_calculation, rfx_data.get('currency', 'USD'))
-            
-            original_prompt = ProposalPrompts.get_prompt_with_branding(
-                user_id=user_id,
-                logo_endpoint=logo_endpoint,
-                company_info=company_info,
-                rfx_data=rfx_data,
-                pricing_data=pricing_data
-            )
-        else:
-            company_info = self._get_company_info(user_id)
-            pricing_data = self._format_pricing_data(pricing_calculation, rfx_data.get('currency', 'USD'))
-            
-            original_prompt = ProposalPrompts.get_prompt_default(
-                company_info=company_info,
-                rfx_data=rfx_data,
-                pricing_data=pricing_data
-            )
-        
-        # Construir prompt de retry con correcciones
-        retry_prompt = ProposalPrompts.get_retry_prompt(
-            original_prompt=original_prompt,
-            validation_errors=issues
+        prompt = ProposalPrompts.get_retry_prompt(
+            original_html, issues, rfx_data, products_info, pricing_calculation, currency
         )
         
-        return await self._call_ai(retry_prompt)
+        return await self._call_ai(prompt)
     
     async def _call_ai(self, prompt: str) -> str:
         """🤖 Llama a OpenAI con el prompt"""
@@ -491,41 +321,178 @@ class ProposalGenerationService:
     
     def _validate_html(self, html: str, products_info: List[Dict]) -> Dict[str, Any]:
         """
-        🔍 Valida HTML usando HTMLValidator con sistema de scoring (0-10 puntos)
+        🔍 Valida HTML con sistema de scoring (0-10 puntos)
         
         Returns:
-            Dict con: is_valid, score, max_score, errors, warnings, details, percentage
+            Dict con: is_valid (bool), score (int), issues (List[str])
         """
         logger.info(f"🔍 Validating HTML content...")
         
-        # Usar el validador robusto
-        validation = HTMLValidator.validate_proposal_html(html)
+        score = 0
+        issues = []
+        max_score = 10
         
-        # Logging detallado
-        logger.info(f"📊 Validation result: {validation['score']}/{validation['max_score']} ({validation['percentage']:.0f}%) - {'✅ VALID' if validation['is_valid'] else '❌ INVALID'}")
+        # 1. Estructura HTML básica (2 puntos)
+        structure_score = self._check_html_structure(html)
+        score += structure_score
+        if structure_score < 2:
+            issues.append("HTML structure incomplete (missing DOCTYPE, html, head, or body tags)")
         
-        if not validation['is_valid']:
-            logger.warning(f"⚠️ Validation errors found:")
-            for error in validation['errors']:
-                logger.warning(f"   - {error}")
+        # 2. Información del cliente (2 puntos)
+        client_score = self._check_client_info(html)
+        score += client_score
+        if client_score < 2:
+            issues.append("Client information missing or incomplete")
         
-        if validation['warnings']:
-            logger.info(f"ℹ️ Validation warnings:")
-            for warning in validation['warnings']:
-                logger.info(f"   - {warning}")
+        # 3. Tabla de productos (2 puntos)
+        products_score = self._check_products_table(html, products_info)
+        score += products_score
+        if products_score < 2:
+            issues.append(f"Products table incomplete (expected {len(products_info)} products)")
         
-        # Log de detalles
-        logger.debug(f"📋 Validation details: {validation['details']}")
+        # 4. Sección de precios (2 puntos)
+        pricing_score = self._check_pricing_section(html)
+        score += pricing_score
+        if pricing_score < 2:
+            issues.append("Pricing section incomplete (missing subtotal or total)")
         
-        # Convertir a formato compatible con el resto del código
+        # 5. Términos y condiciones (1 punto)
+        terms_score = self._check_terms_section(html)
+        score += terms_score
+        if terms_score < 1:
+            issues.append("Terms and conditions section missing")
+        
+        # 6. Información de contacto (1 punto)
+        contact_score = self._check_contact_info(html)
+        score += contact_score
+        if contact_score < 1:
+            issues.append("Contact information missing")
+        
+        # Validación: mínimo 7/10 puntos para ser válido (70%)
+        is_valid = score >= 7
+        
+        logger.info(f"📊 Validation result: {score}/{max_score} ({score*10:.0f}%) - {'✅ VALID' if is_valid else '❌ INVALID'}")
+        
+        if not is_valid:
+            logger.warning(f"⚠️ Validation issues found:")
+            for issue in issues:
+                logger.warning(f"   - {issue}")
+        
         return {
-            'is_valid': validation['is_valid'],
-            'score': validation['score'],
-            'max_score': validation['max_score'],
-            'issues': validation['errors'] + validation['warnings'],
-            'details': validation['details'],
-            'percentage': validation['percentage']
+            'is_valid': is_valid,
+            'score': score,
+            'max_score': max_score,
+            'issues': issues
         }
+    
+    def _check_html_structure(self, html: str) -> int:
+        """Verifica estructura HTML básica (0-2 puntos)"""
+        required = ['<!DOCTYPE html>', '<html', '</html>', '<head', '<body']
+        html_lower = html.lower()
+        
+        found = sum(1 for element in required if element.lower() in html_lower)
+        
+        if found == len(required):
+            return 2
+        elif found >= 3:
+            return 1
+        else:
+            return 0
+    
+    def _check_client_info(self, html: str) -> int:
+        """Verifica información del cliente (0-2 puntos)"""
+        html_lower = html.lower()
+        
+        # Buscar indicadores de información del cliente
+        client_indicators = ['cliente', 'client', 'para:', 'to:', 'solicitante']
+        has_client_section = any(indicator in html_lower for indicator in client_indicators)
+        
+        # Buscar información de contacto
+        contact_indicators = ['email', '@', 'teléfono', 'phone', 'dirección', 'address']
+        has_contact_info = any(indicator in html_lower for indicator in contact_indicators)
+        
+        score = 0
+        if has_client_section:
+            score += 1
+        if has_contact_info:
+            score += 1
+        
+        return score
+    
+    def _check_products_table(self, html: str, products_info: List[Dict]) -> int:
+        """Verifica tabla de productos (0-2 puntos)"""
+        html_lower = html.lower()
+        
+        # Verificar que tenga tabla
+        has_table = '<table' in html_lower and '</table>' in html_lower
+        if not has_table:
+            return 0
+        
+        # Verificar columnas esperadas
+        expected_columns = ['descripción', 'description', 'cantidad', 'quantity', 'precio', 'price', 'total']
+        has_columns = any(col in html_lower for col in expected_columns)
+        
+        # Verificar que tenga filas de productos (aproximado)
+        product_rows = html_lower.count('<tr')
+        expected_rows = len(products_info) + 2  # +2 para header y total
+        
+        score = 0
+        if has_columns:
+            score += 1
+        if product_rows >= expected_rows * 0.7:  # Al menos 70% de las filas esperadas
+            score += 1
+        
+        return score
+    
+    def _check_pricing_section(self, html: str) -> int:
+        """Verifica sección de precios (0-2 puntos)"""
+        html_lower = html.lower()
+        
+        # Buscar subtotal
+        has_subtotal = 'subtotal' in html_lower
+        
+        # Buscar total
+        has_total = 'total' in html_lower and ('$' in html or '€' in html or '£' in html)
+        
+        score = 0
+        if has_subtotal:
+            score += 1
+        if has_total:
+            score += 1
+        
+        return score
+    
+    def _check_terms_section(self, html: str) -> int:
+        """Verifica sección de términos (0-1 punto)"""
+        html_lower = html.lower()
+        
+        terms_indicators = ['términos', 'terms', 'condiciones', 'conditions', 'notas', 'notes']
+        has_terms = any(indicator in html_lower for indicator in terms_indicators)
+        
+        return 1 if has_terms else 0
+    
+    def _check_contact_info(self, html: str) -> int:
+        """Verifica información de contacto (0-1 punto)"""
+        html_lower = html.lower()
+        
+        contact_indicators = ['contacto', 'contact', 'email', '@', 'teléfono', 'phone', 'sabra']
+        has_contact = sum(1 for indicator in contact_indicators if indicator in html_lower) >= 2
+        
+        return 1 if has_contact else 0
+    
+    def _validate_html_basic(self, html: str) -> bool:
+        """Validación básica rápida para casos simples"""
+        if not html or len(html) < 300:
+            return False
+        
+        html_lower = html.lower()
+        
+        # Verificaciones mínimas
+        has_html = '<!doctype html>' in html_lower and '<html' in html_lower
+        has_table = '<table' in html_lower
+        has_content = 'sabra' in html_lower or 'propuesta' in html_lower
+        
+        return has_html and has_table and has_content
     
     def _create_proposal_object(
         self, rfx_data: Dict[str, Any], html_content: str, 
@@ -603,3 +570,24 @@ async def generate_commercial_proposal(rfx_data: Dict[str, Any], proposal_reques
     """
     service = ProposalGenerationService()
     return await service.generate_proposal(rfx_data, proposal_request)
+'''
+
+def main():
+    """Genera el archivo refactorizado"""
+    output_file = Path("backend/services/proposal_generator_refactored.py")
+    
+    print(f"📝 Generando archivo refactorizado: {output_file}")
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(REFACTORED_SERVICE)
+    
+    print(f"✅ Archivo generado exitosamente")
+    print(f"📊 Tamaño: {len(REFACTORED_SERVICE)} caracteres")
+    print(f"\n🔄 Para aplicar los cambios:")
+    print(f"   1. Revisar: backend/services/proposal_generator_refactored.py")
+    print(f"   2. Si está correcto, reemplazar:")
+    print(f"      mv backend/services/proposal_generator.py backend/services/proposal_generator.py.old")
+    print(f"      mv backend/services/proposal_generator_refactored.py backend/services/proposal_generator.py")
+
+if __name__ == "__main__":
+    main()

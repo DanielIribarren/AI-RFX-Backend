@@ -284,6 +284,16 @@ def get_me():
         from uuid import UUID
         has_branding = user_repository.has_branding_configured(UUID(current_user['id']))
         
+        # Helper para convertir datetime a string
+        def to_iso_string(value):
+            """Convertir datetime o string a formato ISO string"""
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return value
+            # Si es datetime, convertir a isoformat
+            return value.isoformat() if hasattr(value, 'isoformat') else str(value)
+        
         return jsonify({
             "status": "success",
             "user": {
@@ -295,8 +305,8 @@ def get_me():
                 "status": current_user['status'],
                 "email_verified": current_user['email_verified'],
                 "has_branding": has_branding,
-                "last_login_at": current_user['last_login_at'].isoformat() if current_user.get('last_login_at') else None,
-                "created_at": current_user['created_at'].isoformat()
+                "last_login_at": to_iso_string(current_user.get('last_login_at')),
+                "created_at": to_iso_string(current_user.get('created_at'))
             }
         })
         

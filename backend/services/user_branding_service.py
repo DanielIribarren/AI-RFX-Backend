@@ -362,7 +362,7 @@ class UserBrandingService:
                 template_filename, template_path, template_url, template_uploaded_at,
                 logo_analysis, template_analysis,
                 analysis_status, analysis_error,
-                analysis_started_at, analysis_completed_at,
+                analysis_started_at,
                 is_active,
                 created_at,
                 updated_at
@@ -413,8 +413,7 @@ class UserBrandingService:
             SELECT 
                 analysis_status,
                 analysis_error,
-                analysis_started_at,
-                analysis_completed_at
+                analysis_started_at
             FROM company_branding_assets
             WHERE user_id = %s AND is_active = true
         """

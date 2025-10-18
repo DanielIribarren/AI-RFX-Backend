@@ -275,7 +275,7 @@ ALTER TABLE company_branding_assets ADD COLUMN team_id UUID;
 ### **Variables de Entorno**
 ```bash
 JWT_SECRET_KEY=tu-secret-key-super-segura
-JWT_EXPIRE_MINUTES=10080  # 7 días
+JWT_EXPIRE_MINUTES=120  # 2 horas
 ```
 
 ### **Testing**

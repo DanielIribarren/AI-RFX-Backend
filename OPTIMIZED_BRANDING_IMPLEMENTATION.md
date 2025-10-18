@@ -86,7 +86,7 @@ CREATE TABLE company_branding_assets (
     --   "recommended_position": "top-left",
     --   "optimal_dimensions": {"width": 200, "height": 80},
     --   "analyzed_at": "2024-09-30T22:00:00Z",
-    --   "analysis_model": "gpt-4-vision-preview"
+    --   "analysis_model": "gpt-4o"
     -- }
     
     -- Template
@@ -123,7 +123,7 @@ CREATE TABLE company_branding_assets (
     --     "body_size": "11px"
     --   },
     --   "analyzed_at": "2024-09-30T22:00:00Z",
-    --   "analysis_model": "gpt-4-vision-preview"
+    --   "analysis_model": "gpt-4o"
     -- }
     
     -- Estado del análisis
@@ -323,7 +323,7 @@ Responde SOLO con el JSON, sin texto adicional.
             client = self._get_client()
             
             response = client.chat.completions.create(
-                model="gpt-4-vision-preview",
+                model="gpt-4o",
                 messages=[
                     {
                         "role": "user",
@@ -353,7 +353,7 @@ Responde SOLO con el JSON, sin texto adicional.
             
             # Agregar metadata
             analysis["analyzed_at"] = datetime.now().isoformat()
-            analysis["analysis_model"] = "gpt-4-vision-preview"
+            analysis["analysis_model"] = "gpt-4o"
             
             logger.info(f"✅ Logo analysis completed: {analysis.get('primary_color')}")
             return analysis
@@ -450,7 +450,7 @@ Responde SOLO con el JSON, sin texto adicional.
             client = self._get_client()
             
             response = client.chat.completions.create(
-                model="gpt-4-vision-preview",
+                model="gpt-4o",
                 messages=[
                     {
                         "role": "user",
@@ -479,7 +479,7 @@ Responde SOLO con el JSON, sin texto adicional.
             
             # Agregar metadata
             analysis["analyzed_at"] = datetime.now().isoformat()
-            analysis["analysis_model"] = "gpt-4-vision-preview"
+            analysis["analysis_model"] = "gpt-4o"
             
             logger.info(f"✅ Template analysis completed: {analysis.get('layout_structure')}")
             return analysis

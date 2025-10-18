@@ -1,0 +1,2064 @@
+"""
+🎯 Proposal Generation Service - Generación simplificada de propuestas comerciales
+Arquitectura refactorizada: Template HTML + IA hace todo + Validación mínima
+Reducción: 900+ líneas → 180 líneas
+"""
+import json
+import uuid
+import re
+import time
+from datetime import datetime
+from typing import Dict, Any, Optional
+from pathlib import Path
+
+from backend.models.proposal_models import ProposalRequest, GeneratedProposal, ProposalStatus
+from backend.core.config import get_openai_config
+from backend.core.database import get_database_client
+from backend.services.pricing_config_service_v2 import PricingConfigurationServiceV2
+from backend.services.unified_budget_configuration_service import unified_budget_service
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+class ProposalGenerationService:
+    """Servicio ultra-simplificado para generar propuestas comerciales"""
+    
+    def __init__(self):
+        self.openai_config = get_openai_config()
+        self.openai_client = None  # Lazy initialization
+        self.db_client = get_database_client()
+        self.template_html = self._load_template()
+        self.pricing_service = PricingConfigurationServiceV2()
+    
+    def _get_openai_client(self):
+        """Lazy initialization of OpenAI client"""
+        if self.openai_client is None:
+            try:
+                from openai import OpenAI  # Import only when needed
+                self.openai_client = OpenAI(api_key=self.openai_config.api_key)
+            except ImportError:
+                raise ImportError(
+                    "OpenAI module not installed. Run: pip install openai"
+                )
+        return self.openai_client
+    
+    def _load_template(self) -> str:
+        """Carga template HTML desde archivo test_design.html"""
+        # Usar test_design.html como template principal
+        template_path = Path(__file__).parent.parent.parent / "test_design.html"
+        
+        try:
+            with open(template_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except FileNotFoundError:
+            logger.warning(f"Template test_design.html no encontrado: {template_path}")
+            return self._get_embedded_template()
+    
+    def _get_embedded_template(self) -> str:
+        """Template embebido como fallback ultra-básico"""
+        return """<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Propuesta Comercial</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .company-name { color: #2c5f7c; font-size: 24px; font-weight: bold; }
+        .error { color: #ff6b6b; font-style: italic; }
+    </style>
+</head>
+<body>
+    <div class="company-name">sabra corporation</div>
+    <h2>Propuesta Comercial</h2>
+    <p>Template básico de emergencia</p>
+</body>
+</html>"""
+    
+    async def generate_proposal(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest) -> GeneratedProposal:
+        """
+        Método principal ultra-simplificado: Template + IA hace todo
+        🆕 Con soporte para branding personalizado (logo + template analysis)
+        
+        Args:
+            rfx_data: Datos del RFX con cliente, productos, fechas, etc.
+            proposal_request: Request con configuraciones adicionales
+            
+        Returns:
+            PropuestaGenerada: Objeto con HTML completo y metadata
+        """
+        logger.info(f"🚀 Generando propuesta simplificada para RFX: {proposal_request.rfx_id}")
+        try:
+            # 🔐 V3.2: Obtener user_id (debe venir inyectado por API endpoint)
+            user_id = rfx_data.get("user_id")
+            
+            if not user_id:
+                # Último intento: buscar en la base de datos por rfx_id
+                logger.warning("⚠️ user_id not in rfx_data, attempting database lookup")
+                try:
+                    from backend.core.database import get_database_client
+                    db = get_database_client()
+                    rfx_result = db.client.table("rfx_v2").select("user_id").eq("id", proposal_request.rfx_id).single().execute()
+                    if rfx_result.data:
+                        user_id = rfx_result.data.get("user_id")
+                        if user_id:
+                            logger.info(f"✅ Retrieved user_id from RFX database: {user_id}")
+                            # Inyectar en rfx_data para uso posterior
+                            rfx_data["user_id"] = user_id
+                except Exception as e:
+                    logger.error(f"❌ Could not retrieve user_id from database: {e}")
+            
+            if not user_id:
+                raise ValueError(
+                    "user_id is required but not available. "
+                    "Ensure the RFX has a user_id assigned or provide authentication."
+                )
+            
+            logger.info(f"✅ Generating proposal for user: {user_id}")
+            
+            # 🆕 V3.1: Obtener configuración unificada (branding + pricing + document)
+            unified_config = unified_budget_service.get_user_unified_config(user_id)
+            effective_config = unified_budget_service.get_rfx_effective_config(proposal_request.rfx_id)
+            if effective_config:
+                logger.info(f"✅ Using effective RFX config: {proposal_request.rfx_id}")
+            else:
+                logger.info(f"⚠️ No RFX-specific config found, using user defaults: {proposal_request.rfx_id}")
+            
+            # 2. INTENTO 1: Usar template HTML pre-generado (RÁPIDO)
+            html_content = await self._try_template_based_generation(rfx_data, proposal_request, user_id)
+            
+            # 3. FALLBACK: Generación con IA si no hay template (LENTO)
+            if not html_content:
+                logger.info("🤖 No template available, using AI generation")
+                # Construir prompt unificado (SIEMPRE con branding personalizado)
+                unified_prompt = self._build_unified_proposal_prompt(rfx_data, proposal_request, unified_config, effective_config, user_id)
+                
+                # Llamada a OpenAI con retry inteligente y tokens adaptativos
+                try:
+                    # Primer intento: prompt completo con tokens normales
+                    html_content = await self._call_openai(unified_prompt, max_tokens=min(2500, self.openai_config.max_tokens))
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    if any(k in error_msg for k in ["timeout", "timed out", "request timed out"]):
+                        logger.warning("⏱️ Timeout detectado. Reintentando con menos tokens pero MISMO branding personalizado...")
+                        time.sleep(1)
+                        # Retry con menos tokens pero MISMO prompt (mantiene branding)
+                        html_content = await self._call_openai(unified_prompt, max_tokens=min(1500, self.openai_config.max_tokens))
+                    else:
+                        raise
+            
+            # 🖨️ PRINT del HTML generado por el LLM
+            logger.info("=" * 100)
+            logger.info("📄 HTML GENERADO POR EL LLM:")
+            logger.info("=" * 100)
+            print("\n" + "=" * 100)
+            print("📄 HTML GENERADO POR EL LLM:")
+            print("=" * 100)
+            print(html_content)
+            print("=" * 100)
+            print(f"📊 Longitud del HTML: {len(html_content)} caracteres")
+            print("=" * 100 + "\n")
+            logger.info(f"📊 Longitud del HTML: {len(html_content)} caracteres")
+            logger.info("=" * 100)
+            
+            # 3. Validación con logging detallado - NO usar template básico
+            is_valid = self._validate_html(html_content)
+            if not is_valid:
+                logger.error("❌ HTML validation failed - but continuing with generated content instead of fallback")
+                logger.error("❌ This indicates an issue with AI generation or validation criteria")
+                # Continue with the generated HTML instead of falling back
+            
+            # 4. Crear objeto de respuesta
+            proposal = self._create_proposal_object(rfx_data, html_content, proposal_request)
+            
+            # 5. Guardar en BD
+            await self._save_to_database(proposal)
+            
+            logger.info(f"✅ Propuesta generada exitosamente: {proposal.id}")
+            return proposal
+            
+        except Exception as e:
+            logger.error(f"❌ CRITICAL Error generando propuesta: {e}")
+            logger.error(f"❌ Fallback disabled - this error needs to be fixed at the source")
+            # Re-raise the exception instead of using fallback
+            raise Exception(f"Proposal generation failed: {e}. Fallback disabled to force fixing root cause.")
+    
+    async def _try_template_based_generation(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest, user_id: str) -> Optional[str]:
+        """
+        🚀 NUEVO V3.2: Intenta generar propuesta usando template HTML pre-generado
+        
+        Args:
+            rfx_data: Datos del RFX
+            proposal_request: Request con configuraciones
+            user_id: ID del usuario para obtener template
+            
+        Returns:
+            HTML generado usando template o None si no hay template disponible
+        """
+        try:
+            logger.info(f"🎯 Attempting template-based generation for user: {user_id}")
+            
+            # 1. Obtener contexto de branding (incluye template analysis)
+            branding_context = self._get_branding_context(user_id)
+            
+            if not branding_context:
+                logger.debug("❌ No branding context available")
+                return None
+            
+            # 2. Verificar si existe template HTML en template_analysis
+            template_analysis = branding_context.get('template_analysis', {})
+            html_template = template_analysis.get('html_template')
+            placeholders = template_analysis.get('placeholders', [])
+            
+            if not html_template:
+                logger.debug("❌ No HTML template found in template_analysis")
+                return None
+            
+            logger.info(f"✅ Found HTML template with {len(placeholders)} placeholders")
+            logger.debug(f"Template placeholders: {placeholders}")
+            
+            # 3. Preparar datos para inyección en template
+            template_data = self._prepare_template_data(rfx_data, proposal_request, user_id)
+            
+            # 4. Inyectar datos en template HTML
+            html_content = self._inject_data_into_template(html_template, template_data)
+            
+            # 5. Validar que se reemplazaron todos los placeholders
+            if self._has_unreplaced_placeholders(html_content):
+                logger.warning("⚠️ Template has unreplaced placeholders, falling back to AI generation")
+                return None
+            
+            logger.info("🚀 Template-based generation successful!")
+            return html_content
+            
+        except Exception as e:
+            logger.error(f"❌ Error in template-based generation: {e}")
+            logger.info("🤖 Falling back to AI generation")
+            return None
+    
+    def _prepare_template_data(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest, user_id: str) -> Dict[str, Any]:
+        """
+        Prepara datos para inyección en template HTML
+        
+        Args:
+            rfx_data: Datos del RFX
+            proposal_request: Request con configuraciones  
+            user_id: ID del usuario
+            
+        Returns:
+            Dict con datos formateados para template
+        """
+        # Extraer datos básicos
+        products = rfx_data.get('products', [])
+        total = sum(float(p.get('total', 0)) for p in products)
+        
+        # Formatear productos para tabla
+        formatted_products = []
+        for product in products:
+            formatted_products.append({
+                'descripcion': product.get('description', product.get('nombre', '')),
+                'cantidad': product.get('quantity', product.get('cantidad', '')),
+                'precio_unitario': f"${float(product.get('unit_price', product.get('precio_unitario', 0))):.2f}",
+                'total': f"${float(product.get('total', 0)):.2f}"
+            })
+        
+        return {
+            'user_id': user_id,
+            'company_name': rfx_data.get('company_name', 'Sabra Corporation'),
+            'fecha': datetime.now().strftime('%d/%m/%Y'),
+            'cliente': rfx_data.get('client_name', rfx_data.get('cliente', '')),
+            'cliente_direccion': rfx_data.get('client_address', ''),
+            'productos': formatted_products,
+            'total_final': f"${total:.2f}"
+        }
+    
+    def _inject_data_into_template(self, html_template: str, data: Dict[str, Any]) -> str:
+        """
+        Inyecta datos en template HTML reemplazando placeholders
+        
+        Args:
+            html_template: Template HTML con placeholders {{variable}}
+            data: Datos para reemplazar
+            
+        Returns:
+            HTML con datos inyectados
+        """
+        html = html_template
+        
+        # Reemplazar placeholders simples
+        for key, value in data.items():
+            if key == 'productos':
+                continue  # Se maneja por separado
+            placeholder = f"{{{{{key}}}}}"
+            html = html.replace(placeholder, str(value))
+        
+        # Manejar productos (tabla dinámica)
+        if 'productos' in data:
+            html = self._inject_products_table(html, data['productos'])
+        
+        # Manejar condicionales de logo
+        html = self._handle_logo_conditionals(html, data)
+        
+        return html
+    
+    def _inject_products_table(self, html: str, productos: list) -> str:
+        """
+        Inyecta filas de productos en template HTML
+        
+        Args:
+            html: HTML template
+            productos: Lista de productos
+            
+        Returns:
+            HTML con tabla de productos completada
+        """
+        # Buscar patrón {{#productos}}...{{/productos}} 
+        import re
+        pattern = r'\{\{#productos\}\}(.*?)\{\{/productos\}\}'
+        match = re.search(pattern, html, re.DOTALL)
+        
+        if not match:
+            logger.warning("⚠️ No products loop pattern found in template")
+            return html
+        
+        row_template = match.group(1)
+        products_html = ""
+        
+        # Generar filas para cada producto
+        for producto in productos:
+            row_html = row_template
+            for key, value in producto.items():
+                row_html = row_html.replace(f"{{{{{key}}}}}", str(value))
+            products_html += row_html
+        
+        # Reemplazar todo el bloque de productos
+        html = re.sub(pattern, products_html, html, flags=re.DOTALL)
+        return html
+    
+    def _handle_logo_conditionals(self, html: str, data: Dict[str, Any]) -> str:
+        """
+        Maneja condicionales de logo en template
+        
+        Args:
+            html: HTML template
+            data: Datos del template
+            
+        Returns:
+            HTML con condicionales de logo procesados
+        """
+        # Si hay user_id, usar logo
+        if data.get('user_id'):
+            html = html.replace('{{#if_logo}}', '')
+            html = html.replace('{{/if_logo}}', '')
+            # Remover sección de no-logo
+            import re
+            html = re.sub(r'\{\{#if_no_logo\}\}.*?\{\{/if_no_logo\}\}', '', html, flags=re.DOTALL)
+        else:
+            # Sin logo, usar texto empresa
+            html = re.sub(r'\{\{#if_logo\}\}.*?\{\{/if_logo\}\}', '', html, flags=re.DOTALL)
+            html = html.replace('{{#if_no_logo}}', '')
+            html = html.replace('{{/if_no_logo}}', '')
+        
+        return html
+    
+    def _has_unreplaced_placeholders(self, html: str) -> bool:
+        """
+        Verifica si quedan placeholders sin reemplazar en el HTML
+        
+        Args:
+            html: HTML generado
+            
+        Returns:
+            True si hay placeholders sin reemplazar
+        """
+        import re
+        placeholders = re.findall(r'\{\{[^}]+\}\}', html)
+        
+        if placeholders:
+            logger.warning(f"⚠️ Unreplaced placeholders found: {placeholders}")
+            return True
+        
+        return False
+    
+    def _get_branding_context(self, user_id: str) -> Optional[Dict]:
+        """
+        🆕 V3.0: Obtiene contexto de branding con análisis cacheado POR USUARIO
+        Lectura rápida desde BD - sin llamadas a IA
+        Usa company_branding_assets con user_id (migrado en V3.0 MVP)
+        """
+        try:
+            from backend.services.user_branding_service import user_branding_service
+            
+            branding = user_branding_service.get_branding_with_analysis(user_id)
+            
+            if not branding or branding.get('analysis_status') != 'completed':
+                logger.debug(f"No completed branding analysis for user: {user_id}")
+                return None
+            
+            # Extraer información relevante del análisis
+            logo_analysis = branding.get('logo_analysis', {})
+            template_analysis = branding.get('template_analysis', {})
+            
+            context = {
+                "logo_url": branding.get('logo_url'),
+                "template_url": branding.get('template_url'),
+                "logo_analysis": logo_analysis,
+                "template_analysis": template_analysis,
+                "primary_color": logo_analysis.get('primary_color', '#2c5f7c'),
+                "secondary_color": logo_analysis.get('secondary_color', '#ffffff'),
+                "dominant_colors": logo_analysis.get('dominant_colors', []),
+                "logo_position": logo_analysis.get('recommended_position', 'top-left'),
+                "layout_structure": template_analysis.get('layout_structure'),
+                "color_scheme": template_analysis.get('color_scheme', {}),
+                "table_style": template_analysis.get('table_style', {}),
+                "typography": template_analysis.get('typography', {}),
+                "design_style": template_analysis.get('design_style', 'professional')
+            }
+            
+            logger.info(f"✅ Branding context loaded for user: {user_id}")
+            return context
+            
+        except Exception as e:
+            logger.error(f"Error loading branding context: {e}")
+            return None
+    
+    def _build_ai_prompt(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest, branding_context: Optional[Dict] = None) -> str:
+        """
+        Construye prompt inteligente para OpenAI con template y datos del RFX
+        🆕 Incluye contexto de branding si está disponible
+        """
+        
+        client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
+        productos = rfx_data.get("productos", [])  # Usar "productos" en español para consistencia
+        rfx_id = proposal_request.rfx_id
+        
+        # 🆕 Extraer moneda del RFX (desde BD V2.0)
+        rfx_currency = rfx_data.get("currency", "USD")  # Fallback a USD si no hay moneda
+        logger.debug(f"💰 Currency extracted from RFX data: {rfx_currency}")
+        
+        # 🆕 V3.1: Usar configuración unificada en lugar del servicio fragmentado
+        pricing_config = None
+        pricing_calculation = None
+        
+        # Preparar datos estructurados para la IA con precios reales
+        productos_info = []
+        subtotal = 0.0
+        for producto in productos:
+            precio_unitario = producto.get("estimated_unit_price", 0.0)
+            cantidad = producto.get("quantity", producto.get("cantidad", 1))
+            total_producto = precio_unitario * cantidad
+            subtotal += total_producto
+            
+            productos_info.append({
+                "nombre": producto.get("name", producto.get("nombre", "product")),
+                "cantidad": cantidad,
+                "unidad": producto.get("unit", producto.get("unidad", "units")),
+                "precio_unitario": precio_unitario,
+                "total": total_producto
+            })
+        
+        # 🚀 Calcular pricing con servicio unificado
+        pricing_calculation = unified_budget_service.calculate_with_unified_config(rfx_id, subtotal)
+        
+        # 🚀 V3.1: Usar configuración unificada en lugar de instrucciones fragmentadas
+        if effective_config:
+            # Extraer moneda de configuración efectiva
+            final_currency = effective_config.get('config', {}).get('document', {}).get('currency', rfx_currency)
+        elif unified_config:
+            # Usar moneda de configuración unificada del usuario
+            final_currency = unified_config.get('document', {}).get('currency', rfx_currency)
+        else:
+            # Fallback a moneda del RFX
+            final_currency = rfx_currency
+        
+        logger.info(f"💰 Using unified currency: {final_currency}")
+        
+        # Preparar instrucciones unificadas
+        unified_instructions = self._build_unified_pricing_instructions(
+            pricing_calculation, 
+            final_currency, 
+            unified_config, 
+            effective_config
+        )
+        
+        prompt = f"""
+<?xml version="1.0" encoding="UTF-8"?>
+<budget_generation_prompt>
+<version_info>
+    <name>Generador de Presupuestos HTML con Template Personalizado</name>
+    <version>4.1 Completo</version>
+    <date>2025-10-17</date>
+    <optimization>Template inheritance, configuración unificada y datos estructurados</optimization>
+</version_info>
+
+<system>
+    Eres un especialista en generación de presupuestos comerciales profesionales. Tu función principal es transformar datos estructurados de solicitudes (RFX) en documentos HTML profesionales utilizando EXACTAMENTE el template HTML proporcionado como base de diseño, heredando TODOS sus estilos CSS sin modificaciones.
+</system>
+
+<template_analysis>
+    <template_reference>
+        <!-- TEMPLATE HTML DE REFERENCIA OBLIGATORIO -->
+        <template_html>{self.template_html}</template_html>
+    </template_reference>
+    
+    <inheritance_instructions>
+        <rule>Usar EXACTAMENTE todos los estilos CSS definidos en el template sin modificaciones</rule>
+        <rule>Mantener EXACTAMENTE toda la estructura HTML del template</rule>
+        <rule>Copiar EXACTAMENTE todas las clases CSS y sus propiedades</rule>
+        <rule>Preservar EXACTAMENTE todos los elementos de diseño del template</rule>
+        <rule>El template es tu BASE VISUAL ABSOLUTA - heredar TODO sin cambios</rule>
+        <rule>NUNCA inventar o modificar estilos - solo usar los existentes en el template</rule>
+    </inheritance_instructions>
+</template_analysis>
+
+<unified_config>
+    <title>CONFIGURACIÓN UNIFICADA V3.1</title>
+    <config_data>{unified_instructions}</config_data>
+    
+    <mandatory_application>
+        <item>Usar EXACTAMENTE los montos calculados por el sistema unificado</item>
+        <item>Aplicar configuraciones de moneda y branding según especificaciones</item>
+        <item>Respetar configuraciones habilitadas/deshabilitadas</item>
+        <item>Usar el subtotal y totales EXACTOS de la configuración unificada</item>
+    </mandatory_application>
+</unified_config>
+
+<rfx_data>
+    <title>DATOS ESTRUCTURADOS DE LA SOLICITUD (RFX)</title>
+    
+    <client_info>
+        <client_name>{client_info.get('name', 'Solicitante')}</client_name>
+        <client_email>{client_info.get('email', '')}</client_email>
+        <client_company>{client_info.get('company', '')}</client_company>
+        <delivery_location>{rfx_data.get('location', 'Por definir')}</delivery_location>
+        <delivery_date>{rfx_data.get('delivery_date', 'Por definir')}</delivery_date>
+        <people_count>{rfx_data.get('people_count', '')}</people_count>
+    </client_info>
+    
+    <rfx_metadata>
+        <rfx_id>{proposal_request.rfx_id}</rfx_id>
+        <rfx_currency>{rfx_data.get("currency", "USD")}</rfx_currency>
+        <final_currency>{final_currency}</final_currency>
+        <proposal_notes>{proposal_request.notes if hasattr(proposal_request, 'notes') and proposal_request.notes else "Ninguna - usar configuración estándar"}</proposal_notes>
+    </rfx_metadata>
+    
+    <productos_estructurados>
+        <!-- Datos de productos procesados con precios y cálculos -->
+        {json.dumps(productos_info, ensure_ascii=False, indent=2)}
+    </productos_estructurados>
+    
+    <pricing_calculation>
+        <!-- Cálculos del servicio unificado -->
+        <subtotal_calculated>{subtotal}</subtotal_calculated>
+        <unified_pricing_data>{pricing_calculation if pricing_calculation else "No disponible"}</unified_pricing_data>
+    </pricing_calculation>
+    
+    <current_date>{datetime.now().strftime('%d/%m/%y')}</current_date>
+</rfx_data>
+
+<context>
+    <business_rules>
+        <rule>El presupuesto es PARA EL CLIENTE FINAL - debe ser presentable sin ediciones</rule>
+        <rule>NUNCA incluir información interna: ganancias, comisiones, costos de operación, márgenes</rule>
+        <rule>Solo mostrar información que el cliente necesita ver para tomar su decisión</rule>
+        <rule>Usar la configuración de branding como REFERENCIA EXACTA para el diseño</rule>
+        <rule>NO COLOCAR ```html``` al inicio o al final del documento</rule>
+    </business_rules>
+    
+    <data_processing_rules>
+        <rule>Usar EXACTAMENTE los precios de estimated_unit_price de cada producto</rule>
+        <rule>Calcular: cantidad × precio_unitario = total por producto</rule>
+        <rule>Sumar todos los totales de productos para obtener subtotal</rule>
+        <rule>Aplicar cálculos del pricing_calculation para servicios adicionales</rule>
+        <rule>Usar final_currency consistentemente en todo el documento</rule>
+    </data_processing_rules>
+</context>
+
+<instructions>
+    <step number="1" title="HERENCIA COMPLETA DEL TEMPLATE">
+        <action>Tomar el template HTML como estructura BASE EXACTA</action>
+        <action>COPIAR todo el CSS del template sin modificaciones</action>
+        <action>MANTENER todas las clases CSS exactamente como están definidas</action>
+        <action>PRESERVAR toda la estructura de HTML del template</action>
+        <action>NO crear nuevos estilos - solo usar los existentes en el template</action>
+    </step>
+    
+    <step number="2" title="PROCESAMIENTO DE DATOS ESTRUCTURADOS">
+        <action>Extraer productos de productos_estructurados con precios calculados</action>
+        <action>Usar rfx_metadata para información del proyecto</action>
+        <action>Aplicar client_info para datos del cliente</action>
+        <action>Usar pricing_calculation para servicios adicionales y totales</action>
+        <action>Aplicar final_currency consistentemente en todo el documento</action>
+    </step>
+    
+    <step number="3" title="CÁLCULOS MATEMÁTICOS CON DATOS PROPORCIONADOS">
+        <action>NO recalcular precios - usar los ya calculados en productos_estructurados</action>
+        <action>Mostrar: nombre, cantidad, unidad, precio_unitario, total de cada producto</action>
+        <action>Usar subtotal_calculated como base</action>
+        <action>Aplicar unified_pricing_data para coordinación, impuestos, descuentos</action>
+        <action>Mostrar totales finales según pricing_calculation</action>
+    </step>
+    
+    <step number="4" title="REEMPLAZO DE CONTENIDO EN TEMPLATE">
+        <action>Identificar las secciones de contenido variable en el template</action>
+        <action>REEMPLAZAR únicamente el contenido (texto, números, fechas)</action>
+        <action>MANTENER toda la estructura HTML y CSS intacta</action>
+        <action>NO modificar ningún estilo existente del template</action>
+    </step>
+    
+    <step number="5" title="INFORMACIÓN PERMITIDA PARA CLIENTE FINAL">
+        <allowed_info>
+            <item>Productos y servicios ofrecidos con precios FINALES (estimated_unit_price)</item>
+            <item>Cantidades solicitadas y subtotales calculados</item>
+            <item>Coordinación (como servicio agregado)</item>
+            <item>Impuestos aplicables y totales finales</item>
+            <item>Términos y condiciones</item>
+        </allowed_info>
+        
+        <prohibited_info>
+            <item>Costos internos de producción</item>
+            <item>Ganancias o márgenes de la empresa</item>
+            <item>Comisiones internas o costos de generación</item>
+            <item>Información confidencial de operación</item>
+        </prohibited_info>
+    </step>
+    
+    <step number="6" title="COMPATIBILIDAD TÉCNICA">
+        <requirement>HTML 100% compatible con Playwright para conversión PDF</requirement>
+        <requirement>Usar únicamente los estilos definidos en el template</requirement>
+        <requirement>Aplicar -webkit-print-color-adjust: exact !important si está en el template</requirement>
+        <requirement>NUNCA incluir ```html``` al inicio o final</requirement>
+    </step>
+</instructions>
+
+<data_mapping>
+    <title>MAPEO DE DATOS ESTRUCTURADOS</title>
+    
+    <productos_mapping>
+        <field name="nombre">producto.get("name", producto.get("nombre", "product"))</field>
+        <field name="cantidad">producto.get("quantity", producto.get("cantidad", 1))</field>
+        <field name="unidad">producto.get("unit", producto.get("unidad", "units"))</field>
+        <field name="precio_unitario">producto.get("estimated_unit_price", 0.0)</field>
+        <field name="total">precio_unitario * cantidad</field>
+    </productos_mapping>
+    
+    <pricing_mapping>
+        <field name="subtotal">Suma de todos los totales de productos</field>
+        <field name="servicios_adicionales">Según pricing_calculation del servicio unificado</field>
+        <field name="impuestos">Según configuración unificada si está habilitada</field>
+        <field name="total_final">Según cálculos del servicio unificado</field>
+    </pricing_mapping>
+    
+    <currency_mapping>
+        <priority_1>final_currency (de configuración efectiva)</priority_1>
+        <priority_2>unified_config currency</priority_2>
+        <priority_3>rfx_currency (de RFX data)</priority_3>
+        <fallback>USD</fallback>
+    </currency_mapping>
+</data_mapping>
+
+<criteria>
+    <approved_document title="DOCUMENTO APROBADO SI">
+        <requirement>Usa EXACTAMENTE los mismos estilos CSS del template sin modificaciones</requirement>
+        <requirement>Mantiene EXACTAMENTE la misma estructura HTML del template</requirement>
+        <requirement>Usa EXACTAMENTE los datos estructurados proporcionados (productos_info, pricing_calculation)</requirement>
+        <requirement>Solo reemplaza el contenido variable manteniendo todo el diseño</requirement>
+        <requirement>Aplica correctamente final_currency de manera consistente</requirement>
+        <requirement>Solo muestra precios finales sin información interna</requirement>
+        <requirement>Es compatible con Playwright para conversión PDF</requirement>
+    </approved_document>
+</criteria>
+
+<output_format>
+    <instruction>RESPONDE ÚNICAMENTE CON HTML COMPLETO Y FUNCIONAL</instruction>
+    <restriction>SIN ```html``` AL INICIO O FINAL</restriction>
+    <restriction>SIN explicaciones adicionales</restriction>
+    <restriction>USAR EXACTAMENTE el CSS del template proporcionado</restriction>
+    <restriction>USAR EXACTAMENTE los datos estructurados proporcionados</restriction>
+    <format>HTML directo listo para Playwright</format>
+</output_format>
+
+</budget_generation_prompt>
+
+"""
+
+        
+        return prompt
+    
+    def _build_unified_pricing_instructions(self, pricing_calculation, currency: str, 
+                                          unified_config: Optional[Dict] = None, 
+                                          effective_config: Optional[Dict] = None) -> str:
+        """🆕 V3.1: Construye instrucciones unificadas desde configuración centralizada"""
+        try:
+            instructions = [
+                "🎯 CONFIGURACIÓN UNIFICADA V3.1 - SISTEMA INTELIGENTE:",
+                "Esta configuración elimina inconsistencias y centraliza branding + pricing",
+                "",
+                "MONEDA Y FORMATO:",
+                f"- Moneda: {currency}",
+                f"- Símbolo: {self._get_currency_symbol(currency)}",
+                f"- TODOS los precios deben usar {currency} consistentemente",
+                ""
+            ]
+            
+            # Configuración de pricing unificada
+            if pricing_calculation:
+                instructions.extend([
+                    "PRICING UNIFICADO (Calculado automáticamente por el sistema):",
+                    f"- Subtotal base: {self._get_currency_symbol(currency)}{pricing_calculation.subtotal:.2f}",
+                ])
+                
+                if pricing_calculation.coordination_enabled:
+                    rate_percent = pricing_calculation.coordination_rate * 100
+                    instructions.extend([
+                        f"✅ COORDINACIÓN HABILITADA:",
+                        f"   - Tasa: {rate_percent:.1f}%",
+                        f"   - Monto: {self._get_currency_symbol(currency)}{pricing_calculation.coordination_amount:.2f}",
+                        f"   - Mostrar como: 'Coordinación y logística ({rate_percent:.1f}%): {self._get_currency_symbol(currency)}{pricing_calculation.coordination_amount:.2f}'",
+                    ])
+                else:
+                    instructions.append("❌ COORDINACIÓN DESHABILITADA: No incluir coordinación en el presupuesto")
+                
+                if pricing_calculation.cost_per_person_enabled and hasattr(pricing_calculation, 'headcount') and pricing_calculation.headcount:
+                    cost_per_person = getattr(pricing_calculation, 'cost_per_person', pricing_calculation.total_cost / pricing_calculation.headcount)
+                    instructions.extend([
+                        f"✅ COSTO POR PERSONA HABILITADO:",
+                        f"   - Número de personas: {pricing_calculation.headcount}",
+                        f"   - Costo por persona: {self._get_currency_symbol(currency)}{cost_per_person:.2f}",
+                        f"   - Mostrar al final: 'Costo por persona: {self._get_currency_symbol(currency)}{cost_per_person:.2f} ({pricing_calculation.headcount} personas)'",
+                    ])
+                else:
+                    instructions.append("❌ COSTO POR PERSONA DESHABILITADO: No mostrar cálculo por persona")
+                
+                if pricing_calculation.taxes_enabled and hasattr(pricing_calculation, 'tax_amount'):
+                    rate_percent = pricing_calculation.tax_rate * 100
+                    instructions.extend([
+                        f"✅ IMPUESTOS HABILITADOS:",
+                        f"   - Tasa: {rate_percent:.1f}%", 
+                        f"   - Monto: {self._get_currency_symbol(currency)}{pricing_calculation.tax_amount:.2f}",
+                        f"   - Mostrar línea antes del total final",
+                    ])
+                else:
+                    instructions.append("❌ IMPUESTOS DESHABILITADOS: No incluir impuestos")
+                
+                instructions.extend([
+                    f"💰 TOTAL FINAL CALCULADO: {self._get_currency_symbol(currency)}{pricing_calculation.total_cost:.2f}",
+                    ""
+                ])
+            
+            # Configuración de branding unificada
+            branding_config = {}
+            if effective_config:
+                branding_config = effective_config.get('config', {}).get('branding', {})
+            elif unified_config:
+                branding_config = unified_config.get('branding', {})
+            
+            if branding_config and branding_config.get('logo_url'):
+                instructions.extend([
+                    "🎨 BRANDING UNIFICADO APLICADO:",
+                    f"- Logo corporativo: {branding_config.get('logo_url')}",
+                    f"- Color principal: {branding_config.get('primary_color', '#2c5f7c')}",
+                    f"- INCLUIR LOGO: <img src=\"{branding_config.get('logo_url')}\" class=\"company-logo\" style=\"max-width: 200px; height: auto;\">",
+                    f"- USAR COLOR: {branding_config.get('primary_color', '#2c5f7c')} para elementos principales",
+                    ""
+                ])
+            else:
+                instructions.extend([
+                    "🎨 BRANDING ESTÁNDAR:",
+                    "- Usar colores corporativos por defecto: #2c5f7c",
+                    "- Logo estándar de Sabra Corporation",
+                    ""
+                ])
+            
+            # Información de origen de configuración
+            if effective_config:
+                source_info = effective_config.get('source_info', {})
+                instructions.extend([
+                    "📋 ORIGEN DE CONFIGURACIÓN:",
+                    f"- Configuración específica de RFX: {'Sí' if source_info.get('has_rfx_specific_pricing') else 'No'}",
+                    f"- Branding específico de RFX: {'Sí' if source_info.get('has_rfx_specific_branding') else 'No'}",
+                    f"- Defaults del usuario: {'Sí' if source_info.get('has_user_defaults') else 'No'}",
+                    f"- Auto-detectado por IA: {'Sí' if source_info.get('coordination_auto_detected') else 'No'}",
+                    ""
+                ])
+            
+            instructions.extend([
+                "🚨 INSTRUCCIONES CRÍTICAS PARA CONFIGURACIÓN UNIFICADA:",
+                "1. Usar EXACTAMENTE los montos calculados arriba - NO inventar nuevos cálculos",
+                "2. Aplicar configuraciones de branding si están disponibles",
+                "3. Mantener consistencia TOTAL en moneda y símbolo",
+                "4. Respetar configuraciones habilitadas/deshabilitadas",
+                "5. El sistema es ahora INTELIGENTE y elimina inconsistencias automáticamente",
+                "6. Usar template HTML proporcionado como base pero aplicar configuraciones unificadas",
+                "7. HTML debe ser compatible con Playwright para conversión PDF",
+                "",
+                "🎯 VENTAJAS DEL SISTEMA UNIFICADO:",
+                "- Configuración centralizada por usuario",
+                "- Eliminación de inconsistencias entre branding y pricing", 
+                "- Herencia inteligente de configuraciones",
+                "- Auto-detección de industria y patrones",
+                "- Reutilización eficiente de análisis de templates"
+            ])
+            
+            return "\n".join(instructions)
+            
+        except Exception as e:
+            logger.error(f"❌ Error building unified pricing instructions: {e}")
+            return f"CONFIGURACIÓN UNIFICADA: Error cargando configuración, usar defaults estándar con moneda {currency}"
+    
+    def _build_pricing_instructions(self, pricing_calculation, pricing_config) -> str:
+        """Construye instrucciones específicas de pricing para la IA"""
+        try:
+            instructions = ["CONFIGURACIONES DE PRICING APLICADAS:"]
+            
+            # Información del subtotal
+            instructions.append(f"SUBTOTAL BASE: ${pricing_calculation.subtotal:.2f}")
+            
+            # Configuración de coordinación
+            if pricing_calculation.coordination_enabled:
+                rate_percent = pricing_calculation.coordination_rate * 100
+                instructions.append(f"✅ COORDINACIÓN HABILITADA:")
+                instructions.append(f"   - Agregar {rate_percent:.1f}% de coordinación y logística")
+                instructions.append(f"   - Monto de coordinación: ${pricing_calculation.coordination_amount:.2f}")
+                instructions.append(f"   - Mostrar como línea separada: 'Coordinación y logística ({rate_percent:.1f}%): ${pricing_calculation.coordination_amount:.2f}'")
+            else:
+                instructions.append("❌ COORDINACIÓN DESHABILITADA: No agregar coordinación al presupuesto")
+            
+            # Configuración de costo por persona
+            if pricing_calculation.cost_per_person_enabled and pricing_calculation.headcount:
+                instructions.append(f"✅ COSTO POR PERSONA HABILITADO:")
+                instructions.append(f"   - Número de personas: {pricing_calculation.headcount}")
+                instructions.append(f"   - Costo por persona: ${pricing_calculation.cost_per_person:.2f}")
+                instructions.append(f"   - Incluir al final: 'Costo por persona: ${pricing_calculation.cost_per_person:.2f} ({pricing_calculation.headcount} personas)'")
+            else:
+                instructions.append("❌ COSTO POR PERSONA DESHABILITADO: No mostrar cálculo por persona")
+            
+            # Configuración de impuestos
+            if pricing_calculation.taxes_enabled:
+                rate_percent = pricing_calculation.tax_rate * 100
+                instructions.append(f"✅ IMPUESTOS HABILITADOS:")
+                instructions.append(f"   - Tasa de impuesto: {rate_percent:.1f}%")
+                instructions.append(f"   - Monto de impuesto: ${pricing_calculation.tax_amount:.2f}")
+                instructions.append(f"   - Mostrar línea de impuesto antes del total final")
+            else:
+                instructions.append("❌ IMPUESTOS DESHABILITADOS: No agregar impuestos")
+            
+            # Total final
+            instructions.append(f"TOTAL FINAL CALCULADO: ${pricing_calculation.total_cost:.2f}")
+            
+            instructions.append("")
+            instructions.append("INSTRUCCIONES CRÍTICAS:")
+            instructions.append("- Usa exactamente los montos calculados arriba")
+            instructions.append("- No inventes nuevos cálculos")
+            instructions.append("- Respeta las configuraciones habilitadas/deshabilitadas")
+            instructions.append("- Mantén la estructura del template HTML")
+            instructions.append("- El total final debe ser exactamente el TOTAL FINAL CALCULADO")
+            
+            return "\n".join(instructions)
+            
+        except Exception as e:
+            logger.error(f"❌ Error building pricing instructions: {e}")
+            return "CONFIGURACIONES DE PRICING: Usar configuración estándar (coordinación 18%)"
+    
+    def _build_currency_instructions(self, currency: str) -> str:
+        """🆕 Construye instrucciones específicas de moneda para la IA"""
+        try:
+            # Mapeo de monedas a símbolos y formatos
+            currency_config = {
+                "USD": {"symbol": "$", "name": "Dólares Americanos", "format": "$1,000.00", "position": "before"},
+                "EUR": {"symbol": "€", "name": "Euros", "format": "€1.000,00", "position": "before"},
+                "GBP": {"symbol": "£", "name": "Libras Esterlinas", "format": "£1,000.00", "position": "before"},
+                "JPY": {"symbol": "¥", "name": "Yenes", "format": "¥1,000", "position": "before"},
+                "MXN": {"symbol": "$", "name": "Pesos Mexicanos", "format": "$1,000.00 MXN", "position": "before"},
+                "CAD": {"symbol": "C$", "name": "Dólares Canadienses", "format": "C$1,000.00", "position": "before"},
+                "AUD": {"symbol": "A$", "name": "Dólares Australianos", "format": "A$1,000.00", "position": "before"},
+                "BRL": {"symbol": "R$", "name": "Reales Brasileños", "format": "R$1.000,00", "position": "before"},
+                "COP": {"symbol": "$", "name": "Pesos Colombianos", "format": "$1.000,00 COP", "position": "before"},
+                "CHF": {"symbol": "CHF", "name": "Francos Suizos", "format": "CHF 1,000.00", "position": "before"}
+            }
+            
+            config = currency_config.get(currency, {
+                "symbol": "$", 
+                "name": "Dólares (USD)", 
+                "format": "$1,000.00", 
+                "position": "before"
+            })
+            
+            instructions = [
+                f"MONEDA DE LA SOLICITUD: {currency}",
+                f"NOMBRE COMPLETO: {config['name']}",
+                f"SÍMBOLO A USAR: {config['symbol']}",
+                f"FORMATO DE EJEMPLO: {config['format']}",
+                "",
+                "INSTRUCCIONES CRÍTICAS PARA MONEDA:",
+                f"1. USAR EXCLUSIVAMENTE la moneda {currency} para todos los precios",
+                f"2. Mostrar símbolo '{config['symbol']}' antes de cada cantidad monetaria",
+                f"3. Formato de números: usar comas para miles y punto para decimales (ej: {config['format']})",
+                f"4. NO cambiar la moneda a USD si la solicitud es en {currency}",
+                f"5. Mantener consistencia: todos los precios deben usar {config['symbol']}",
+                f"6. En títulos/encabezados mencionar 'Presupuesto en {config['name']}'",
+                "",
+                "EJEMPLOS DE FORMATO CORRECTO:",
+                f"- Subtotal: {config['symbol']}1,250.00",
+                f"- Coordinación y logística: {config['symbol']}225.00", 
+                f"- Total: {config['symbol']}1,475.00",
+                "",
+                "IMPORTANTE:",
+                f"- La moneda {currency} fue detectada automáticamente del documento original",
+                f"- Respetar la moneda original es crucial para la precisión comercial",
+                f"- NO inventar tasas de cambio ni convertir a otras monedas"
+            ]
+            
+            return "\n".join(instructions)
+            
+        except Exception as e:
+            logger.error(f"❌ Error building currency instructions: {e}")
+            return f"MONEDA: Usar {currency} con símbolo correspondiente para todos los precios"
+    
+    def _build_branding_instructions(self, branding_context: Dict) -> str:
+        """
+        🆕 Construye instrucciones de branding desde análisis cacheado
+        """
+        try:
+            logo_analysis = branding_context.get('logo_analysis', {})
+            template_analysis = branding_context.get('template_analysis', {})
+            
+            instructions = [
+                "🎨 CONFIGURACIÓN DE BRANDING PERSONALIZADO (Análisis Cacheado):",
+                "",
+                "LOGO CORPORATIVO:",
+                f"- URL del logo: {branding_context.get('logo_url')}",
+                f"- Color principal: {branding_context.get('primary_color', '#2c5f7c')}",
+                f"- Color secundario: {branding_context.get('secondary_color', '#ffffff')}",
+                f"- Colores dominantes: {', '.join(branding_context.get('dominant_colors', []))}",
+                f"- Posición recomendada: {branding_context.get('logo_position', 'top-left')}",
+                f"- Dimensiones óptimas: {logo_analysis.get('optimal_dimensions', {})}",
+                f"- Tipo de logo: {logo_analysis.get('logo_type', 'combination')}",
+                "",
+                "ESTRUCTURA DEL TEMPLATE:",
+                f"- Layout: {branding_context.get('layout_structure', 'header-client-products-totals')}",
+                f"- Estilo de diseño: {branding_context.get('design_style', 'professional')}",
+            ]
+            
+            # Agregar secciones del template
+            sections = template_analysis.get('sections', [])
+            if sections:
+                instructions.append("- Secciones identificadas:")
+                for section in sections:
+                    section_name = section.get('name', 'unknown')
+                    instructions.append(f"  • {section_name}: {section.get('elements', section.get('fields', section.get('columns', [])))}")
+            
+            # Esquema de colores
+            color_scheme = branding_context.get('color_scheme', {})
+            if color_scheme:
+                instructions.extend([
+                    "",
+                    "ESQUEMA DE COLORES:",
+                    f"- Primario: {color_scheme.get('primary', '#2c5f7c')}",
+                    f"- Secundario: {color_scheme.get('secondary', '#ffffff')}",
+                    f"- Fondos: {color_scheme.get('backgrounds', [])}",
+                    f"- Bordes: {color_scheme.get('borders', '#000000')}",
+                    f"- Texto: {color_scheme.get('text', '#000000')}"
+                ])
+            
+            # Estilo de tabla
+            table_style = branding_context.get('table_style', {})
+            if table_style:
+                instructions.extend([
+                    "",
+                    "ESTILO DE TABLA:",
+                    f"- Bordes: {'Sí' if table_style.get('has_borders') else 'No'}",
+                    f"- Ancho de borde: {table_style.get('border_width', '1px')}",
+                    f"- Color de borde: {table_style.get('border_color', '#000000')}",
+                    f"- Fondo del header: {table_style.get('header_background', '#f0f0f0')}",
+                    f"- Filas alternadas: {'Sí' if table_style.get('alternating_rows') else 'No'}",
+                    f"- Padding de celdas: {table_style.get('cell_padding', 'medium')}"
+                ])
+            
+            # Tipografía
+            typography = branding_context.get('typography', {})
+            if typography:
+                instructions.extend([
+                    "",
+                    "TIPOGRAFÍA:",
+                    f"- Familia de fuente: {typography.get('font_family', 'Arial, sans-serif')}",
+                    f"- Tamaño nombre empresa: {typography.get('company_name_size', '24px')}",
+                    f"- Tamaño título: {typography.get('title_size', '18px')}",
+                    f"- Tamaño cuerpo: {typography.get('body_size', '11px')}",
+                    f"- Peso header tabla: {typography.get('table_header_weight', 'bold')}"
+                ])
+            
+            # Instrucciones críticas
+            instructions.extend([
+                "",
+                "INSTRUCCIONES CRÍTICAS DE BRANDING:",
+                f"1. INCLUIR LOGO: Usar <img src=\"{branding_context.get('logo_url')}\" class=\"company-logo\" style=\"max-width: 200px; height: auto;\">",
+                f"2. POSICIÓN DEL LOGO: Colocar en {branding_context.get('logo_position', 'top-left')} del documento",
+                f"3. COLORES: Usar EXACTAMENTE {branding_context.get('primary_color')} para elementos principales",
+                f"4. ESTRUCTURA: Replicar el layout {branding_context.get('layout_structure')}",
+                "5. TABLA: Aplicar el estilo de tabla especificado arriba",
+                "6. TIPOGRAFÍA: Usar las fuentes y tamaños especificados",
+                "7. CONSISTENCIA: Mantener la identidad visual del template de referencia",
+                "8. CSS COMPATIBLE: Asegurar que todos los estilos sean compatibles con Playwright PDF",
+                "",
+                "IMPORTANTE:",
+                "- El análisis de branding fue generado por IA y está optimizado para este cliente",
+                "- Respetar TODOS los colores y estilos especificados",
+                "- El logo DEBE aparecer visible en el documento final",
+                "- Mantener la estructura profesional mientras aplicas el branding"
+            ])
+            
+            return "\n".join(instructions)
+            
+        except Exception as e:
+            logger.error(f"❌ Error building branding instructions: {e}")
+            return ""
+    
+    def _build_unified_proposal_prompt(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest, 
+                                     unified_config: Optional[Dict] = None, effective_config: Optional[Dict] = None, user_id: str = None) -> str:
+        """🆕 V3.1: Construye prompt usando configuración unificada en lugar de servicios fragmentados"""
+        
+        client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
+        productos = rfx_data.get("productos", [])
+        rfx_id = proposal_request.rfx_id
+        
+        # Extraer configuración efectiva
+        final_currency = "USD"
+        branding_config = {}
+        pricing_config = {}
+        
+        if effective_config:
+            config_data = effective_config.get('config', {})
+            final_currency = config_data.get('document', {}).get('currency', 'USD')
+            branding_config = config_data.get('branding', {})
+            pricing_config = config_data.get('pricing', {})
+        elif unified_config:
+            final_currency = unified_config.get('document', {}).get('currency', 'USD')
+            branding_config = unified_config.get('branding', {})
+            pricing_config = unified_config.get('pricing', {})
+        
+        logger.info(f"💰 Using unified currency: {final_currency}")
+        
+        # Preparar datos de productos
+        productos_info = []
+        subtotal = 0.0
+        for producto in productos:
+            precio_unitario = producto.get("estimated_unit_price", 0.0)
+            cantidad = producto.get("quantity", producto.get("cantidad", 1))
+            total_producto = precio_unitario * cantidad
+            subtotal += total_producto
+            
+            productos_info.append({
+                "nombre": producto.get("name", producto.get("nombre", "product")),
+                "cantidad": cantidad,
+                "unidad": producto.get("unit", producto.get("unidad", "units")),
+                "precio_unitario": precio_unitario,
+                "total": total_producto
+            })
+        
+        # 🚀 Calcular pricing con servicio unificado
+        pricing_calculation = unified_budget_service.calculate_with_unified_config(rfx_id, subtotal)
+        
+        # 🔐 V3.2: Validar user_id (debe estar disponible en este punto)
+        if not user_id:
+            # Último intento: obtener de rfx_data
+            user_id = rfx_data.get("user_id")
+            if not user_id:
+                logger.error("❌ user_id not available for branding configuration")
+                # Continuar sin branding personalizado
+        
+        if user_id:
+            logger.info(f"✅ Building prompt for user: {user_id}")
+        else:
+            logger.warning("⚠️ Building prompt without user_id - branding will be generic")
+        
+        # Obtener branding completo si no está disponible en la configuración unificada
+        if not branding_config and user_id:
+            logger.info(f"🔍 Fetching branding config from service for user: {user_id}")
+            try:
+                from backend.services.optimized_branding_service import OptimizedBrandingService
+                branding_service = OptimizedBrandingService()
+                branding_data = branding_service.get_company_branding_analysis(user_id)
+                if branding_data and branding_data.get('status') == 'success':
+                    branding_config = branding_data.get('analysis', {})
+                    logger.info(f"✅ Retrieved branding config from service")
+                else:
+                    logger.warning(f"⚠️ No branding config available for user: {user_id}")
+            except Exception as e:
+                logger.error(f"❌ Could not get branding from service: {e}")
+        elif not branding_config:
+            logger.warning("⚠️ No user_id available - skipping branding configuration")
+        
+        # Construir instrucciones unificadas
+        logger.info(f"🎯 FINAL: Passing user_id to _build_unified_instructions: {user_id}")
+        unified_instructions = self._build_unified_instructions(
+            pricing_calculation, 
+            final_currency, 
+            branding_config, 
+            effective_config,
+            user_id
+        )
+        
+        # Construir prompt base
+        prompt = f"""<?xml version="1.0" encoding="UTF-8"?>
+<budget_generation_prompt>
+<version_info>
+    <name>Generador de Presupuestos HTML con Template Personalizado</name>
+    <version>5.0 Final</version>
+    <date>2025-10-17</date>
+    <optimization>Template inheritance, configuración unificada, datos estructurados y mejores prácticas PDF</optimization>
+</version_info>
+
+<system>
+    Eres un especialista en generación de presupuestos comerciales profesionales. Tu función principal es transformar datos estructurados de solicitudes (RFX) en documentos HTML profesionales utilizando EXACTAMENTE el template HTML proporcionado como base de diseño, heredando TODOS sus estilos CSS sin modificaciones, y aplicando mejores prácticas para conversión PDF con Playwright.
+</system>
+
+<template_analysis>
+    <template_reference>
+        <!-- TEMPLATE HTML DE REFERENCIA OBLIGATORIO -->
+        <template_html>{self.template_html}</template_html>
+    </template_reference>
+    
+    <inheritance_instructions>
+        <rule priority="CRÍTICO">Usar EXACTAMENTE todos los estilos CSS definidos en el template sin modificaciones</rule>
+        <rule priority="CRÍTICO">Mantener EXACTAMENTE toda la estructura HTML del template</rule>
+        <rule priority="CRÍTICO">Copiar EXACTAMENTE todas las clases CSS y sus propiedades</rule>
+        <rule priority="CRÍTICO">El template es tu BASE VISUAL ABSOLUTA - heredar TODO sin cambios</rule>
+        <rule priority="CRÍTICO">NUNCA inventar o modificar estilos - solo usar los existentes</rule>
+    </inheritance_instructions>
+</template_analysis>
+
+<unified_config>
+    <title>CONFIGURACIÓN UNIFICADA V3.1</title>
+    <config_data>{unified_instructions}</config_data>
+    
+    <mandatory_application>
+        <item>Usar EXACTAMENTE los montos calculados por el sistema unificado</item>
+        <item>Aplicar configuraciones de moneda y branding según especificaciones</item>
+        <item>Respetar configuraciones habilitadas/deshabilitadas</item>
+        <item>Usar el subtotal y totales EXACTOS de la configuración unificada</item>
+    </mandatory_application>
+</unified_config>
+
+<rfx_data>
+    <client_info>
+        <client_name>{client_info.get('name', 'Solicitante')}</client_name>
+        <client_email>{client_info.get('email', '')}</client_email>
+        <client_company>{client_info.get('company', '')}</client_company>
+        <delivery_location>{rfx_data.get('location', 'Por definir')}</delivery_location>
+        <delivery_date>{rfx_data.get('delivery_date', 'Por definir')}</delivery_date>
+        <people_count>{rfx_data.get('people_count', '')}</people_count>
+    </client_info>
+    
+    <rfx_metadata>
+        <rfx_id>{proposal_request.rfx_id}</rfx_id>
+        <final_currency>{final_currency}</final_currency>
+    </rfx_metadata>
+    
+    <productos_estructurados>
+        {json.dumps(productos_info, ensure_ascii=False, indent=2)}
+    </productos_estructurados>
+    
+    <pricing_calculation>
+        <subtotal_calculated>{subtotal}</subtotal_calculated>
+        <unified_pricing_data>{pricing_calculation if pricing_calculation else "No disponible"}</unified_pricing_data>
+    </pricing_calculation>
+</rfx_data>
+
+<html_structure_requirements>
+    <mandatory_sections>
+        <section number="1" title="HEADER CON LOGO OPTIMIZADO">
+            <requirement priority="CRÍTICO">Logo con width/height explícitos + loading="eager" decoding="sync" crossorigin="anonymous"</requirement>
+            <correct_example>
+&lt;img src="/api/branding/files/USER_ID/logo" alt="Logo" width="151" height="57" 
+     style="width: 40mm; height: 15mm; display: block; object-fit: contain;" 
+     loading="eager" decoding="sync" crossorigin="anonymous"&gt;
+            </correct_example>
+        </section>
+        
+        <section number="2" title="INFORMACIÓN DEL CLIENTE">
+            <requirement>Datos estructurados: empresa, contacto, email, ubicación, fecha</requirement>
+        </section>
+        
+        <section number="3" title="TABLA DE PRODUCTOS - OBLIGATORIO">
+            <requirement priority="CRÍTICO">OBLIGATORIO: Tabla HTML con 5 columnas: Ítem, Descripción, Cantidad, Precio Unit., Total</requirement>
+            <requirement priority="CRÍTICO">PROHIBIDO: NO usar listas &lt;ul&gt;&lt;li&gt;</requirement>
+            <requirement priority="CRÍTICO">Numeración secuencial (1, 2, 3...)</requirement>
+        </section>
+        
+        <section number="4" title="DESGLOSE DE PRECIOS">
+            <requirement priority="CRÍTICO">Sección separada: Subtotal, Coordinación %, TOTAL destacado</requirement>
+            <requirement priority="CRÍTICO">Usar datos exactos de pricing_calculation</requirement>
+        </section>
+        
+        <section number="5" title="INFORMACIÓN DEL PROVEEDOR">
+            <requirement priority="CRÍTICO">Datos completos: dirección, teléfono, email</requirement>
+        </section>
+    </mandatory_sections>
+</html_structure_requirements>
+
+<pdf_optimization_rules>
+    <css_requirements priority="CRÍTICO">
+        <rule>@page { size: letter; margin: 0; }</rule>
+        <rule>* { margin: 0; padding: 0; box-sizing: border-box; -webkit-print-color-adjust: exact; }</rule>
+        <rule>body { width: 216mm; height: 279mm; font-family: Arial, sans-serif; font-size: 11pt; }</rule>
+        <rule>.container { padding: 10mm; width: 100%; max-width: 216mm; }</rule>
+    </css_requirements>
+    
+    <units_rules>
+        <allowed>mm, pt, in, %, em</allowed>
+        <prohibited>px (excepto bordes 1px), vh, vw, rem</prohibited>
+    </units_rules>
+</pdf_optimization_rules>
+
+<instructions>
+    <step number="1" title="HERENCIA DEL TEMPLATE">
+        <action priority="CRÍTICO">COPIAR exactamente todo el CSS del template</action>
+        <action priority="CRÍTICO">AGREGAR reglas PDF obligatorias</action>
+    </step>
+    
+    <step number="2" title="ESTRUCTURA OBLIGATORIA">
+        <action priority="CRÍTICO">Logo optimizado con atributos completos</action>
+        <action priority="CRÍTICO">TABLA de productos (NO lista) - 5 columnas</action>
+        <action priority="CRÍTICO">Desglose de precios separado</action>
+    </step>
+    
+    <step number="3" title="DATOS EXACTOS">
+        <action priority="CRÍTICO">NO recalcular - usar productos_estructurados</action>
+        <action priority="CRÍTICO">Usar pricing_calculation exacto</action>
+        <action priority="CRÍTICO">final_currency consistente</action>
+    </step>
+</instructions>
+
+<validation_checklist>
+    <critical_requirements priority="RECHAZAR SI FALTA">
+        <item>✓ CSS template copiado + reglas PDF</item>
+        <item>✓ Logo con width/height/loading/decoding/crossorigin</item>
+        <item>✓ TABLA productos (NO lista) - 5 columnas</item>
+        <item>✓ Desglose precios separado</item>
+        <item>✓ Info proveedor completa</item>
+        <item>✓ Unidades mm/pt</item>
+        <item>✓ Datos exactos sin recalcular</item>
+    </critical_requirements>
+</validation_checklist>
+
+<criteria>
+    <approved_document>
+        <requirement priority="CRÍTICO">Tabla productos (5 columnas) - NUNCA lista</requirement>
+        <requirement priority="CRÍTICO">Logo con atributos completos</requirement>
+        <requirement priority="CRÍTICO">CSS template + PDF optimización</requirement>
+        <requirement priority="CRÍTICO">Datos exactos sin recalcular</requirement>
+    </approved_document>
+    
+    <rejected_document>
+        <reason priority="RECHAZO AUTOMÁTICO">Lista &lt;ul&gt;&lt;li&gt; para productos</reason>
+        <reason priority="RECHAZO AUTOMÁTICO">Logo sin atributos completos</reason>
+        <reason priority="RECHAZO AUTOMÁTICO">CSS template modificado</reason>
+        <reason priority="RECHAZO AUTOMÁTICO">Precios recalculados</reason>
+    </rejected_document>
+</criteria>
+
+<output_format>
+    <instruction priority="CRÍTICO">RESPONDE ÚNICAMENTE CON HTML COMPLETO</instruction>
+    <restriction priority="CRÍTICO">SIN ```html``` AL INICIO O FINAL</restriction>
+    <restriction priority="CRÍTICO">SIN explicaciones adicionales</restriction>
+    <restriction priority="CRÍTICO">INCLUIR TODAS las 5 secciones obligatorias</restriction>
+    <format>HTML directo listo para Playwright PDF</format>
+</output_format>
+
+</budget_generation_prompt>
+        """
+        
+        return prompt
+    
+    def _build_unified_instructions(self, pricing_calculation, currency: str, 
+                                  branding_config: Dict, effective_config: Optional[Dict], user_id: str = None) -> str:
+        """Construye instrucciones unificadas desde configuración centralizada"""
+        try:
+            logger.info(f"🎯 _build_unified_instructions received user_id: {user_id}")
+            logger.info(f"🎯 branding_config available: {bool(branding_config)}")
+            instructions = [
+                "🎯 CONFIGURACIÓN UNIFICADA V3.1 - SISTEMA INTELIGENTE:",
+                "",
+                "MONEDA Y FORMATO:",
+                f"- Moneda: {currency}",
+                f"- Símbolo: {self._get_currency_symbol(currency)}",
+                f"- Todos los precios deben usar {currency}",
+                ""
+            ]
+            
+            # Configuración de pricing unificada
+            if pricing_calculation:
+                instructions.extend([
+                    "PRICING UNIFICADO (Calculado automáticamente):",
+                    f"- Subtotal: {self._get_currency_symbol(currency)}{pricing_calculation.subtotal:.2f}",
+                ])
+                
+                if pricing_calculation.coordination_enabled:
+                    rate_percent = pricing_calculation.coordination_rate * 100
+                    instructions.extend([
+                        f"✅ Coordinación: {rate_percent:.1f}% = {self._get_currency_symbol(currency)}{pricing_calculation.coordination_amount:.2f}",
+                    ])
+                else:
+                    instructions.append("❌ Coordinación: Deshabilitada")
+                
+                if pricing_calculation.cost_per_person_enabled and pricing_calculation.headcount:
+                    instructions.extend([
+                        f"✅ Costo por persona: {self._get_currency_symbol(currency)}{pricing_calculation.cost_per_person:.2f} ({pricing_calculation.headcount} personas)",
+                    ])
+                else:
+                    instructions.append("❌ Costo por persona: Deshabilitado")
+                
+                if pricing_calculation.taxes_enabled:
+                    rate_percent = pricing_calculation.tax_rate * 100
+                    instructions.extend([
+                        f"✅ Impuestos: {rate_percent:.1f}% = {self._get_currency_symbol(currency)}{pricing_calculation.tax_amount:.2f}",
+                    ])
+                else:
+                    instructions.append("❌ Impuestos: Deshabilitados")
+                
+                instructions.extend([
+                    f"TOTAL FINAL: {self._get_currency_symbol(currency)}{pricing_calculation.total_cost:.2f}",
+                    ""
+                ])
+            
+            # Configuración de branding unificada CON LOGO URL (evita truncamiento base64)
+            if branding_config and user_id:
+                logo_url = branding_config.get('logo_url', 'N/A')
+                logger.info(f"🔍 Using logo URL for user: {user_id}, logo_url: {logo_url}")
+                
+                # Verificar si el logo existe
+                logo_available = self._verify_logo_exists(user_id)
+                
+                if logo_available:
+                    # Usar endpoint URL en lugar de base64 para evitar truncamiento
+                    logo_endpoint = f"/api/branding/files/{user_id}/logo"
+                    logger.info(f"✅ Logo available, using endpoint: {logo_endpoint}")
+                    instructions.extend([
+                        "🎨 BRANDING PERSONALIZADO (Aplicar estrictamente):",
+                        f"- LOGO URL OPTIMIZADA (usar exactamente esto):",
+                        f"- CÓDIGO LOGO: <img src=\"{logo_endpoint}\" alt=\"Logo\" style=\"height: 100px; margin: 20px 0; max-width: 300px;\">",
+                        f"- Color primario: {branding_config.get('primary_color', '#2c5f7c')}",
+                        f"- REGLA FUNDAMENTAL: Si usas logo imagen, NO agregar texto 'Sabra Corporation'",
+                        f"- ESPACIADO: Márgenes de 20-30px entre secciones principales",
+                        f"- CRÍTICO: El logo se cargará desde el endpoint URL proporcionado",
+                        ""
+                    ])
+                else:
+                    logger.warning(f"❌ Logo file not found for user: {user_id}")
+                    instructions.extend([
+                        "🎨 BRANDING PERSONALIZADO (sin logo disponible):",
+                        f"- Logo no disponible - usar solo texto empresa",
+                        f"- Color primario: {branding_config.get('primary_color', '#2c5f7c')}",
+                        f"- ESPACIADO: Márgenes de 20-30px entre secciones principales",
+                        ""
+                    ])
+                
+                # Usar análisis detallado del template si está disponible
+                template_analysis = branding_config.get('template_analysis')
+                if template_analysis:
+                    instructions.extend(self._build_template_analysis_instructions(template_analysis))
+                else:
+                    instructions.extend([
+                        "⚠️ Análisis de template no disponible - usar colores básicos",
+                        ""
+                    ])
+            
+            # Información de fuente
+            if effective_config:
+                source_info = effective_config.get('source_info', {})
+                instructions.extend([
+                    "ORIGEN DE CONFIGURACIÓN:",
+                    f"- RFX específico: {'Sí' if source_info.get('has_rfx_specific_pricing') else 'No'}",
+                    f"- Branding específico: {'Sí' if source_info.get('has_rfx_specific_branding') else 'No'}",
+                    f"- Defaults de usuario: {'Sí' if source_info.get('has_user_defaults') else 'No'}",
+                    f"- Auto-detectado: {'Sí' if source_info.get('coordination_auto_detected') else 'No'}",
+                    ""
+                ])
+            
+            instructions.extend([
+                "INSTRUCCIONES CRÍTICAS:",
+                "- Usar EXACTAMENTE los montos calculados arriba",
+                "- Aplicar configuraciones de branding si están disponibles",
+                "- Mantener consistencia total en moneda y formato",
+                "- El sistema ahora es inteligente y elimina inconsistencias",
+                "- NO inventar cálculos, usar solo los valores proporcionados"
+            ])
+            
+            return "\n".join(instructions)
+            
+        except Exception as e:
+            logger.error(f"❌ Error building unified instructions: {e}")
+            return "CONFIGURACIÓN UNIFICADA: Error cargando configuración, usar defaults estándar"
+    
+    def _build_template_analysis_instructions(self, template_analysis: Dict) -> list:
+        """
+        🆕 Construye instrucciones detalladas basadas en el análisis del template
+        Separa información INTERNA (para la empresa) vs CLIENTE FINAL
+        """
+        instructions = []
+        
+        try:
+            # Información PARA EL CLIENTE FINAL (lo que aparece en la propuesta)
+            instructions.extend([
+                "📋 DISEÑO DEL DOCUMENTO (Para cliente):",
+            ])
+            
+            # Estructura del layout
+            layout_structure = template_analysis.get('layout_structure', 'header-client-products-totals-footer')
+            instructions.append(f"- Estructura: {layout_structure}")
+            
+            # Colores y esquema visual
+            color_scheme = template_analysis.get('color_scheme', {})
+            if color_scheme:
+                primary = color_scheme.get('primary', '#2c5f7c')
+                secondary = color_scheme.get('secondary', '#ffffff')
+                instructions.extend([
+                    f"- Color principal: {primary}",
+                    f"- Color secundario: {secondary}",
+                ])
+                
+                if color_scheme.get('backgrounds'):
+                    bg_colors = color_scheme.get('backgrounds', [])
+                    instructions.append(f"- Fondos: {', '.join(bg_colors)}")
+                
+                if color_scheme.get('borders'):
+                    instructions.append(f"- Bordes: {color_scheme.get('borders')}")
+            
+            # Tipografía
+            typography = template_analysis.get('typography', {})
+            if typography:
+                instructions.extend([
+                    "",
+                    "📝 TIPOGRAFÍA:",
+                ])
+                if typography.get('font_family'):
+                    instructions.append(f"- Familia: {typography.get('font_family')}")
+                if typography.get('title_size'):
+                    instructions.append(f"- Título: {typography.get('title_size')}")
+                if typography.get('body_size'):
+                    instructions.append(f"- Cuerpo: {typography.get('body_size')}")
+                if typography.get('company_name_size'):
+                    instructions.append(f"- Nombre empresa: {typography.get('company_name_size')}")
+            
+            # Estilo de tabla
+            table_style = template_analysis.get('table_style', {})
+            if table_style:
+                instructions.extend([
+                    "",
+                    "📊 TABLA DE PRODUCTOS:",
+                ])
+                if table_style.get('has_borders'):
+                    border_color = table_style.get('border_color', '#000000')
+                    border_width = table_style.get('border_width', '1px')
+                    instructions.append(f"- Bordes: {border_width} {border_color}")
+                
+                if table_style.get('cell_padding'):
+                    instructions.append(f"- Padding: {table_style.get('cell_padding')}")
+                
+                if table_style.get('header_background'):
+                    instructions.append(f"- Fondo header: {table_style.get('header_background')}")
+                
+                if table_style.get('alternating_rows'):
+                    instructions.append("- Filas alternadas: Sí")
+            
+            # Secciones específicas
+            sections = template_analysis.get('sections', [])
+            if sections:
+                instructions.extend([
+                    "",
+                    "🏗️ SECCIONES DEL DOCUMENTO:",
+                ])
+                for section in sections:
+                    section_name = section.get('name', 'Sección')
+                    if section.get('has_logo_space') and section_name == 'header':
+                        logo_pos = section.get('logo_position', 'top-left')
+                        instructions.append(f"- Header: incluir IMAGEN del logo en {logo_pos} (usar <img> tag, NO texto)")
+                    elif section_name == 'products_table':
+                        cols = section.get('columns_count', 4)
+                        instructions.append(f"- Tabla productos: {cols} columnas")
+                    elif section_name == 'totals':
+                        layout = section.get('layout', 'aligned_right')
+                        instructions.append(f"- Totales: {layout}")
+            
+            # Espaciado
+            spacing = template_analysis.get('spacing', {})
+            if spacing:
+                instructions.extend([
+                    "",
+                    "📐 ESPACIADO:",
+                ])
+                if spacing.get('section_margins'):
+                    instructions.append(f"- Márgenes: {spacing.get('section_margins')}")
+                if spacing.get('line_height'):
+                    instructions.append(f"- Altura línea: {spacing.get('line_height')}")
+            
+            instructions.extend([
+                "",
+                "🎯 REGLAS CRÍTICAS:",
+                "- USAR EXACTAMENTE estos colores y tipografía",
+                "- NO cambiar la estructura del layout",
+                "- Mantener consistencia visual total",
+                "- Este diseño es ESPECÍFICO del cliente",
+                ""
+            ])
+            
+            # Información INTERNA (comentarios para logs, no para cliente)
+            design_style = template_analysis.get('design_style', 'professional')
+            instructions.extend([
+                f"<!-- NOTA INTERNA: Estilo detectado como '{design_style}' -->",
+                f"<!-- Análisis realizado con: {template_analysis.get('analysis_model', 'AI')} -->",
+                ""
+            ])
+            
+        except Exception as e:
+            logger.error(f"❌ Error building template analysis instructions: {e}")
+            instructions = [
+                "⚠️ Error procesando análisis de template",
+                "- Usar colores básicos como fallback",
+                ""
+            ]
+        
+        return instructions
+    
+    def _verify_logo_exists(self, user_id: str) -> bool:
+        """
+        Verifica si existe un archivo de logo para el usuario
+        Búsqueda rápida sin leer el archivo completo
+        """
+        try:
+            from pathlib import Path
+            
+            # Si no hay user_id, no puede continuar
+            if not user_id:
+                logger.warning(f"❌ Cannot verify logo: user_id is None")
+                return False
+            
+            # Determinar la ruta del directorio de branding
+            project_root = Path(__file__).parent.parent.parent
+            branding_dir = project_root / "backend" / "static" / "branding" / user_id
+            
+            if not branding_dir.exists():
+                logger.debug(f"Branding directory not found: {branding_dir}")
+                return False
+            
+            # Buscar archivos de logo con múltiples nombres y extensiones
+            logo_extensions = ['.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp']
+            logo_names = ['logo', 'logo_converted', 'logo_optimized', 'company_logo', 'brand_logo']
+            
+            # Búsqueda rápida
+            for name in logo_names:
+                for ext in logo_extensions:
+                    potential_file = branding_dir / f"{name}{ext}"
+                    if potential_file.exists() and potential_file.stat().st_size > 0:
+                        logger.debug(f"✅ Logo found: {potential_file}")
+                        return True
+            
+            logger.debug(f"❌ No valid logo found for user: {user_id}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error verifying logo existence for user {user_id}: {e}")
+            return False
+    
+    def _get_logo_as_base64(self, logo_url: str, user_id: str) -> Optional[str]:
+        """
+        Convierte el logo a base64 para embedar directamente en HTML
+        Búsqueda robusta que no depende del logo_url
+        """
+        try:
+            import base64
+            from pathlib import Path
+            import os
+            
+            # Si no hay user_id, no puede continuar
+            if not user_id:
+                logger.warning(f"❌ Cannot convert logo: user_id is None")
+                return None
+            
+            # Determinar la ruta del directorio de branding
+            project_root = Path(__file__).parent.parent.parent
+            branding_dir = project_root / "backend" / "static" / "branding" / user_id
+            
+            logger.info(f"🔍 Looking for logo in: {branding_dir}")
+            
+            if not branding_dir.exists():
+                logger.warning(f"❌ Branding directory not found: {branding_dir}")
+                return None
+            
+            # Buscar archivos de logo con múltiples nombres y extensiones
+            logo_extensions = ['.png', '.jpg', '.jpeg', '.svg', '.gif', '.webp']
+            logo_names = ['logo', 'logo_converted', 'logo_optimized', 'company_logo', 'brand_logo']
+            logo_file = None
+            
+            # Búsqueda exhaustiva
+            for name in logo_names:
+                for ext in logo_extensions:
+                    potential_file = branding_dir / f"{name}{ext}"
+                    logger.debug(f"  Checking: {potential_file}")
+                    if potential_file.exists():
+                        logo_file = potential_file
+                        logger.info(f"✅ Logo file found: {logo_file}")
+                        break
+                if logo_file:
+                    break
+            
+            # Si no se encuentra, listar todos los archivos para debug
+            if not logo_file:
+                try:
+                    all_files = list(branding_dir.iterdir())
+                    logger.warning(f"❌ No logo found. Files in directory: {[f.name for f in all_files]}")
+                except Exception as e:
+                    logger.error(f"❌ Cannot list directory {branding_dir}: {e}")
+                return None
+            
+            # Leer el archivo y convertir a base64
+            with open(logo_file, 'rb') as f:
+                logo_data = f.read()
+            
+            if len(logo_data) == 0:
+                logger.warning(f"❌ Logo file is empty: {logo_file}")
+                return None
+            
+            # Determinar MIME type
+            extension = logo_file.suffix.lower()
+            mime_types = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg', 
+                '.jpeg': 'image/jpeg',
+                '.svg': 'image/svg+xml',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp'
+            }
+            
+            mime_type = mime_types.get(extension, 'image/png')
+            
+            # Crear data URL
+            base64_data = base64.b64encode(logo_data).decode('utf-8')
+            data_url = f"data:{mime_type};base64,{base64_data}"
+            
+            logger.info(f"✅ Logo converted to base64 successfully")
+            logger.info(f"   File: {logo_file.name}")
+            logger.info(f"   Size: {len(logo_data)} bytes")
+            logger.info(f"   Base64 length: {len(base64_data)} chars")
+            logger.info(f"   MIME type: {mime_type}")
+            
+            return data_url
+            
+        except Exception as e:
+            logger.error(f"❌ Error converting logo to base64 for user {user_id}: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            return None
+    
+    def _get_currency_symbol(self, currency: str) -> str:
+        """Obtiene símbolo de moneda"""
+        symbols = {
+            "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥",
+            "MXN": "$", "CAD": "C$", "AUD": "A$", "BRL": "R$",
+            "COP": "$", "CHF": "CHF"
+        }
+        return symbols.get(currency, "$")
+
+
+    def _build_compact_ai_prompt(self, rfx_data: Dict[str, Any], proposal_request: ProposalRequest, branding_context: Optional[Dict] = None) -> str:
+        """Versión compacta del prompt para reintento en caso de timeout.
+        - No incrusta el HTML completo del template, solo instrucciones clave y marcadores.
+        - Reduce tokens para acelerar la respuesta.
+        """
+        client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
+        productos = rfx_data.get("productos", [])
+        
+        # 🆕 Extraer moneda para prompt compacto
+        rfx_currency = rfx_data.get("currency", "USD")
+
+        productos_info = []
+        for producto in productos:
+            productos_info.append({
+                "nombre": producto.get("name", producto.get("nombre", "product")),
+                "cantidad": producto.get("quantity", producto.get("cantidad", 1)),
+                "unidad": producto.get("unit", producto.get("unidad", "units")),
+                "precio_unitario": producto.get("estimated_unit_price", 0.0),
+                "total": producto.get("total_estimated_cost", 0.0)
+            })
+
+        compact_template = """
+<!DOCTYPE html>
+<html lang=\"es\">
+<head>
+  <meta charset=\"UTF-8\" />
+  <title>Propuesta Comercial</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .company-name { color: #2c5f7c; font-size: 28px; font-weight: bold; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #000; padding: 6px; text-align: left; }
+    th { background: #f0f0f0; }
+    .final-total { font-weight: bold; background: #e0e0e0; }
+  </style>
+  <!-- Marcadores: [FECHA], [NUMERO], [CLIENTE], [EMPRESA], [PROCESO], [PRODUCTOS_ROWS], [SUBTOTAL], [TOTAL] -->
+  <!-- Usa estética similar a test_design.html pero mantén salida breve -->
+  <!-- No añadas texto fuera del HTML -->
+</head>
+<body>
+  <div class=\"company-name\">sabra corporation</div>
+  <h2>Propuesta Comercial</h2>
+  <div>Cliente: [CLIENTE] • Empresa: [EMPRESA]</div>
+  <div>Lugar: {rfx_data.get('location', 'Por definir')} • Fecha: {rfx_data.get('delivery_date', 'Por definir')}</div>
+  <table>
+    <thead>
+      <tr><th>Descripción</th><th>Cant</th><th>Precio</th><th>Total</th></tr>
+    </thead>
+    <tbody>
+      [PRODUCTOS_ROWS]
+      <tr class=\"final-total\"><td colspan=\"3\">Total</td><td>[TOTAL]</td></tr>
+    </tbody>
+  </table>
+</body>
+</html>
+"""
+
+        prompt = f"""
+Eres un generador de propuestas para sabra corporation.
+
+USA ESTA PLANTILLA RESUMIDA COMO BASE (reemplaza marcadores exactamente):
+{compact_template}
+
+DATOS DEL RFX:
+Solicitante: {client_info.get('name', 'Solicitante')}
+Email: {client_info.get('email', '')}
+Lugar: {rfx_data.get('location', 'Por definir')}
+Fecha entrega: {rfx_data.get('delivery_date', 'Por definir')}
+
+PRODUCTOS CON PRECIOS REALES:
+{json.dumps(productos_info, ensure_ascii=False, indent=2)}
+
+INSTRUCCIONES CLAVE:
+- Calcula total por fila = cantidad × precio_unitario cuando total==0.
+- Suma para el Total final.
+- Rellena [CLIENTE] (mayúsculas), [EMPRESA] (versión oficial si es abreviada), [PRODUCTOS_ROWS] y [TOTAL].
+- MONEDA: Usar {rfx_currency} para todos los precios con símbolo correspondiente
+- Mantén HTML breve, válido y limpio. Responde SOLO el HTML completo, sin comentarios.
+- Fecha actual para [FECHA]: {datetime.now().strftime('%d/%m/%y')}
+"""
+
+        return prompt
+    
+    async def _call_openai(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+        """Llamada a OpenAI con opciones de timeout y control de tokens.
+        Usa el timeout configurado globalmente y reduce latencia.
+        """
+        openai_client = self._get_openai_client()
+
+        # Aplicar opciones (timeout configurable)
+        client_with_timeout = getattr(openai_client, "with_options", None)
+        if callable(client_with_timeout):
+            client = openai_client.with_options(timeout=self.openai_config.timeout)
+        else:
+            client = openai_client
+
+        effective_max_tokens = max_tokens if max_tokens is not None else min(2500, self.openai_config.max_tokens)
+
+        logger.debug(f"🤖 Calling OpenAI with model: {self.openai_config.model}, max_tokens={effective_max_tokens}, timeout={self.openai_config.timeout}s")
+
+        try:
+            response = client.chat.completions.create(
+                model=self.openai_config.model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=effective_max_tokens,
+                temperature=0.2
+            )
+        except Exception as e:
+            logger.error(f"❌ OpenAI call failed: {e}")
+            raise
+
+        generated_html = (response.choices[0].message.content or "").strip()
+
+        logger.debug(f"🤖 OpenAI response length: {len(generated_html)} characters")
+        logger.debug(f"🤖 OpenAI response preview: {generated_html[:300]}...")
+
+        return generated_html
+    
+    def _validate_html(self, html: str) -> bool:
+        """Validación flexible del HTML generado"""
+        
+        # Validaciones básicas de estructura HTML
+        basic_html_structure = [
+            '<!DOCTYPE html>',
+            '<html',
+            '</html>',
+            '<head',
+            '<body'
+        ]
+        
+        # Validaciones de contenido empresarial (más flexibles)
+        business_content = [
+            'sabra',  # Nombre empresa (case insensitive)
+            '<table',  # Debe tener tabla
+            '</table>'
+        ]
+        
+        # Validaciones de precios (más flexibles - acepta $0.00 o precios reales)
+        price_indicators = [
+            '$',  # Símbolo de dólar
+            'total',  # Palabra total
+            'precio'  # Palabra precio
+        ]
+        
+        # Validaciones opcionales (al menos una debe estar presente)
+        content_indicators = [
+            'presupuesto', 'propuesta', 'cotización',  # Títulos posibles
+            'total', 'subtotal', 'costo'  # Términos de costo
+        ]
+        
+        html_lower = html.lower()
+        
+        # Verificar estructura básica HTML
+        html_valid = all(element.lower() in html_lower for element in basic_html_structure)
+        
+        # Verificar contenido empresarial
+        business_valid = all(element.lower() in html_lower for element in business_content)
+        
+        # Verificar que tenga al menos un indicador de precios
+        price_valid = any(indicator.lower() in html_lower for indicator in price_indicators)
+        
+        # Verificar que tenga al menos un indicador de contenido
+        content_valid = any(indicator in html_lower for indicator in content_indicators)
+        
+        # Verificar longitud mínima
+        length_valid = len(html) > 300  # Reducido de 500 a 300 para ser más flexible
+        
+        is_valid = html_valid and business_valid and price_valid and content_valid and length_valid
+        
+        if not is_valid:
+            logger.warning(f"❌ HTML validation failed:")
+            logger.warning(f"  - HTML structure: {html_valid}")
+            logger.warning(f"  - Business content: {business_valid}")
+            logger.warning(f"  - Price indicators: {price_valid}")
+            logger.warning(f"  - Content indicators: {content_valid}")
+            logger.warning(f"  - Length valid (>{300}): {length_valid} (actual: {len(html)})")
+            logger.debug(f"  - HTML preview: {html[:200]}...")
+        else:
+            logger.info(f"✅ HTML validation passed successfully!")
+            logger.info(f"  - HTML structure: {html_valid}")
+            logger.info(f"  - Business content: {business_valid}")
+            logger.info(f"  - Price indicators: {price_valid}")
+            logger.info(f"  - Content indicators: {content_valid}")
+            logger.info(f"  - Length valid: {length_valid} ({len(html)} chars)")
+        
+        return is_valid
+    
+    def _create_proposal_object(self, rfx_data: Dict[str, Any], html_content: str, proposal_request: ProposalRequest) -> GeneratedProposal:
+        """Crea objeto GeneratedProposal V2.0 a partir del HTML"""
+        
+        client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
+        proposal_id = uuid.uuid4()  # UUID object, not string
+        rfx_uuid = uuid.UUID(proposal_request.rfx_id) if isinstance(proposal_request.rfx_id, str) else proposal_request.rfx_id
+        
+        # Obtener total del cálculo de pricing en lugar de extraerlo del HTML
+        productos = rfx_data.get("productos", [])
+        subtotal = sum(p.get("estimated_unit_price", 0) * p.get("quantity", 0) for p in productos)
+        pricing_calculation = self.pricing_service.calculate_pricing(proposal_request.rfx_id, subtotal)
+        total_cost = pricing_calculation.total_cost
+        
+        return GeneratedProposal(
+            id=proposal_id,
+            rfx_id=rfx_uuid,
+            content_markdown="",  # Optional in V2.0
+            content_html=html_content,
+            itemized_costs=[],  # Simplified: AI handles everything
+            total_cost=total_cost,
+            notes=proposal_request.notes,
+            status=ProposalStatus.GENERATED,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            metadata={
+                "client_name": client_info.get("name", "Solicitante"),
+                "client_email": client_info.get("email", ""),
+                "products_count": len(rfx_data.get("productos", [])),
+                "generation_method": "ai_template_simplified",
+                "ai_model": self.openai_config.model,
+                "document_type": "commercial_proposal",
+                "generation_version": "2.0_with_pricing_config",
+                # Pricing configuration metadata
+                "pricing": {
+                    "subtotal": pricing_calculation.subtotal,
+                    "coordination_enabled": pricing_calculation.coordination_enabled,
+                    "coordination_amount": pricing_calculation.coordination_amount,
+                    "cost_per_person_enabled": pricing_calculation.cost_per_person_enabled,
+                    "headcount": pricing_calculation.headcount,
+                    "cost_per_person": pricing_calculation.cost_per_person,
+                    "taxes_enabled": pricing_calculation.taxes_enabled,
+                    "tax_amount": pricing_calculation.tax_amount,
+                    "applied_configs": pricing_calculation.applied_configs
+                }
+            }
+        )
+    
+    def _extract_total_from_html(self, html: str) -> float:
+        """Extrae el costo total del HTML generado usando regex - maneja formato español"""
+        
+        # Patrones para diferentes formatos de total (español y US)
+        total_patterns = [
+            # Formato con símbolo de dólar
+            r'Total[^$]*\$(\d+[,.]?\d*)',
+            r'<td[^>]*>.*?\$(\d+[,.]?\d*).*?</td>[^<]*</tr>[^<]*</table>',
+            r'final-total[^$]*\$(\d+[,.]?\d*)',
+            
+            # Formato español sin símbolo (números con coma decimal)
+            r'Total[^>]*>[\s]*(\d+,\d+)[\s]*<',  # Total>605,34<
+            r'<td[^>]*>\s*(\d+,\d+)\s*</td>(?=\s*</tr>\s*</table>)',  # Última celda antes de cerrar tabla
+            r'total[^>]*>\s*(\d+,\d+)',  # class="total">605,34
+            r'font-weight:\s*bold[^>]*>\s*(\d+,\d+)',  # style con bold
+            
+            # Formato US sin símbolo (números con punto decimal)  
+            r'Total[^>]*>[\s]*(\d+\.\d+)[\s]*<',
+            r'<td[^>]*>\s*(\d+\.\d+)\s*</td>(?=\s*</tr>\s*</table>)',
+            r'total[^>]*>\s*(\d+\.\d+)',
+            r'font-weight:\s*bold[^>]*>\s*(\d+\.\d+)'
+        ]
+        
+        logger.debug(f"🔍 Extracting total from HTML length: {len(html)}")
+        
+        for i, pattern in enumerate(total_patterns):
+            matches = re.findall(pattern, html, re.IGNORECASE | re.DOTALL)
+            if matches:
+                try:
+                    total_str = matches[-1].strip()
+                    # Manejar formato español (coma decimal) vs US (punto decimal)
+                    if ',' in total_str and '.' not in total_str:
+                        # Formato español: 605,34 -> 605.34
+                        total_str = total_str.replace(',', '.')
+                    elif ',' in total_str and '.' in total_str:
+                        # Formato con miles: 1,605.34 -> 1605.34
+                        total_str = total_str.replace(',', '')
+                    
+                    total_value = float(total_str)
+                    logger.info(f"✅ Total extraído exitosamente: {total_value} (patrón {i+1}: {pattern[:50]}...)")
+                    return total_value
+                except ValueError as e:
+                    logger.debug(f"   Patrón {i+1} falló conversión: {total_str} -> {e}")
+                    continue
+        
+        # Si no se encontró, mostrar parte del HTML para debugging
+        html_preview = html[-500:] if len(html) > 500 else html
+        logger.warning(f"❌ No se pudo extraer total del HTML")
+        logger.debug(f"   HTML final (últimos 500 chars): {html_preview}")
+        return 0.0
+    
+    async def _save_to_database(self, proposal: GeneratedProposal) -> None:
+        """Guarda propuesta en base de datos de forma simple"""
+        
+        document_data = {
+            "id": str(proposal.id),  # Convert UUID to string for database
+            "rfx_id": str(proposal.rfx_id),  # Convert UUID to string for database
+            "document_type": "proposal",  # Direct V2.0 field name
+            "content_html": proposal.content_html,  # Direct V2.0 field name
+            "total_cost": proposal.total_cost,  # Direct V2.0 field name
+            "created_at": proposal.created_at.isoformat(),  # Direct V2.0 field name
+            "metadata": proposal.metadata,  # Direct V2.0 field name
+            "version": 1  # Required field
+        }
+        
+        try:
+            logger.debug(f"🔍 Attempting to save document data: {list(document_data.keys())}")
+            logger.debug(f"🔍 Document ID: {document_data['id']}, RFX ID: {document_data['rfx_id']}")
+            logger.debug(f"🔍 Content length: {len(document_data['content_html'])}")
+            logger.debug(f"🔍 Total cost being saved: {document_data['total_cost']}")
+            
+            result_id = self.db_client.save_generated_document(document_data)
+            logger.info(f"💾 Propuesta guardada en BD: {result_id}")
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # Handle duplicate key constraint gracefully
+            if "duplicate key" in error_msg or "already exists" in error_msg:
+                logger.warning(f"⚠️ Document already exists in database: {document_data['id']}")
+                logger.info(f"💾 Using existing document ID: {document_data['id']}")
+                # Don't fail - document exists is acceptable
+            else:
+                logger.error(f"❌ Error guardando en BD: {e}")
+                logger.error(f"❌ Document data that failed: {document_data}")
+                # Don't fail the generation for database errors, but log them
+    
+    def _generate_basic_fallback(self, rfx_data: Dict[str, Any]) -> str:
+        """Genera HTML ultra-básico en caso de fallo total"""
+        
+        client_info = rfx_data.get("clientes", {}) if isinstance(rfx_data.get("clientes"), dict) else {}
+        client_name = client_info.get("nombre", "SOLICITANTE")
+        productos_count = len(rfx_data.get("productos", []))
+        fecha_actual = datetime.now().strftime("%d/%m/%y")
+        numero_prop = f"PROP-{datetime.now().strftime('%d%m%y')}-ERR"
+        
+        return f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Propuesta Comercial - {client_name}</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; font-size: 12px; }}
+        .company-name {{ color: #2c5f7c; font-size: 28px; font-weight: bold; margin-bottom: 10px; }}
+        .company-subtitle {{ color: #2c5f7c; font-size: 14px; margin-bottom: 20px; }}
+        .budget-box {{ border: 2px solid #000; padding: 10px; margin-bottom: 20px; width: 200px; }}
+        .error {{ color: #ff6b6b; font-style: italic; margin: 10px 0; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
+        th, td {{ border: 1px solid #000; padding: 8px; text-align: left; }}
+        th {{ background-color: #f0f0f0; }}
+        .total {{ font-weight: bold; background-color: #e0e0e0; }}
+    </style>
+</head>
+<body>
+    <div class="company-name">sabra</div>
+    <div class="company-subtitle">corporation</div>
+    
+    <div class="budget-box">
+        <strong>PRESUPUESTO</strong><br>
+        Fecha: {fecha_actual}<br>
+        Duración: 20 días<br>
+        #: {numero_prop}
+    </div>
+    
+    <div>
+        <strong>Para: {client_name.upper()}</strong><br>
+        <strong>Proceso: PLC - Catering</strong>
+    </div>
+    
+    <table>
+        <tr>
+            <th>Descripción</th>
+            <th>Cant</th>
+            <th>Precio unitario</th>
+            <th>Total</th>
+        </tr>
+        <tr>
+            <td>Servicios de catering</td>
+            <td>{productos_count}</td>
+            <td>$0.00</td>
+            <td>$0.00</td>
+        </tr>
+        <tr class="total">
+            <td colspan="3"><strong>Total</strong></td>
+            <td><strong>$0.00</strong></td>
+        </tr>
+    </table>
+    
+    <p class="error">Propuesta generada con template básico por error en generación IA</p>
+</body>
+</html>"""
+
+
+# Función de conveniencia para uso externo
+async def generate_commercial_proposal(rfx_data: Dict[str, Any], proposal_request: ProposalRequest) -> GeneratedProposal:
+    """
+    Función utilitaria simplificada para generar propuestas comerciales
+    
+    Args:
+        rfx_data: Datos del RFX
+        proposal_request: Configuraciones de la propuesta
+        
+    Returns:
+        GeneratedProposal: Propuesta lista para mostrar en frontend
+    """
+    service = ProposalGenerationService()
+    return await service.generate_proposal(rfx_data, proposal_request)

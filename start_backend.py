@@ -21,6 +21,101 @@ def check_python_version():
     print(f"✅ Python version OK: {sys.version}")
     return True
 
+def configure_cairo_environment():
+    """Configure Cairo library paths for macOS and check system dependencies"""
+    import platform
+    
+    print("🔧 Configuring system environment...")
+    
+    if platform.system() == 'Darwin':  # macOS
+        print("🍎 Detected macOS - configuring Cairo environment...")
+        
+        # Add Homebrew library paths
+        homebrew_paths = [
+            "/opt/homebrew/lib",  # Apple Silicon
+            "/usr/local/lib"      # Intel Mac
+        ]
+        
+        pkg_config_paths = [
+            "/opt/homebrew/lib/pkgconfig",
+            "/opt/homebrew/share/pkgconfig",
+            "/usr/local/lib/pkgconfig"
+        ]
+        
+        # Set DYLD_LIBRARY_PATH
+        current_dyld = os.environ.get('DYLD_LIBRARY_PATH', '')
+        new_dyld = ':'.join(homebrew_paths + ([current_dyld] if current_dyld else []))
+        os.environ['DYLD_LIBRARY_PATH'] = new_dyld
+        
+        # Set PKG_CONFIG_PATH
+        current_pkg = os.environ.get('PKG_CONFIG_PATH', '')
+        new_pkg = ':'.join(pkg_config_paths + ([current_pkg] if current_pkg else []))
+        os.environ['PKG_CONFIG_PATH'] = new_pkg
+        
+        print("✅ Cairo environment configured")
+    else:
+        print("✅ Cairo configuration not needed (not macOS)")
+    
+    # Check critical system dependencies
+    print("🔍 Checking system dependencies...")
+    
+    # Check Poppler (for PDF processing)
+    try:
+        result = subprocess.run(['pdfinfo', '--version'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            print("✅ Poppler is installed")
+        else:
+            print("⚠️  Poppler not found - PDF processing may fail")
+            print("   💡 Install with: brew install poppler (macOS)")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        print("⚠️  Poppler not found - PDF processing may fail")
+        if platform.system() == 'Darwin':
+            print("   💡 Install with: brew install poppler")
+        elif platform.system() == 'Linux':
+            print("   💡 Install with: sudo apt-get install poppler-utils")
+        else:
+            print("   💡 See INSTALL_SYSTEM_DEPENDENCIES.md for instructions")
+    
+    return True
+
+def check_system_dependencies():
+    """Check if system dependencies verification script exists and run it"""
+    deps_script = Path("scripts/check_system_dependencies.py")
+    
+    if deps_script.exists():
+        print("🔍 Running system dependencies check...")
+        
+        # Use virtual environment Python if available
+        python_executable = VENV_PYTHON if VENV_PYTHON else sys.executable
+        
+        try:
+            result = subprocess.run([
+                python_executable, str(deps_script)
+            ], capture_output=True, text=True, timeout=30)
+            
+            # Always show the output (both success and warnings)
+            if result.stdout:
+                print(result.stdout.strip())
+            
+            if result.returncode == 0:
+                print("✅ All critical system dependencies are ready")
+                return True
+            else:
+                print("⚠️  Some system dependencies are missing (see above)")
+                print("   ℹ️  System will use fallback methods where possible")
+                return True  # Don't fail startup, just warn
+                
+        except subprocess.TimeoutExpired:
+            print("⚠️  System dependencies check timed out")
+            return True
+        except Exception as e:
+            print(f"⚠️  Could not run system dependencies check: {e}")
+            return True
+    else:
+        print("ℹ️  System dependencies checker not found - skipping")
+        return True
+
 def check_virtual_environment():
     """Check if virtual environment is activated or activate automatically"""
     venv_path = Path("venv")
@@ -287,8 +382,10 @@ def main():
     # Run startup checks
     checks = [
         ("Python Version", check_python_version),
+        ("System Environment", configure_cairo_environment),
         ("Virtual Environment", check_virtual_environment),
         ("Dependencies", install_dependencies),
+        ("System Dependencies", check_system_dependencies),
         ("Environment Configuration", check_environment_file),
         ("Backend Startup Test", test_backend_startup)
     ]

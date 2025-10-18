@@ -43,6 +43,9 @@ markdown==3.5.1
 pytesseract==0.3.10
 Pillow==10.1.0  # 🆕 También usado para branding (extracción de colores)
 pdf2image==1.16.3  # 🆕 También usado para branding (análisis de templates PDF)
+cairosvg==2.7.1  # 🆕 Conversión de SVG a PNG para análisis de logos
+svglib==1.5.1  # 🆕 Alternativa para conversión de SVG
+reportlab==4.0.7  # 🆕 Requerido por svglib
 
 # ========================
 # Template Engine

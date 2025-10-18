@@ -219,7 +219,7 @@ curl -H "Authorization: Bearer $TOKEN_A" /api/user-branding/
 ```env
 # JWT Configuration
 JWT_SECRET_KEY=your-super-secure-secret-key-change-in-production
-JWT_EXPIRE_MINUTES=10080  # 7 días
+JWT_EXPIRE_MINUTES=120  # 2 horas
 
 # Database
 DATABASE_URL=postgresql://user:pass@localhost/rfx_db

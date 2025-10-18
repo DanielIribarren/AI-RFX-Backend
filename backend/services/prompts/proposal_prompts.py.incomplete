@@ -1,0 +1,369 @@
+"""
+📋 Proposal Prompts - Prompts para generación de propuestas comerciales
+Versión refactorizada COMPLETA según especificación del usuario
+Incluye: HTML-to-PDF optimization, validación robusta, prompts explícitos
+"""
+
+import os
+from typing import Dict, Any, List
+from datetime import datetime
+import json
+
+
+class ProposalPrompts:
+    """Clase que centraliza todos los prompts para generación de propuestas"""
+    
+    @staticmethod
+    def _format_products(products: List[Dict]) -> str:
+        """Helper para formatear productos en texto"""
+        if not products:
+            return "No hay productos especificados"
+        
+        formatted = []
+        for i, product in enumerate(products, 1):
+            formatted.append(
+                f"{i}. {product.get('nombre', product.get('name', 'N/A'))} - "
+                f"{product.get('description', '')} | "
+                f"Qty: {product.get('cantidad', product.get('quantity', 0))} | "
+                f"Precio: ${product.get('precio_unitario', product.get('unit_price', 0)):.2f} | "
+                f"Total: ${product.get('total', 0):.2f}"
+            )
+        return "\n".join(formatted)
+    
+    @staticmethod
+    def _get_currency_symbol(currency: str) -> str:
+        """Obtiene el símbolo de moneda"""
+        symbols = {
+            'USD': '$', 'EUR': '€', 'GBP': '£', 'JPY': '¥',
+            'MXN': '$', 'CAD': 'C$', 'AUD': 'A$', 'BRL': 'R$',
+            'COP': '$', 'CHF': 'CHF', 'CNY': '¥', 'INR': '₹'
+        }
+        return symbols.get(currency, '$')
+    
+    @staticmethod
+    def _build_pricing_instructions(pricing_calculation: Dict, currency: str) -> str:
+        """Construye instrucciones de pricing unificadas"""
+        
+        if not pricing_calculation:
+            return f"<currency>{currency}</currency>\n<note>No hay configuración de pricing adicional</note>"
+        
+        currency_symbol = ProposalPrompts._get_currency_symbol(currency)
+        
+        instructions = f"""<currency>{currency}</currency>
+<currency_symbol>{currency_symbol}</currency_symbol>
+<subtotal>{currency_symbol}{pricing_calculation.get('subtotal', 0):.2f}</subtotal>"""
+        
+        # Coordinación
+        if pricing_calculation.get('coordination_enabled'):
+            rate = pricing_calculation.get('coordination_rate', 0) * 100
+            amount = pricing_calculation.get('coordination_amount', 0)
+            instructions += f"""
+<coordination>
+    <enabled>true</enabled>
+    <rate>{rate:.1f}%</rate>
+    <amount>{currency_symbol}{amount:.2f}</amount>
+</coordination>"""
+        
+        # Impuestos
+        if pricing_calculation.get('tax_enabled'):
+            rate = pricing_calculation.get('tax_rate', 0) * 100
+            amount = pricing_calculation.get('tax_amount', 0)
+            instructions += f"""
+<tax>
+    <enabled>true</enabled>
+    <rate>{rate:.1f}%</rate>
+    <amount>{currency_symbol}{amount:.2f}</amount>
+</tax>"""
+        
+        # Descuentos
+        if pricing_calculation.get('discount_enabled'):
+            rate = pricing_calculation.get('discount_rate', 0) * 100
+            amount = pricing_calculation.get('discount_amount', 0)
+            instructions += f"""
+<discount>
+    <enabled>true</enabled>
+    <rate>{rate:.1f}%</rate>
+    <amount>{currency_symbol}{amount:.2f}</amount>
+</discount>"""
+        
+        # Total final
+        total = pricing_calculation.get('total', 0)
+        instructions += f"""
+<total_final>{currency_symbol}{total:.2f}</total_final>"""
+        
+        return instructions
+    
+    @staticmethod
+    def get_prompt_with_branding(
+        rfx_data: Dict[str, Any],
+        products_info: List[Dict],
+        pricing_calculation: Dict,
+        currency: str,
+        user_id: str,
+        branding_config: Dict[str, Any] = None
+    ) -> str:
+        """
+        🎨 Prompt cuando el usuario TIENE branding configurado
+        El AI debe analizar el template y replicarlo EXACTAMENTE
+        """
+        
+        client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
+        
+        # Construir URL del logo
+        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
+        logo_endpoint = f"{base_url}/api/branding/files/{user_id}/logo"
+        
+        # Formatear productos
+        products_formatted = ProposalPrompts._format_products(products_info)
+        
+        # Obtener símbolo de moneda
+        currency_symbol = ProposalPrompts._get_currency_symbol(currency)
+        
+        # Formatear pricing
+        subtotal = pricing_calculation.get('subtotal', 0)
+        coordination = pricing_calculation.get('coordination_amount', 0)
+        coordination_pct = pricing_calculation.get('coordination_rate', 0) * 100
+        tax = pricing_calculation.get('tax_amount', 0)
+        tax_pct = pricing_calculation.get('tax_rate', 0) * 100
+        total = pricing_calculation.get('total', 0)
+        
+        prompt = f"""<?xml version="1.0" encoding="UTF-8"?>
+<proposal_generation_prompt>
+<version_info>
+    <name>Generador de Propuestas HTML con Branding Personalizado</name>
+    <version>5.0 Refactorizado</version>
+    <date>{datetime.now().strftime('%Y-%m-%d')}</date>
+</version_info>
+
+<system>
+Eres un especialista en generación de propuestas comerciales profesionales. 
+Tu función es crear documentos HTML profesionales que reflejen EXACTAMENTE el branding 
+del cliente usando su logo real, colores corporativos y estilo de diseño.
+</system>
+
+<branding_configuration>
+    <title>🎨 CONFIGURACIÓN DE BRANDING PERSONALIZADO</title>
+    
+    <logo_configuration>
+        <logo_url>{logo_endpoint}</logo_url>
+        <logo_position>{logo_analysis.get('recommended_position', 'top-left')}</logo_position>
+        <logo_size>80-120px altura (bien visible y profesional)</logo_size>
+    </logo_configuration>
+    
+    <color_scheme>
+        <primary_color>{primary_color}</primary_color>
+        <secondary_color>{secondary_color}</secondary_color>
+    </color_scheme>
+    
+    <design_configuration>
+        <layout_structure>{layout_structure}</layout_structure>
+        <design_style>{design_style}</design_style>
+    </design_configuration>
+    
+    <branding_rules>
+        <rule>LOGO: Usar imagen con altura entre 80-120px, bien visible</rule>
+        <rule>NO DUPLICAR nombre empresa: Si hay logo, NO agregar texto adicional</rule>
+        <rule>ESPACIADO PROFESIONAL: Márgenes amplios (30px), secciones bien separadas</rule>
+        <rule>HEADER LIMPIO: Solo logo O solo texto empresa, nunca ambos juntos</rule>
+        <rule>PROPORCIÓN: Header 15%, contenido 70%, footer 15%</rule>
+        <rule>COLORES: Usar esquema de colores corporativos consistentemente</rule>
+    </branding_rules>
+</branding_configuration>
+
+<rfx_data>
+    <client_info>
+        <client_name>{client_info.get('name', 'Cliente')}</client_name>
+        <client_email>{client_info.get('email', '')}</client_email>
+        <delivery_location>{rfx_data.get('location', 'Por definir')}</delivery_location>
+        <delivery_date>{rfx_data.get('delivery_date', 'Por definir')}</delivery_date>
+    </client_info>
+    
+    <products_data>
+        {json.dumps(products_info, ensure_ascii=False, indent=2)}
+    </products_data>
+    
+    <pricing_configuration>
+        {pricing_instructions}
+    </pricing_configuration>
+    
+    <current_date>{datetime.now().strftime('%d/%m/%Y')}</current_date>
+</rfx_data>
+
+<instructions>
+    <step number="1">Aplicar branding profesional con logo {logo_endpoint}</step>
+    <step number="2">Usar colores: {primary_color} (primario), {secondary_color} (secundario)</step>
+    <step number="3">Logo altura: 80-120px, NO duplicar nombre empresa</step>
+    <step number="4">Espaciado: 30px entre secciones, márgenes amplios</step>
+    <step number="5">Tabla profesional con TODOS los productos de products_data</step>
+    <step number="6">Aplicar pricing según pricing_configuration</step>
+    <step number="7">Solo información para cliente final (sin datos internos)</step>
+</instructions>
+
+<quality_criteria>
+    <approved>Logo visible 80-120px SIN texto duplicado, espaciado 30px, diseño proporcional</approved>
+    <rejected>Logo pequeño, texto duplicado, espaciado pobre, diseño amateur</rejected>
+</quality_criteria>
+
+<output_format>
+    <instruction>RESPONDE ÚNICAMENTE CON HTML COMPLETO Y FUNCIONAL</instruction>
+    <restriction>SIN ```html``` AL INICIO O FINAL</restriction>
+</output_format>
+
+</proposal_generation_prompt>"""
+        
+        return prompt
+    
+    @staticmethod
+    def get_prompt_default(
+        rfx_data: Dict[str, Any],
+        products_info: List[Dict],
+        pricing_calculation: Dict,
+        currency: str
+    ) -> str:
+        """📄 Prompt SIN branding personalizado (diseño estándar)"""
+        
+        client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
+        
+        # Construir instrucciones de pricing
+        pricing_instructions = ProposalPrompts._build_pricing_instructions(pricing_calculation, currency)
+        
+        prompt = f"""<?xml version="1.0" encoding="UTF-8"?>
+<proposal_generation_prompt>
+<version_info>
+    <name>Generador de Propuestas HTML - Diseño Estándar</name>
+    <version>5.0 Refactorizado</version>
+    <date>{datetime.now().strftime('%Y-%m-%d')}</date>
+</version_info>
+
+<system>
+Eres un especialista en generación de propuestas comerciales profesionales. 
+Tu función es crear documentos HTML profesionales con diseño estándar limpio y profesional.
+</system>
+
+<design_configuration>
+    <color_scheme>
+        <primary_color>#2c5f7c</primary_color>
+        <secondary_color>#ffffff</secondary_color>
+    </color_scheme>
+    
+    <layout>
+        <structure>header-client-products-totals-footer</structure>
+        <spacing>30px entre secciones</spacing>
+        <proportions>Header 15%, Contenido 70%, Footer 15%</proportions>
+    </layout>
+</design_configuration>
+
+<rfx_data>
+    <client_info>
+        <client_name>{client_info.get('name', 'Cliente')}</client_name>
+        <client_email>{client_info.get('email', '')}</client_email>
+        <delivery_location>{rfx_data.get('location', 'Por definir')}</delivery_location>
+        <delivery_date>{rfx_data.get('delivery_date', 'Por definir')}</delivery_date>
+    </client_info>
+    
+    <products_data>
+        {json.dumps(products_info, ensure_ascii=False, indent=2)}
+    </products_data>
+    
+    <pricing_configuration>
+        {pricing_instructions}
+    </pricing_configuration>
+    
+    <current_date>{datetime.now().strftime('%d/%m/%Y')}</current_date>
+</rfx_data>
+
+<instructions>
+    <step number="1">Diseño estándar con colores #2c5f7c (primario), #ffffff (secundario)</step>
+    <step number="2">Header con nombre empresa en texto (24px)</step>
+    <step number="3">Espaciado: 30px entre secciones, márgenes 20px</step>
+    <step number="4">Tabla profesional con TODOS los productos de products_data</step>
+    <step number="5">Aplicar pricing según pricing_configuration</step>
+    <step number="6">Solo información para cliente final (sin datos internos)</step>
+</instructions>
+
+<quality_criteria>
+    <approved>Diseño limpio, espaciado 30px, proporciones correctas, tabla completa</approved>
+    <rejected>Diseño amateur, espaciado pobre, productos faltantes</rejected>
+</quality_criteria>
+
+<output_format>
+    <instruction>RESPONDE ÚNICAMENTE CON HTML COMPLETO Y FUNCIONAL</instruction>
+    <restriction>SIN ```html``` AL INICIO O FINAL</restriction>
+</output_format>
+
+</proposal_generation_prompt>"""
+        
+        return prompt
+    
+    @staticmethod
+    def get_retry_prompt(
+        original_html: str,
+        validation_issues: List[str],
+        rfx_data: Dict[str, Any],
+        products_info: List[Dict],
+        pricing_calculation: Dict,
+        currency: str
+    ) -> str:
+        """🔄 Prompt para RETRY con correcciones específicas"""
+        
+        client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
+        
+        # Construir lista de problemas
+        issues_list = "\n".join([f"        <issue>{issue}</issue>" for issue in validation_issues])
+        
+        # Construir instrucciones de pricing
+        pricing_instructions = ProposalPrompts._build_pricing_instructions(pricing_calculation, currency)
+        
+        prompt = f"""<?xml version="1.0" encoding="UTF-8"?>
+<proposal_retry_prompt>
+<version_info>
+    <name>Corrección de Propuesta HTML</name>
+    <version>5.0 Refactorizado</version>
+    <type>RETRY con correcciones específicas</type>
+</version_info>
+
+<system>
+El documento HTML generado anteriormente tiene problemas de calidad que deben corregirse.
+Tu tarea es generar un NUEVO documento HTML que corrija TODOS los problemas identificados.
+</system>
+
+<validation_issues>
+    <title>❌ PROBLEMAS IDENTIFICADOS QUE DEBES CORREGIR</title>
+    <issues>
+{issues_list}
+    </issues>
+</validation_issues>
+
+<rfx_data>
+    <client_info>
+        <client_name>{client_info.get('name', 'Cliente')}</client_name>
+        <client_email>{client_info.get('email', '')}</client_email>
+        <delivery_location>{rfx_data.get('location', 'Por definir')}</delivery_location>
+        <delivery_date>{rfx_data.get('delivery_date', 'Por definir')}</delivery_date>
+    </client_info>
+    
+    <products_data>
+        {json.dumps(products_info, ensure_ascii=False, indent=2)}
+    </products_data>
+    
+    <pricing_configuration>
+        {pricing_instructions}
+    </pricing_configuration>
+</rfx_data>
+
+<correction_instructions>
+    <step number="1">Revisar CADA problema de validation_issues</step>
+    <step number="2">Aplicar correcciones específicas para cada problema</step>
+    <step number="3">Mantener diseño profesional con espaciado 30px</step>
+    <step number="4">Tabla completa con TODOS los productos</step>
+    <step number="5">Verificar que TODOS los problemas estén resueltos</step>
+</correction_instructions>
+
+<output_format>
+    <instruction>RESPONDE ÚNICAMENTE CON HTML COMPLETO Y FUNCIONAL CORREGIDO</instruction>
+    <restriction>SIN ```html``` AL INICIO O FINAL</restriction>
+</output_format>
+
+</proposal_retry_prompt>"""
+        
+        return prompt

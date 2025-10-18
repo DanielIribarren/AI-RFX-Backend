@@ -54,6 +54,7 @@ backend/
 - Python 3.9+
 - Cuenta OpenAI (API Key)
 - Base de datos Supabase
+- **Dependencias del sistema:** Poppler, Cairo (ver instalación abajo)
 
 ### Instalación
 
@@ -66,13 +67,27 @@ cd AI-RFX-Backend
 python -m venv venv
 source venv/bin/activate  # En Windows: venv\Scripts\activate
 
-# Instalar dependencias
+# 1. IMPORTANTE: Instalar dependencias del sistema operativo
+# macOS:
+brew install poppler cairo
+
+# Linux (Ubuntu/Debian):
+sudo apt-get install -y poppler-utils libcairo2-dev
+
+# Windows: Ver INSTALL_SYSTEM_DEPENDENCIES.md
+
+# 2. Instalar dependencias Python
 pip install -r requirements.txt
 
-# Configurar variables de entorno
+# 3. Verificar que todo está instalado correctamente
+python scripts/check_system_dependencies.py
+
+# 4. Configurar variables de entorno
 cp .env.example .env
 # Editar .env con tus credenciales
 ```
+
+> **⚠️ Nota Importante:** Las dependencias del sistema (Poppler, Cairo) son **requeridas** para el sistema de branding personalizado. Sin ellas, no se podrán procesar logos SVG ni templates PDF. Ver [INSTALL_SYSTEM_DEPENDENCIES.md](INSTALL_SYSTEM_DEPENDENCIES.md) para más detalles.
 
 ### Configuración de Variables de Entorno
 

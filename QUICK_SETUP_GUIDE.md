@@ -11,7 +11,7 @@ Abre tu archivo `backend/.env` y agrega:
 # JWT AUTHENTICATION V3.0  
 # ========================
 JWT_SECRET_KEY=Cwy7YxamMIprktPtSx_zA_9ehho-XzXbmrUcnasoTU3QFlw8WXzsuB-r-JEUbXedC1_O9RYCGBV3tQWgYOqd5w
-JWT_EXPIRE_MINUTES=10080
+JWT_EXPIRE_MINUTES=120  # 2 horas
 JWT_ALGORITHM=HS256
 
 # ========================
