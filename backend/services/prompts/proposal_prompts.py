@@ -1,6 +1,7 @@
 """
-📋 Proposal Prompts - VERSIÓN COMPLETA según especificación del usuario
-Incluye: HTML-to-PDF optimization, validación robusta, prompts explícitos
+📋 Proposal Prompts V2 - Estilo Sabra Corporation
+Basado en imagen de referencia del usuario
+Incluye: Cajas azules, tabla con header azul, pricing condicional
 """
 
 from typing import Dict, Any, List
@@ -39,178 +40,174 @@ class ProposalPrompts:
     ) -> str:
         """
         Prompt cuando el usuario TIENE branding configurado
-        El AI debe analizar el template y replicarlo
+        Genera presupuesto con estilo Sabra Corporation según imagen de referencia
         """
         
         products_formatted = ProposalPrompts._format_products(rfx_data.get('products', []))
         
+        # Determinar qué campos de pricing mostrar (solo si > 0)
+        coord_val = pricing_data.get('coordination_formatted', '$0.00')
+        tax_val = pricing_data.get('tax_formatted', '$0.00')
+        cpp_val = pricing_data.get('cost_per_person_formatted', '$0.00')
+        
+        show_coordination = coord_val not in ['$0.00', '$0', '0']
+        show_tax = tax_val not in ['$0.00', '$0', '0']
+        show_cost_per_person = cpp_val not in ['$0.00', '$0', '0']
+        
+        pricing_lines = f"- Subtotal: {pricing_data.get('subtotal_formatted')}"
+        if show_coordination:
+            pricing_lines += f"\n- Coordinación: {coord_val}"
+        if show_tax:
+            pricing_lines += f"\n- Impuestos: {tax_val}"
+        pricing_lines += f"\n- TOTAL: {pricing_data.get('total_formatted')}"
+        if show_cost_per_person:
+            pricing_lines += f"\n- Costo por persona: {cpp_val}"
+        
         return f"""# ROL Y CONTEXTO
-Eres un experto en análisis de documentos corporativos y generación de presupuestos profesionales en HTML.
-
-El usuario tiene un template de presupuesto personalizado que debes REPLICAR EXACTAMENTE.
+Eres un experto en generación de presupuestos profesionales en HTML con el estilo corporativo de Sabra Corporation.
 
 ---
 
-# INFORMACIÓN DEL CLIENTE
+# INFORMACIÓN DE LA EMPRESA
 
-## Datos de la Empresa
 {company_info}
 
 ## Logo de la Empresa
 URL del logo: {logo_endpoint}
 
-IMPORTANTE sobre el logo:
-- Debes incluir el logo usando esta URL exacta
-- Posiciónalo en la esquina superior izquierda
-- Dimensiones: 40mm de ancho x 15mm de alto
-- Código correcto:
-```html
-<img src="{logo_endpoint}" 
-     alt="Logo" 
-     width="151" 
-     height="57"
-     style="width: 40mm; height: 15mm; display: block; object-fit: contain;"
-     loading="eager"
-     decoding="sync"
-     crossorigin="anonymous">
-```
-
 ---
 
 # DATOS DEL PRESUPUESTO
 
-## Información del Cliente Final
+## Información del Cliente
 - Cliente: {rfx_data.get('client_name', 'N/A')}
-- Empresa: {rfx_data.get('company_name', 'N/A')}
-- Solicitante: {rfx_data.get('requester_name', 'N/A')}
-- Email: {rfx_data.get('requester_email', 'N/A')}
-- Fecha de evento: {rfx_data.get('event_date', 'N/A')}
-- Lugar: {rfx_data.get('event_location', 'N/A')}
-- Número de personas: {rfx_data.get('num_people', 'N/A')}
+- Solicitud: {rfx_data.get('solicitud', 'N/A')}
 
-## Productos/Servicios Solicitados
+## Fechas del Presupuesto
+- Fecha actual: {rfx_data.get('current_date', '2025-10-20')}
+- Vigencia: 30 días desde la fecha actual (calcular: fecha_actual + 30 días)
+
+## Productos/Servicios
 {products_formatted}
 
-## Pricing Breakdown
-- Subtotal: {pricing_data.get('subtotal_formatted')}
-- Coordinación ({pricing_data.get('coordination_percentage')}%): {pricing_data.get('coordination_formatted')}
-- Impuestos ({pricing_data.get('tax_percentage')}%): {pricing_data.get('tax_formatted')}
-- TOTAL FINAL: {pricing_data.get('total_formatted')}
-- Costo por persona: {pricing_data.get('cost_per_person_formatted')}
+## Pricing
+{pricing_lines}
 
 ---
 
-# INSTRUCCIONES CRÍTICAS PARA GENERAR EL HTML
+# INSTRUCCIONES DE DISEÑO - ESTILO SABRA CORPORATION
 
-## 1. ESTRUCTURA EXACTA DEL DOCUMENTO
+## COLOR CORPORATIVO
+- **Azul Sabra:** #0e2541 (usar en headers de tabla y cajas de información)
+- **Texto blanco:** #ffffff (para texto sobre fondo azul)
 
-Debes generar un HTML COMPLETO con esta estructura:
+## ESTRUCTURA DEL DOCUMENTO
 
-```html
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Presupuesto - {{{{company_name}}}}</title>
-    <style>
-        /* CSS AQUÍ - OPTIMIZADO PARA PDF */
-        @page {{{{
-            size: letter;
-            margin: 0;
-        }}}}
-        
-        * {{{{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-        }}}}
-        
-        body {{{{
-            width: 216mm;
-            height: 279mm;
-            font-family: Arial, sans-serif;
-            font-size: 11pt;
-            color: #000;
-        }}}}
-        
-        /* MÁS CSS AQUÍ */
-    </style>
-</head>
-<body>
-    <!-- CONTENIDO DEL PRESUPUESTO -->
-</body>
-</html>
-```
+### 1. HEADER (Superior)
+<!-- Logo a la izquierda, título PRESUPUESTO a la derecha -->
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5mm; padding: 5mm 10mm 0 10mm;">
+    <img src="{logo_endpoint}" alt="Logo" style="height: 15mm;">
+    <h1 style="font-size: 24pt; color: #0e2541; margin: 0;">PRESUPUESTO</h1>
+</div>
 
-## 2. SECCIONES OBLIGATORIAS
+<!-- Información de la empresa (dirección, teléfono, etc.) -->
+<div style="font-size: 9pt; margin-bottom: 5mm; padding: 0 10mm;">
+    <p style="margin: 0;">Av. Principal, C.C Mini Centro Principal</p>
+    <p style="margin: 0;">Nivel 1, Local 10, Sector el Pedronal</p>
+    <p style="margin: 0;">Lechería, Anzoátegui, Zona Postal 6016</p>
+</div>
 
-Tu HTML DEBE incluir TODAS estas secciones:
+<!-- Fecha, Vigencia, Código alineados a la derecha -->
+<div style="text-align: right; font-size: 9pt; margin-bottom: 5mm; padding: 0 10mm;">
+    <p style="margin: 0;"><strong>Fecha:</strong> {rfx_data.get('current_date', '2025-10-20')}</p>
+    <p style="margin: 0;"><strong>Vigencia:</strong> {rfx_data.get('validity_date', '30 días')}</p>
+    <p style="margin: 0;"><strong>Código:</strong> SABRA-PO-2025-XXX</p>
+</div>
 
-✅ Header con Logo y Título
-✅ Información de tu Empresa (dirección, teléfono, email)
-✅ Información del Cliente (nombre, empresa)
-✅ Detalles de la Solicitud (fecha, lugar, descripción)
-✅ Tabla de Productos/Servicios (con todas las columnas)
-✅ Breakdown de Precios (subtotal, coordinación, impuestos, total)
-✅ Términos y Condiciones (al menos 3 puntos)
-✅ Información de Contacto (footer)
+IMPORTANTE sobre las fechas:
+- Fecha: Usa la fecha actual proporcionada (formato: YYYY-MM-DD)
+- Vigencia: Calcula 30 días desde la fecha actual y muestra la fecha resultante
+- Código: Genera un código único basado en el año actual (ej: SABRA-PO-2025-001)
 
-## 3. REGLAS PARA HTML-TO-PDF
+### 2. INFORMACIÓN DEL CLIENTE (Cajas azules)
+<!-- Solo incluir: Cliente y Solicitud -->
 
-IMPORTANTE: Este HTML se convertirá a PDF con Playwright, por lo tanto:
+<div style="padding: 0 10mm; margin-bottom: 3mm;">
+    <div style="background: #0e2541; color: white; padding: 2mm 3mm; font-weight: bold; display: inline-block; min-width: 30mm;">Cliente:</div>
+    <div style="border: 1pt solid #0e2541; padding: 2mm 3mm; display: inline-block; min-width: 120mm;">{rfx_data.get('client_name', 'N/A')}</div>
+</div>
 
-✅ Usa SOLO unidades absolutas: mm, pt, in
-✅ NO uses: px, %, em, rem, vw, vh
-✅ Define width Y height explícitos para TODAS las imágenes
-✅ Usa colores con -webkit-print-color-adjust: exact
-✅ Define @page {{{{ size: letter; margin: 0; }}}}
-✅ Body debe ser: width: 216mm; height: 279mm;
+<div style="padding: 0 10mm; margin-bottom: 3mm;">
+    <div style="background: #0e2541; color: white; padding: 2mm 3mm; font-weight: bold; display: inline-block; min-width: 30mm;">Solicitud:</div>
+    <div style="border: 1pt solid #0e2541; padding: 2mm 3mm; display: inline-block; min-width: 120mm;">{rfx_data.get('solicitud', 'N/A')}</div>
+</div>
 
-## 4. FORMATO DE LA TABLA DE PRODUCTOS
-
-```html
-<table class="products-table">
+### 3. TABLA DE PRODUCTOS (Header azul con texto blanco)
+<table style="width: calc(100% - 20mm); margin: 5mm 10mm; border-collapse: collapse;">
     <thead>
-        <tr>
-            <th>Ítem</th>
-            <th>Descripción</th>
-            <th>Cantidad</th>
-            <th>Precio Unit.</th>
-            <th>Total</th>
+        <tr style="background: #0e2541; color: white;">
+            <th style="padding: 2mm; border: 1pt solid #000; text-align: center; font-weight: bold;">Item</th>
+            <th style="padding: 2mm; border: 1pt solid #000; text-align: left; font-weight: bold;">Descripción</th>
+            <th style="padding: 2mm; border: 1pt solid #000; text-align: center; font-weight: bold;">Cant</th>
+            <th style="padding: 2mm; border: 1pt solid #000; text-align: right; font-weight: bold;">Precio unitario</th>
+            <th style="padding: 2mm; border: 1pt solid #000; text-align: right; font-weight: bold;">Total</th>
         </tr>
     </thead>
     <tbody>
-        <!-- Una fila por cada producto -->
+        <!-- Filas de productos con fondo blanco -->
         <tr>
-            <td>1</td>
-            <td>Nombre del producto - Descripción detallada</td>
-            <td>X unidades</td>
-            <td>$X.XX</td>
-            <td>$X.XX</td>
+            <td style="padding: 2mm; border: 1pt solid #000; text-align: center;">1</td>
+            <td style="padding: 2mm; border: 1pt solid #000;">[NOMBRE] - [DESCRIPCIÓN]</td>
+            <td style="padding: 2mm; border: 1pt solid #000; text-align: center;">[CANTIDAD]</td>
+            <td style="padding: 2mm; border: 1pt solid #000; text-align: right;">[PRECIO]</td>
+            <td style="padding: 2mm; border: 1pt solid #000; text-align: right;">[TOTAL]</td>
         </tr>
-        <!-- Más filas... -->
+        
+        <!-- IMPORTANTE: Fila de Coordinación y Logística (SOLO SI show_coordination = True) -->
+        {f'<tr><td colspan="3" style="padding: 2mm; border: 1pt solid #000;">Coordinación y Logística</td><td colspan="2" style="padding: 2mm; border: 1pt solid #000; text-align: right;">{coord_val}</td></tr>' if show_coordination else '<!-- Coordinación omitida (valor = $0) -->'}
+        
+        <!-- Fila de TOTAL (última fila de la tabla) -->
+        <tr>
+            <td colspan="3" style="padding: 2mm; border: 1pt solid #000;"></td>
+            <td style="padding: 2mm; border: 1pt solid #000; text-align: right; font-weight: bold;">TOTAL</td>
+            <td style="padding: 2mm; border: 1pt solid #000; text-align: right; font-weight: bold; font-size: 12pt;">{pricing_data.get('total_formatted')}</td>
+        </tr>
     </tbody>
 </table>
-```
 
-## 5. SECCIÓN DE TÉRMINOS Y CONDICIONES
-
-DEBES incluir una sección de términos. Ejemplo:
-
-```html
-<div class="terms-section">
-    <h3>Términos y Condiciones</h3>
-    <ul>
-        <li>Validez de la propuesta: 30 días</li>
-        <li>Forma de pago: 50% anticipo, 50% contra entrega</li>
-        <li>Tiempo de entrega: según fecha del evento</li>
-        <li>Los precios incluyen coordinación logística</li>
-    </ul>
+### 4. COMENTARIOS (Opcional)
+<div style="padding: 0 10mm; margin: 3mm 0;">
+    <strong>Comentarios:</strong>
+    <div style="border: 1pt solid #000; padding: 3mm; min-height: 15mm; margin-top: 2mm;">
+        <!-- Espacio para comentarios adicionales -->
+    </div>
 </div>
-```
+
+---
+
+# REGLAS TÉCNICAS HTML-TO-PDF
+
+✅ **Unidades:** Solo mm, pt, in (NO px, %, em, rem)
+✅ **Página:** @page {{ size: letter; margin: 0; }}
+✅ **Body:** width: 216mm; height: 279mm;
+✅ **Colores:** -webkit-print-color-adjust: exact; print-color-adjust: exact;
+✅ **Imágenes:** Especificar width y height explícitos
+✅ **Bordes tabla:** 1pt solid #000
+✅ **Comentarios HTML:** Incluir comentarios explicando cada sección
+
+---
+
+# REGLAS DE CONTENIDO
+
+🚫 **NO incluir Términos y Condiciones**
+✅ **Incluir comentarios HTML** explicando cada sección (ej: <!-- HEADER -->, <!-- TABLA DE PRODUCTOS -->)
+✅ **Solo mostrar campos de pricing si > $0.00:**
+   - Coordinación: {'Mostrar' if show_coordination else 'NO mostrar (omitir fila)'}
+   - Impuestos: {'Mostrar' if show_tax else 'NO mostrar'}
+   - Costo por persona: {'Mostrar' if show_cost_per_person else 'NO mostrar'}
+✅ **Pricing dentro de la tabla** (última fila con TOTAL)
+✅ **Cajas azules** para Cliente, Solicitud, Empresa, Fecha, Lugar
+✅ **Header de tabla azul** (#0e2541) con texto blanco
 
 ---
 
@@ -219,273 +216,133 @@ DEBES incluir una sección de términos. Ejemplo:
 Antes de generar el HTML final, verifica que incluya:
 
 [ ] Estructura HTML completa (<!DOCTYPE>, <html>, <head>, <body>)
-[ ] Logo con la URL correcta y dimensiones explícitas
-[ ] Información de la empresa (dirección, teléfono, email)
-[ ] Información del cliente
-[ ] Tabla con TODOS los productos
-[ ] Breakdown de precios completo
-[ ] Sección de términos y condiciones
-[ ] Footer con información de contacto
+[ ] Logo con la URL correcta: {logo_endpoint}
+[ ] Información de la empresa en el header
+[ ] Cajas azules para información del cliente
+[ ] Tabla con header azul y texto blanco
+[ ] TODOS los productos en la tabla
+[ ] Fila de Coordinación SOLO si > $0
+[ ] Fila de TOTAL al final de la tabla
+[ ] Comentarios HTML en cada sección
 [ ] CSS optimizado para PDF (unidades en mm/pt)
-[ ] Longitud > 500 caracteres
+[ ] NO incluir Términos y Condiciones
 
 ---
 
-# OUTPUT ESPERADO
+# OUTPUT
 
-Genera ÚNICAMENTE el código HTML completo, sin explicaciones adicionales.
-El HTML debe ser válido, completo y listo para convertirse a PDF.
-
-NO incluyas markdown, NO incluyas comentarios fuera del HTML. Solo el código HTML puro.
+Genera ÚNICAMENTE el código HTML completo.
+NO incluyas markdown, NO incluyas explicaciones.
+SOLO el código HTML puro con comentarios internos.
 """
     
     @staticmethod
     def get_prompt_default(
         company_info: dict,
         rfx_data: dict,
-        pricing_data: dict
+        pricing_data: dict,
+        base_url: str = "http://localhost:5001"
     ) -> str:
         """
         Prompt cuando el usuario NO tiene branding configurado
-        Usa un template HTML predeterminado profesional
+        Usa logo por defecto de Sabra Corporation
         """
         
         products_formatted = ProposalPrompts._format_products(rfx_data.get('products', []))
         
+        # Logo por defecto de Sabra Corporation
+        default_logo_endpoint = f"{base_url}/api/branding/default/logo"
+        
+        # Determinar qué campos de pricing mostrar (solo si > 0)
+        coord_val = pricing_data.get('coordination_formatted', '$0.00')
+        tax_val = pricing_data.get('tax_formatted', '$0.00')
+        cpp_val = pricing_data.get('cost_per_person_formatted', '$0.00')
+        
+        show_coordination = coord_val not in ['$0.00', '$0', '0']
+        show_tax = tax_val not in ['$0.00', '$0', '0']
+        show_cost_per_person = cpp_val not in ['$0.00', '$0', '0']
+        
+        pricing_lines = f"- Subtotal: {pricing_data.get('subtotal_formatted')}"
+        if show_coordination:
+            pricing_lines += f"\n- Coordinación: {coord_val}"
+        if show_tax:
+            pricing_lines += f"\n- Impuestos: {tax_val}"
+        pricing_lines += f"\n- TOTAL: {pricing_data.get('total_formatted')}"
+        if show_cost_per_person:
+            pricing_lines += f"\n- Costo por persona: {cpp_val}"
+        
         return f"""# ROL Y CONTEXTO
-Eres un generador de presupuestos profesionales. Debes crear un presupuesto en HTML usando un formato predeterminado profesional.
+Eres un generador de presupuestos profesionales en HTML con estilo corporativo de Sabra Corporation.
+
+---
+
+# INFORMACIÓN DE LA EMPRESA
+
+{company_info}
+
+## Logo de la Empresa (Por Defecto)
+URL del logo: {default_logo_endpoint}
 
 ---
 
 # DATOS DEL PRESUPUESTO
 
-## Información de tu Empresa
-{company_info}
-
-## Información del Cliente Final
+## Información del Cliente
 - Cliente: {rfx_data.get('client_name', 'N/A')}
-- Empresa: {rfx_data.get('company_name', 'N/A')}
-- Solicitante: {rfx_data.get('requester_name', 'N/A')}
-- Email: {rfx_data.get('requester_email', 'N/A')}
-- Fecha de evento: {rfx_data.get('event_date', 'N/A')}
-- Lugar: {rfx_data.get('event_location', 'N/A')}
-- Número de personas: {rfx_data.get('num_people', 'N/A')}
+- Solicitud: {rfx_data.get('solicitud', 'N/A')}
+
+## Fechas del Presupuesto
+- Fecha actual: {rfx_data.get('current_date', '2025-10-20')}
+- Vigencia: 30 días desde la fecha actual (calcular: fecha_actual + 30 días)
 
 ## Productos/Servicios
 {products_formatted}
 
 ## Pricing
-- Subtotal: {pricing_data.get('subtotal_formatted')}
-- Coordinación: {pricing_data.get('coordination_formatted')}
-- Impuestos: {pricing_data.get('tax_formatted')}
-- TOTAL: {pricing_data.get('total_formatted')}
+{pricing_lines}
 
 ---
 
-# INSTRUCCIONES
+# INSTRUCCIONES DE DISEÑO - ESTILO SABRA CORPORATION
 
-Genera un HTML completo con este TEMPLATE PREDETERMINADO:
+Usa el mismo estilo que el prompt con branding personalizado, CON el logo por defecto de Sabra.
 
-```html
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Propuesta Comercial</title>
-    <style>
-        @page {{{{
-            size: letter;
-            margin: 0;
-        }}}}
-        
-        * {{{{
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            -webkit-print-color-adjust: exact;
-            print-color-adjust: exact;
-        }}}}
-        
-        body {{{{
-            width: 216mm;
-            height: 279mm;
-            font-family: Arial, sans-serif;
-            font-size: 11pt;
-            color: #333;
-            background: white;
-        }}}}
-        
-        .container {{{{
-            padding: 10mm;
-        }}}}
-        
-        .header {{{{
-            text-align: center;
-            border-bottom: 2pt solid #2c5f7c;
-            padding-bottom: 5mm;
-            margin-bottom: 5mm;
-        }}}}
-        
-        .header h1 {{{{
-            font-size: 24pt;
-            color: #2c5f7c;
-            margin-bottom: 2mm;
-        }}}}
-        
-        .section {{{{
-            margin-bottom: 5mm;
-        }}}}
-        
-        .section-title {{{{
-            background-color: #2c5f7c;
-            color: white;
-            padding: 2mm 3mm;
-            font-size: 12pt;
-            font-weight: bold;
-            margin-bottom: 2mm;
-        }}}}
-        
-        .section-content {{{{
-            padding: 3mm;
-            background-color: #f9f9f9;
-            border: 1pt solid #ddd;
-        }}}}
-        
-        table {{{{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 3mm 0;
-        }}}}
-        
-        th {{{{
-            background-color: #2c5f7c;
-            color: white;
-            padding: 2mm;
-            text-align: left;
-            border: 1pt solid #ddd;
-        }}}}
-        
-        td {{{{
-            padding: 2mm;
-            border: 1pt solid #ddd;
-        }}}}
-        
-        .pricing-summary {{{{
-            margin-top: 5mm;
-            text-align: right;
-        }}}}
-        
-        .total-line {{{{
-            font-size: 14pt;
-            font-weight: bold;
-            color: #2c5f7c;
-            margin-top: 2mm;
-            padding-top: 2mm;
-            border-top: 2pt solid #2c5f7c;
-        }}}}
-        
-        .footer {{{{
-            position: absolute;
-            bottom: 5mm;
-            left: 10mm;
-            right: 10mm;
-            text-align: center;
-            font-size: 9pt;
-            color: #666;
-            border-top: 1pt solid #ddd;
-            padding-top: 3mm;
-        }}}}
-        
-        ul {{{{
-            padding-left: 5mm;
-        }}}}
-        
-        li {{{{
-            margin-bottom: 1mm;
-        }}}}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <!-- HEADER -->
-        <div class="header">
-            <h1>PROPUESTA COMERCIAL</h1>
-            <p>Presupuesto Profesional</p>
-        </div>
-        
-        <!-- INFO EMPRESA -->
-        <div class="section">
-            <div class="section-title">Información del Proveedor</div>
-            <div class="section-content">
-                <p><strong>Empresa:</strong> [NOMBRE DE TU EMPRESA]</p>
-                <p><strong>Contacto:</strong> [TELÉFONO] | [EMAIL]</p>
-                <p><strong>Dirección:</strong> [DIRECCIÓN]</p>
-            </div>
-        </div>
-        
-        <!-- INFO CLIENTE -->
-        <div class="section">
-            <div class="section-title">Información del Cliente</div>
-            <div class="section-content">
-                <p><strong>Cliente:</strong> [CLIENTE]</p>
-                <p><strong>Empresa:</strong> [EMPRESA]</p>
-                <p><strong>Fecha:</strong> [FECHA]</p>
-                <p><strong>Lugar:</strong> [LUGAR]</p>
-            </div>
-        </div>
-        
-        <!-- PRODUCTOS -->
-        <div class="section">
-            <div class="section-title">Productos y Servicios</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width: 5%;">#</th>
-                        <th style="width: 50%;">Descripción</th>
-                        <th style="width: 15%;">Cantidad</th>
-                        <th style="width: 15%;">Precio Unit.</th>
-                        <th style="width: 15%;">Total</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <!-- Filas de productos aquí -->
-                </tbody>
-            </table>
-        </div>
-        
-        <!-- PRICING -->
-        <div class="pricing-summary">
-            <p>Subtotal: [SUBTOTAL]</p>
-            <p>Coordinación: [COORDINACION]</p>
-            <p>Impuestos: [IMPUESTOS]</p>
-            <p class="total-line">TOTAL: [TOTAL]</p>
-        </div>
-        
-        <!-- TÉRMINOS -->
-        <div class="section">
-            <div class="section-title">Términos y Condiciones</div>
-            <div class="section-content">
-                <ul>
-                    <li>Validez de la propuesta: 30 días calendario</li>
-                    <li>Forma de pago: 50% anticipo, 50% contra entrega</li>
-                    <li>Los precios incluyen coordinación y logística</li>
-                    <li>Tiempo de entrega según fecha del evento</li>
-                </ul>
-            </div>
-        </div>
-        
-        <!-- FOOTER -->
-        <div class="footer">
-            <p>Gracias por su preferencia | Para más información, contáctenos</p>
-        </div>
-    </div>
-</body>
-</html>
-```
+## COLOR CORPORATIVO
+- **Azul:** #0e2541 (headers de tabla y cajas de información)
+- **Texto blanco:** #ffffff (sobre fondo azul)
 
-Completa este template con los datos proporcionados arriba.
-Genera SOLO el HTML completo, sin explicaciones.
+## ESTRUCTURA
+
+1. **HEADER:** Logo de Sabra a la izquierda, "PRESUPUESTO" a la derecha
+2. **INFO EMPRESA:** Dirección, teléfono, email
+3. **FECHAS:** Fecha actual y vigencia (30 días) alineadas a la derecha
+4. **CAJAS AZULES:** Solo Cliente y Solicitud
+5. **TABLA:** Header azul con texto blanco, productos, coordinación (si > $0), TOTAL
+6. **COMENTARIOS:** Sección opcional para notas
+
+### HEADER - Ejemplo con Logo:
+<!-- Logo a la izquierda, título PRESUPUESTO a la derecha -->
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5mm; padding: 5mm 10mm 0 10mm;">
+    <img src="{default_logo_endpoint}" alt="Logo Sabra" style="height: 15mm;">
+    <h1 style="font-size: 24pt; color: #0e2541; margin: 0;">PRESUPUESTO</h1>
+</div>
+
+## REGLAS
+
+✅ Unidades en mm/pt (NO px)
+✅ Comentarios HTML en cada sección
+✅ Solo mostrar Coordinación si > $0: {'Sí' if show_coordination else 'No'}
+✅ Solo mostrar Impuestos si > $0: {'Sí' if show_tax else 'No'}
+✅ Solo mostrar Costo/persona si > $0: {'Sí' if show_cost_per_person else 'No'}
+🚫 NO incluir Términos y Condiciones
+
+---
+
+# OUTPUT
+
+Genera ÚNICAMENTE el código HTML completo.
+NO incluyas markdown, NO incluyas explicaciones.
+SOLO el código HTML puro con comentarios internos.
 """
     
     @staticmethod
@@ -509,13 +366,15 @@ El intento anterior falló por las siguientes razones:
 {errors_formatted}
 
 DEBES CORREGIR:
-- Incluir TODA la información del cliente y empresa
+- Incluir TODA la información del cliente en cajas azules
 - Incluir una tabla completa con productos
-- Incluir sección de "Términos y Condiciones"
-- Incluir breakdown completo de precios
+- Header de tabla azul (#0e2541) con texto blanco
+- NO incluir Términos y Condiciones
+- Incluir breakdown completo de precios dentro de la tabla
 - El HTML debe tener al menos 500 caracteres
 - Usar unidades en mm/pt (NO px)
 - Incluir CSS optimizado para PDF
+- Incluir comentarios HTML explicativos
 
 Genera un HTML COMPLETO que cumpla todos estos requisitos.
 """

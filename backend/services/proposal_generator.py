@@ -184,46 +184,40 @@ class ProposalGenerationService:
         🔧 Mapea rfx_data al formato que espera el prompt
         
         Convierte:
-        - 'companies' → 'client_name', 'company_name'
-        - 'delivery_date' → 'event_date'
-        - 'location' → 'event_location'
+        - 'companies' → 'client_name'
+        - 'title' → 'solicitud'
         - 'productos' + products_info → 'products'
+        - Agrega fecha actual automáticamente
         """
+        from datetime import datetime, timedelta
+        
         # Extraer información del cliente
         companies = rfx_data.get('companies', {})
         if isinstance(companies, dict):
             client_name = companies.get('name', 'N/A')
-            company_name = companies.get('name', 'N/A')
         else:
             client_name = 'N/A'
-            company_name = 'N/A'
-        
-        # Extraer información del solicitante
-        requesters = rfx_data.get('requesters', {})
-        if isinstance(requesters, dict):
-            requester_name = requesters.get('name', 'N/A')
-            requester_email = requesters.get('email', 'N/A')
-        else:
-            requester_name = 'N/A'
-            requester_email = 'N/A'
         
         # Usar products_info que ya viene preparado
         products = products_info if products_info else []
         
+        # Calcular fecha actual
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        
+        # Calcular fecha de vigencia (30 días desde hoy)
+        validity_date = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        
         # Mapear datos
         mapped_data = {
             'client_name': client_name,
-            'company_name': company_name,
-            'requester_name': requester_name,
-            'requester_email': requester_email,
-            'event_date': rfx_data.get('delivery_date', 'N/A'),
-            'event_location': rfx_data.get('location', 'N/A'),
-            'num_people': rfx_data.get('metadata', {}).get('num_people', 'N/A') if isinstance(rfx_data.get('metadata'), dict) else 'N/A',
+            'solicitud': rfx_data.get('title', 'N/A'),
             'products': products,
-            'title': rfx_data.get('title', ''),
-            'description': rfx_data.get('description', ''),
-            'user_id': rfx_data.get('user_id')
+            'user_id': rfx_data.get('user_id'),
+            'current_date': current_date,
+            'validity_date': validity_date
         }
+        
+        logger.info(f"✅ Mapped data - client: {client_name}, solicitud: {rfx_data.get('title', 'N/A')}, products: {len(products)}, date: {current_date}")
         
         return mapped_data
     
@@ -388,8 +382,8 @@ class ProposalGenerationService:
         self, rfx_data: Dict, products_info: List[Dict], 
         pricing_calculation: Dict, currency: str
     ) -> str:
-        """📋 Genera propuesta SIN branding usando ProposalPrompts"""
-        logger.info(f"📋 Building default prompt (no branding)")
+        """📋 Genera propuesta CON logo por defecto de Sabra usando ProposalPrompts"""
+        logger.info(f"📋 Building default prompt (with Sabra default logo)")
         
         # Preparar datos para el prompt
         user_id = rfx_data.get('user_id', 'unknown')
@@ -399,11 +393,15 @@ class ProposalGenerationService:
         # 🔧 MAPEAR datos al formato que espera el prompt
         mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
         
+        # Obtener base_url para el logo por defecto
+        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
+        
         # Llamar al prompt con los parámetros correctos
         prompt = ProposalPrompts.get_prompt_default(
             company_info=company_info,
             rfx_data=mapped_rfx_data,
-            pricing_data=pricing_data
+            pricing_data=pricing_data,
+            base_url=base_url
         )
         
         return await self._call_ai(prompt)
@@ -441,10 +439,12 @@ class ProposalGenerationService:
             company_info = self._get_company_info(user_id)
             pricing_data = self._format_pricing_data(pricing_calculation, rfx_data.get('currency', 'USD'))
             
+            base_url = os.getenv('BASE_URL', 'http://localhost:5001')
             original_prompt = ProposalPrompts.get_prompt_default(
                 company_info=company_info,
                 rfx_data=rfx_data,
-                pricing_data=pricing_data
+                pricing_data=pricing_data,
+                base_url=base_url
             )
         
         # Construir prompt de retry con correcciones

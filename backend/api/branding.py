@@ -404,6 +404,44 @@ def serve_branding_file(user_id: str, file_type: str):
         }), 500
 
 
+@branding_bp.route("/default/logo", methods=["GET"])
+def serve_default_logo():
+    """
+    Servir logo por defecto de Sabra Corporation
+    Usado cuando el usuario no tiene branding configurado
+    
+    Returns:
+        Archivo PNG del logo de Sabra
+    """
+    try:
+        import os
+        from pathlib import Path
+        
+        # Path al logo por defecto
+        project_root = Path(os.getcwd())
+        default_dir = project_root / "backend" / "static" / "default"
+        logo_file = default_dir / "sabra_logo.png"
+        
+        logger.info(f"📁 Serving default logo: {logo_file}")
+        
+        if not logo_file.exists():
+            logger.error(f"Default logo not found: {logo_file}")
+            return jsonify({
+                "status": "error",
+                "message": "Default logo not found"
+            }), 404
+        
+        return send_from_directory(str(default_dir), "sabra_logo.png")
+        
+    except Exception as e:
+        logger.error(f"Error serving default logo: {e}", exc_info=True)
+        return jsonify({
+            "status": "error",
+            "message": "Error serving default logo",
+            "error": str(e)
+        }), 500
+
+
 @branding_bp.route("/test", methods=["GET"])
 def test_branding_api():
     """
@@ -418,6 +456,7 @@ def test_branding_api():
             "status": "GET /api/branding/analysis-status/<company_id>",
             "reanalyze": "POST /api/branding/reanalyze/<company_id>",
             "delete": "DELETE /api/branding/<company_id>",
-            "files": "GET /api/branding/files/<user_id>/<file_type>"
+            "files": "GET /api/branding/files/<user_id>/<file_type>",
+            "default_logo": "GET /api/branding/default/logo"
         }
     }), 200
