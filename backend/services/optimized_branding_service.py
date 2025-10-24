@@ -411,6 +411,10 @@ class OptimizedUserBrandingService:
                 result['template_analysis'] = {}
 
         logger.debug(f"📖 Retrieved branding for identifier {identifier_field}={company_id}, status: {result.get('analysis_status')}")
+        
+        # ✅ MEJORA #6: El análisis ahora es específico desde el inicio (vision_analysis_service.py)
+        # No necesitamos post-procesamiento si el análisis se hace bien desde la fuente
+        
         return result
     
     def get_analysis_status(self, company_id: str) -> Optional[Dict]:

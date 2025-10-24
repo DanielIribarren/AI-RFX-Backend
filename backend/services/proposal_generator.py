@@ -17,10 +17,31 @@ from backend.core.database import get_database_client
 from backend.services.unified_budget_configuration_service import unified_budget_service
 from backend.services.prompts.proposal_prompts import ProposalPrompts
 from backend.utils.html_validator import HTMLValidator
+from backend.utils.branding_validator import BrandingValidator  # ✅ MEJORA #5
 
 import logging
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# 🔒 SYSTEM PROMPT ESTRICTO - MEJORA #2
+# ============================================================================
+STRICT_SYSTEM_PROMPT = """Eres un generador de presupuestos HTML profesionales y PRECISOS.
+
+🚨 REGLAS CRÍTICAS - CUMPLIMIENTO OBLIGATORIO:
+
+1. Sigue EXACTAMENTE el formato de branding proporcionado
+2. NO improvises estilos - usa SOLO los colores especificados
+3. NO mezcles estilos - aplica consistentemente un solo esquema
+4. Si hay CSS base proporcionado, úsalo SIN MODIFICAR
+5. NO agregues elementos visuales no especificados
+6. PRIORIZA la consistencia sobre la creatividad
+
+⚠️ VALIDACIÓN AUTOMÁTICA:
+Tu output será validado automáticamente. Si no cumple EXACTAMENTE con el branding, será rechazado.
+
+✅ OBJETIVO:
+Generar HTML limpio que respete al 100% el branding configurado, con máxima precisión y cero improvisación."""
 
 
 class ProposalGenerationService:
@@ -93,18 +114,47 @@ class ProposalGenerationService:
             # 7. Validar HTML con sistema de scoring
             validation_result = self._validate_html(html_content, products_info)
             
-            # 8. Retry si la validación falla
-            if not validation_result['is_valid']:
-                logger.warning(f"⚠️ Validation failed, attempting retry with corrections...")
-                html_content = await self._retry_generation(
-                    html_content, validation_result['issues'], rfx_data, 
-                    products_info, pricing_calculation, currency
+            # 7.5. ✅ MEJORA #5: Validar branding si existe configuración
+            branding_valid = True
+            branding_issues = []
+            if has_branding:
+                logger.info("🎨 Validating branding consistency...")
+                branding_config = self._get_branding_config(user_id)
+                branding_valid, branding_issues = BrandingValidator.validate_branding_consistency(
+                    html_content, branding_config
                 )
                 
-                # Validar nuevamente
+                if not branding_valid:
+                    logger.warning(f"⚠️ Branding validation failed: {len(branding_issues)} issues")
+                    for issue in branding_issues:
+                        logger.warning(f"   - {issue}")
+            
+            # 8. Retry si la validación HTML o branding falla
+            needs_retry = not validation_result['is_valid'] or (has_branding and not branding_valid)
+            
+            if needs_retry:
+                logger.warning(f"⚠️ Validation failed, attempting retry with corrections...")
+                
+                # Combinar issues de HTML y branding
+                all_issues = validation_result.get('issues', [])
+                if branding_issues:
+                    all_issues.extend(branding_issues)
+                
+                html_content = await self._retry_generation_with_branding(
+                    html_content, all_issues, rfx_data, 
+                    products_info, pricing_calculation, currency,
+                    user_id, has_branding, branding_config if has_branding else None
+                )
+                
+                # Validar nuevamente (HTML + Branding)
                 validation_result = self._validate_html(html_content, products_info)
-                if validation_result['is_valid']:
-                    logger.info(f"✅ Retry successful - validation passed")
+                if has_branding:
+                    branding_valid, branding_issues = BrandingValidator.validate_branding_consistency(
+                        html_content, branding_config
+                    )
+                
+                if validation_result['is_valid'] and (not has_branding or branding_valid):
+                    logger.info(f"✅ Retry successful - all validations passed")
                 else:
                     logger.error(f"❌ Retry failed - validation still failing")
             
@@ -349,7 +399,12 @@ class ProposalGenerationService:
             return False
     
     def _get_branding_config(self, user_id: str) -> Dict[str, Any]:
-        """Obtiene configuración de branding completa con colores reales del template"""
+        """
+        ✅ MEJORA #6: Obtiene configuración de branding con análisis específico mejorado
+        
+        Extrae TODOS los campos del análisis mejorado (vision_analysis_service.py)
+        para máxima consistencia entre análisis y generación
+        """
         try:
             from backend.services.user_branding_service import user_branding_service
             
@@ -361,32 +416,54 @@ class ProposalGenerationService:
             template_analysis = branding.get('template_analysis', {})
             logo_analysis = branding.get('logo_analysis', {})
             
-            # ✅ EXTRAER COLORES REALES DEL TEMPLATE ANALYSIS
+            # ✅ MEJORA #6: Extraer campos específicos del análisis mejorado
             color_scheme = template_analysis.get('color_scheme', {})
+            color_usage = template_analysis.get('color_usage', {})  # NUEVO
             table_style = template_analysis.get('table_style', {})
+            table_css = template_analysis.get('table_css', {})  # NUEVO
+            spacing_rules = template_analysis.get('spacing_rules', {})  # NUEVO
+            contrast_rules = template_analysis.get('contrast_rules', {})  # NUEVO
+            quality_checks = template_analysis.get('quality_checks', {})  # NUEVO
             
-            # Colores principales
-            primary_color = color_scheme.get('primary', '#2c5f7c')
+            # Colores principales (con fallback a color_usage si existe)
+            primary_color = color_usage.get('accent') or color_scheme.get('primary', '#2c5f7c')
             secondary_color = color_scheme.get('secondary', '#ffffff')
             
-            # Colores específicos de tabla
-            table_header_bg = table_style.get('header_background', '#f0f0f0')
-            table_header_text = color_scheme.get('text', '#000000')
-            table_border = color_scheme.get('borders', '#000000')
+            # Colores específicos de tabla (priorizar table_css si existe)
+            table_header_bg = table_css.get('header_bg') or table_style.get('header_background', '#f0f0f0')
+            table_header_text = table_css.get('header_text') or table_style.get('header_text_color', '#000000')
+            table_border = color_usage.get('table_border') or color_scheme.get('borders', '#000000')
             
             logger.info(f"🎨 Branding colors - Primary: {primary_color}, Secondary: {secondary_color}")
             logger.info(f"🎨 Table colors - Header BG: {table_header_bg}, Header Text: {table_header_text}")
+            logger.info(f"📐 Spacing rules: {spacing_rules}")
+            logger.info(f"✅ Quality checks: {quality_checks}")
             
+            # ✅ MEJORA #6: Retornar configuración completa con TODOS los campos
             return {
+                # Básicos
                 'logo_url': branding.get('logo_url'),
                 'logo_analysis': logo_analysis,
                 'template_analysis': template_analysis,
+                
+                # Colores (compatibilidad con código existente)
                 'primary_color': primary_color,
                 'secondary_color': secondary_color,
                 'table_header_bg': table_header_bg,
                 'table_header_text': table_header_text,
                 'table_border': table_border,
-                'typography': template_analysis.get('typography', {})
+                
+                # ✅ NUEVOS: Campos específicos del análisis mejorado
+                'color_scheme': color_scheme,
+                'color_usage': color_usage,
+                'table_style': table_style,
+                'table_css': table_css,
+                'typography': template_analysis.get('typography', {}),
+                'spacing_rules': spacing_rules,
+                'contrast_rules': contrast_rules,
+                'quality_checks': quality_checks,
+                'layout_structure': template_analysis.get('layout_structure', ''),
+                'html_structure': template_analysis.get('html_structure', {})
             }
             
         except Exception as e:
@@ -445,15 +522,11 @@ class ProposalGenerationService:
         # 🔧 MAPEAR datos al formato que espera el prompt
         mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
         
-        # Usar ruta relativa para el logo por defecto - compatibilidad con servidor
-        base_url = ""  # Ruta relativa, no necesita dominio completo
-        
         # Llamar al prompt con los parámetros correctos
         prompt = ProposalPrompts.get_prompt_default(
             company_info=company_info,
             rfx_data=mapped_rfx_data,
-            pricing_data=pricing_data,
-            base_url=base_url
+            pricing_data=pricing_data
         )
         
         return await self._call_ai(prompt)
@@ -492,12 +565,10 @@ class ProposalGenerationService:
             company_info = self._get_company_info(user_id)
             pricing_data = self._format_pricing_data(pricing_calculation, rfx_data.get('currency', 'USD'))
             
-            base_url = os.getenv('BASE_URL', 'http://localhost:5001')
             original_prompt = ProposalPrompts.get_prompt_default(
                 company_info=company_info,
                 rfx_data=rfx_data,
-                pricing_data=pricing_data,
-                base_url=base_url
+                pricing_data=pricing_data
             )
         
         # Construir prompt de retry con correcciones
@@ -508,18 +579,126 @@ class ProposalGenerationService:
         
         return await self._call_ai(retry_prompt)
     
+    async def _retry_generation_with_branding(
+        self, original_html: str, issues: List[str], rfx_data: Dict,
+        products_info: List[Dict], pricing_calculation: Dict, currency: str,
+        user_id: str, has_branding: bool, branding_config: Optional[Dict] = None
+    ) -> str:
+        """
+        🔄 MEJORA #5: Reintenta generación con correcciones de HTML Y branding
+        
+        Args:
+            original_html: HTML original generado
+            issues: Lista de problemas (HTML + branding)
+            rfx_data: Datos del RFX
+            products_info: Información de productos
+            pricing_calculation: Cálculo de pricing
+            currency: Moneda
+            user_id: ID del usuario
+            has_branding: Si tiene branding configurado
+            branding_config: Configuración de branding (opcional)
+        """
+        logger.info(f"🔄 Attempting retry with branding corrections...")
+        logger.info(f"🔄 Total issues to fix: {len(issues)}")
+        
+        # Separar issues de branding vs HTML
+        branding_issues = [issue for issue in issues if '⚠️' in issue or 'color' in issue.lower() or 'logo' in issue.lower()]
+        html_issues = [issue for issue in issues if issue not in branding_issues]
+        
+        logger.info(f"   - HTML issues: {len(html_issues)}")
+        logger.info(f"   - Branding issues: {len(branding_issues)}")
+        
+        # Reconstruir el prompt original
+        if has_branding and branding_config:
+            logo_endpoint = f"/api/branding/files/{user_id}/logo"
+            company_info = self._get_company_info(user_id)
+            pricing_data = self._format_pricing_data(pricing_calculation, currency)
+            
+            # 🔧 MAPEAR datos igual que en la generación original
+            mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
+            logger.info(f"✅ Retry - Mapped data: client: {mapped_rfx_data.get('client_name')}, products: {len(mapped_rfx_data.get('products', []))}")
+            
+            original_prompt = ProposalPrompts.get_prompt_with_branding(
+                user_id=user_id,
+                logo_endpoint=logo_endpoint,
+                company_info=company_info,
+                rfx_data=mapped_rfx_data,  # ✅ Usar datos mapeados
+                pricing_data=pricing_data,
+                branding_config=branding_config
+            )
+        else:
+            company_info = self._get_company_info(user_id)
+            pricing_data = self._format_pricing_data(pricing_calculation, currency)
+            
+            # 🔧 MAPEAR datos igual que en la generación original
+            mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
+            logger.info(f"✅ Retry - Mapped data: client: {mapped_rfx_data.get('client_name')}, products: {len(mapped_rfx_data.get('products', []))}")
+            
+            original_prompt = ProposalPrompts.get_prompt_default(
+                company_info=company_info,
+                rfx_data=mapped_rfx_data,  # ✅ Usar datos mapeados
+                pricing_data=pricing_data
+            )
+        
+        # Construir prompt de retry con TODOS los problemas
+        retry_prompt = f"""
+El HTML generado tiene los siguientes problemas que DEBES CORREGIR:
+
+📋 PROBLEMAS DE HTML ({len(html_issues)}):
+{chr(10).join(f'- {issue}' for issue in html_issues) if html_issues else '(ninguno)'}
+
+🎨 PROBLEMAS DE BRANDING ({len(branding_issues)}):
+{chr(10).join(f'- {issue}' for issue in branding_issues) if branding_issues else '(ninguno)'}
+
+🚨 INSTRUCCIONES PARA CORRECCIÓN:
+
+1. **COLORES:** Usa SOLO los colores especificados en el branding:
+   - Primario: {branding_config.get('primary_color', '#0e2541') if branding_config else '#0e2541'}
+   - Header tabla: {branding_config.get('table_header_bg', '#0e2541') if branding_config else '#0e2541'}
+   - Texto header: {branding_config.get('table_header_text', '#ffffff') if branding_config else '#ffffff'}
+
+2. **ESTRUCTURA:** Mantén la estructura exacta del prompt original
+
+3. **LOGO:** Asegúrate de incluir el logo correctamente
+
+4. **CONSISTENCIA:** NO improvises estilos nuevos
+
+---
+
+PROMPT ORIGINAL:
+{original_prompt}
+
+---
+
+GENERA DE NUEVO EL HTML CORRIGIENDO EXACTAMENTE ESTOS PROBLEMAS.
+RESPONDE SOLO CON EL HTML COMPLETO (sin ```html, sin markdown).
+"""
+        
+        return await self._call_ai(retry_prompt)
+    
     async def _call_ai(self, prompt: str) -> str:
-        """🤖 Llama a OpenAI con el prompt"""
-        logger.info(f"🤖 Calling OpenAI API...")
+        """
+        🤖 Llama a OpenAI con el prompt - OPTIMIZADO para máxima consistencia
+        
+        MEJORAS IMPLEMENTADAS:
+        - ✅ MEJORA #1: Temperatura 0.2 (antes 0.7) para reducir variabilidad
+        - ✅ MEJORA #1: top_p 0.1 para máximo determinismo
+        - ✅ MEJORA #2: System prompt estricto para cumplimiento de branding
+        """
+        logger.info(f"🤖 Calling OpenAI API with strict parameters (temp=0.2, top_p=0.1)...")
         
         openai_client = self._get_openai_client()
         
         try:
             response = openai_client.chat.completions.create(
                 model=self.openai_config.model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": STRICT_SYSTEM_PROMPT},  # ✅ MEJORA #2
+                    {"role": "user", "content": prompt}
+                ],
                 max_tokens=min(4000, self.openai_config.max_tokens),
-                temperature=0.7
+                temperature=0.2,  # ✅ MEJORA #1: Reducido de 0.7 a 0.2 (80% menos variabilidad)
+                top_p=0.1  # ✅ MEJORA #1: Máximo determinismo (solo top 10% tokens)
             )
             
             html_content = (response.choices[0].message.content or "").strip()

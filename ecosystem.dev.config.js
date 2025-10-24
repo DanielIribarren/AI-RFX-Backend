@@ -19,7 +19,7 @@ module.exports = {
         SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qd25temRneGN4dWJhbnVidm1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDkyMjg5MzIsImV4cCI6MjA2NDgwNDkzMn0.0fuBXpygfoj_Ar5Uav4Joo-DV-v2AU1HQAAHYARsRGY',
         
         // OpenAI
-        OPENAI_API_KEY: '123...',
+        OPENAI_API_KEY: '',
         
         // Aplicación
         SECRET_KEY: 'dev-secret-key-change-in-production',

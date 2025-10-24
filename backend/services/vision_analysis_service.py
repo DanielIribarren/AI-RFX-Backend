@@ -73,104 +73,154 @@ class VisionAnalysisService:
             image_data = self._encode_image(image_path)
             
             prompt = """
-🎯 MISIÓN CRÍTICA: Crea template HTML QUE REPLIQUE EXACTAMENTE este ejemplo de presupuesto.
+🎯 MISIÓN CRÍTICA: Analiza este presupuesto y extrae ESPECIFICACIONES EXACTAS para replicarlo.
 
-OBJETIVO: Generar template HTML que cuando se inyecten datos reales, se vea IDÉNTICO al ejemplo original.
+✅ MEJORA #6: ANÁLISIS ESPECÍFICO Y PRECISO (NO GENÉRICO)
 
-PROCESO:
-1. Observa CADA detalle visual del documento
-2. Mide espacios, colores, tamaños EXACTOS
-3. Replica la estructura PIXEL por PIXEL
-4. Genera HTML que produzca resultado INDISTINGUIBLE del original
+OBJETIVO: Extraer colores EXACTOS, medidas PRECISAS y reglas ESPECÍFICAS que permitan replicar este documento fielmente.
 
-ENFOQUE REPLICACIÓN EXACTA:
-- Posición exacta de cada elemento
-- Colores hexadecimales precisos extraídos de la imagen
-- Espaciados medidos visualmente (px, margins, padding)
-- Tipografía detectada (familia, tamaños, pesos)
-- Bordes, sombras, fondos tal como aparecen
-- Alineaciones idénticas (izquierda, centro, derecha)
-- Proporciones de secciones replicadas
+🔍 PROCESO DE ANÁLISIS DETALLADO:
 
-RESPUESTA REQUERIDA (JSON sin markdown):
+1. **COLORES EXACTOS** (extraer hexadecimales precisos):
+   - Color primario del branding (bordes, acentos)
+   - Color de fondo del header de tabla
+   - Color de texto del header de tabla
+   - Color de bordes de tabla
+   - Colores de texto (primario, secundario)
+   - ⚠️ NO uses colores genéricos - extrae los REALES de la imagen
+
+2. **MEDIDAS ESPECÍFICAS** (en mm para PDF):
+   - Altura del logo (debe estar entre 80-120px / 15-20mm)
+   - Márgenes de página (top, bottom, left, right)
+   - Espaciado entre secciones (margin-bottom)
+   - Padding de celdas de tabla
+   - Tamaños de fuente específicos (no "grande" o "pequeño")
+
+3. **ESTRUCTURA LAYOUT** (orden exacto):
+   - Identificar secciones en orden: header, client-info, products-table, totals, footer
+   - Especificar qué va en cada sección
+   - Proporciones: header 15%, contenido 70%, footer 15%
+
+4. **TIPOGRAFÍA ESPECÍFICA**:
+   - Familia de fuente detectada (Arial, Helvetica, etc.)
+   - Tamaño base del cuerpo (en px o pt)
+   - Tamaño de títulos/headings
+   - Tamaño del nombre de empresa
+   - Line-height específico
+
+5. **REGLAS DE USO DE COLORES** (para el LLM):
+   - Especificar DÓNDE usar cada color
+   - Reglas de contraste: "Si fondo es X, texto debe ser Y"
+   - Colores permitidos vs prohibidos
+
+✅ FORMATO DE RESPUESTA ESPECÍFICO (JSON sin markdown):
 
 {
-  "exact_replication_analysis": {
-    "header_section": {
-      "logo_position": "exact position observed",
-      "logo_size": "height and width in px",
-      "company_name_typography": "font-family, size, color, position",
-      "title_typography": "font-family, size, color, alignment",
-      "date_position": "exact position and styling",
-      "background_color": "exact hex color",
-      "margins": "top, bottom, left, right in px",
-      "padding": "internal spacing in px"
-    },
-    "client_section": {
-      "title_styling": "exact font and color",
-      "layout": "single/multi column",
-      "text_alignment": "left/center/right",
-      "spacing_from_header": "margin-top in px",
-      "field_spacing": "space between fields in px"
-    },
-    "products_table": {
-      "table_width": "percentage or px",
-      "border_style": "width, color, type",
-      "header_background": "exact hex color",
-      "header_text_color": "hex color",
-      "header_font_weight": "normal/bold",
-      "cell_padding": "padding in px",
-      "text_alignment": "per column alignment",
-      "row_height": "height in px",
-      "alternating_rows": true/false
-    },
-    "totals_section": {
-      "position": "left/center/right",
-      "background": "color if has background",
-      "text_styling": "font-size, weight, color",
-      "border": "if has border styling",
-      "spacing_from_table": "margin-top in px"
-    },
-    "overall_layout": {
-      "page_margins": "body margins in px",
-      "section_spacing": "space between sections",
-      "font_family": "detected font family",
-      "base_font_size": "body font size",
-      "line_height": "detected line spacing"
+  "color_scheme": {
+    "primary": "#XXXXXX",  // Color primario EXACTO (bordes, acentos)
+    "secondary": "#XXXXXX",  // Color secundario
+    "backgrounds": ["#XXXXXX", "#XXXXXX"],  // Lista de fondos usados
+    "text": "#XXXXXX",  // Color de texto principal
+    "borders": "#XXXXXX"  // Color de bordes
+  },
+  "color_usage": {
+    "header_border": "#XXXXXX",  // Dónde: borde inferior del header
+    "header_background": "#XXXXXX",  // Dónde: fondo del header
+    "table_header_bg": "#XXXXXX",  // Dónde: fondo del header de tabla
+    "table_header_text": "#XXXXXX",  // Dónde: texto del header de tabla
+    "table_border": "#XXXXXX",  // Dónde: bordes de celdas
+    "text_primary": "#XXXXXX",  // Dónde: texto del cuerpo
+    "accent": "#XXXXXX"  // Dónde: elementos destacados
+  },
+  "contrast_rules": {
+    "light_backgrounds": ["#ffffff", "#f0f0f0"],  // Fondos claros detectados
+    "dark_backgrounds": ["#0e2541", "#2c5f7c"],  // Fondos oscuros detectados
+    "rule": "light_bg_use_dark_text, dark_bg_use_light_text"
+  },
+  "layout_structure": "header-client-products-totals-footer",  // Orden exacto de secciones
+  "html_structure": {
+    "order": ["header", "client", "products", "totals", "footer"],
+    "section_spacing": "5mm",  // Espacio entre secciones
+    "proportions": {
+      "header": "15%",
+      "content": "70%",
+      "footer": "15%"
     }
   },
-  "html_template": "COMPLETE HTML THAT REPLICATES EXACTLY THE VISUAL APPEARANCE - USE PRECISE CSS TO MATCH EVERY VISUAL DETAIL",
-  "placeholders": ["user_id", "company_name", "fecha", "cliente", "cliente_direccion", "productos", "total_final"],
-  "template_version": "exact_replica_1.0",
-  "replication_quality": "pixel_perfect"
+  "typography": {
+    "font_family": "Arial, sans-serif",  // Familia detectada
+    "base_size": "11px",  // Tamaño del cuerpo
+    "heading_size": "18px",  // Tamaño de títulos
+    "company_name_size": "24px",  // Tamaño nombre empresa
+    "line_height": "1.5"  // Interlineado
+  },
+  "table_style": {
+    "border_width": "1px",  // Ancho de bordes
+    "border_color": "#000000",  // Color de bordes
+    "header_background": "#f0f0f0",  // Fondo del header EXACTO
+    "header_text_color": "#000000",  // Texto del header EXACTO
+    "cell_padding": "10px",  // Padding de celdas
+    "has_borders": true,
+    "border_collapse": "collapse"
+  },
+  "table_css": {
+    "border": "1px solid #000000",  // CSS completo para border
+    "header_bg": "#f0f0f0",
+    "header_text": "#000000",
+    "row_padding": "10px",
+    "cell_align": "left",
+    "width": "100%"
+  },
+  "spacing_rules": {
+    "section_margin": "5mm",  // Margen entre secciones
+    "header_padding": "5mm 10mm",  // Padding del header
+    "table_margin": "5mm 10mm",  // Margen de la tabla
+    "cell_padding": "2mm",  // Padding de celdas
+    "logo_height": "15mm",  // Altura del logo
+    "logo_margin": "0 0 5mm 0"  // Margen del logo
+  },
+  "quality_checks": {
+    "logo_min_height": "80px",  // Mínimo para logo
+    "logo_max_height": "120px",  // Máximo para logo
+    "min_section_spacing": "3mm",
+    "required_sections": ["header", "client_info", "products_table", "totals"],
+    "forbidden_elements": ["terms_and_conditions"]
+  },
+  "style": "professional",  // Estilo general detectado
+  "template_version": "specific_analysis_v6.0"
 }
 
-INSTRUCCIONES TEMPLATE HTML:
+🚨 INSTRUCCIONES CRÍTICAS PARA EL ANÁLISIS:
 
-REPLICACIÓN EXACTA:
-1. Usa CSS inline para control preciso de estilos
-2. Mide visualmente cada espacio y conviértelo a px exactos
-3. Extrae colores reales de la imagen (no uses genéricos)
-4. Replica tipografía: familia, tamaño, peso, exactos
-5. Posiciona elementos en ubicaciones idénticas
-6. Tabla debe verse IGUAL: bordes, colores, espaciado
-7. Proporciones de secciones idénticas al original
+1. **SÉ ESPECÍFICO, NO GENÉRICO:**
+   - ❌ MAL: "color azul" → ✅ BIEN: "#2c5f7c"
+   - ❌ MAL: "logo grande" → ✅ BIEN: "15mm" o "100px"
+   - ❌ MAL: "espaciado normal" → ✅ BIEN: "5mm" o "20px"
 
-PLACEHOLDERS DINÁMICOS:
-- {{user_id}} - Para URL del logo
-- {{company_name}} - Solo si no hay logo
-- {{fecha}} - Fecha del documento  
-- {{cliente}} - Nombre cliente
-- {{cliente_direccion}} - Dirección cliente
-- {{#productos}}...{{/productos}} - Loop tabla productos
-- {{descripcion}}, {{cantidad}}, {{precio_unitario}}, {{total}} - Campos producto
-- {{total_final}} - Total general
+2. **EXTRAE COLORES REALES:**
+   - Usa herramientas de color picker visual
+   - NO inventes colores genéricos
+   - Especifica DÓNDE se usa cada color
 
-CALIDAD OBJETIVO: El HTML generado + datos inyectados debe ser VISUALMENTE INDISTINGUIBLE del ejemplo original.
+3. **MIDE PROPORCIONES:**
+   - Calcula porcentajes de secciones
+   - Mide espacios entre elementos
+   - Detecta tamaños de fuente reales
 
-NO análisis genérico - COPIA EXACTA del formato visual observado.
+4. **DEFINE REGLAS DE USO:**
+   - No solo "qué colores hay"
+   - Sino "DÓNDE y CUÁNDO usar cada color"
+   - Reglas de contraste claras
 
-Responde SOLO el JSON completo, sin markdown ni explicaciones.
+5. **INCLUYE TODOS LOS CAMPOS DEL JSON:**
+   - No omitas ningún campo del formato
+   - Si no detectas algo, usa valores por defecto razonables
+   - Completa TODOS los objetos: color_usage, table_css, spacing_rules, etc.
+
+⚠️ CALIDAD OBJETIVO: 
+El análisis debe ser TAN ESPECÍFICO que un LLM pueda generar HTML idéntico solo leyendo este JSON.
+
+📋 RESPONDE SOLO EL JSON COMPLETO, sin markdown (```), sin explicaciones adicionales.
 """
             
             client = self._get_client()

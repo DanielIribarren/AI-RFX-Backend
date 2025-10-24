@@ -37,7 +37,7 @@ from backend.models.rfx_models import (
 from backend.models.proposal_models import ProposalRequest, ProposalNotes
 from backend.core.config import get_openai_config
 from backend.core.database import get_database_client
-from backend.utils.validators import EmailValidator, DateValidator, TimeValidator
+# ✅ ELIMINADO: from backend.utils.validators import EmailValidator, DateValidator, TimeValidator
 from backend.utils.text_utils import clean_json_string
 from backend.core.feature_flags import FeatureFlags
 from backend.services.function_calling_extractor import FunctionCallingRFXExtractor
@@ -123,11 +123,7 @@ class ExtractionDebugInfo(BaseModel):
 # 🏭 SISTEMA MODULAR DE EXTRACTORES
 # ============================================================================
 
-class ExtractionStrategy(Enum):
-    """Estrategias de extracción disponibles"""
-    CONSERVATIVE = "conservative"  # Alta precisión, baja sensibilidad
-    BALANCED = "balanced"         # Balance entre precisión y sensibilidad 
-    AGGRESSIVE = "aggressive"     # Alta sensibilidad, menor precisión
+# ✅ ELIMINADO: ExtractionStrategy enum - El LLM siempre es inteligente y completo
 
 class BaseExtractor:
     """Extractor base con funcionalidad común"""
@@ -486,16 +482,14 @@ FORMATO JSON EXTENDIDO:
         template = self.jinja_env.from_string(self.templates[template_name])
         return template.render(**kwargs)
     
-    def get_system_prompt(self, strategy: ExtractionStrategy = ExtractionStrategy.BALANCED, 
-                         debug_mode: bool = False, confidence_threshold: float = 0.7) -> str:
+    def get_system_prompt(self, debug_mode: bool = False, confidence_threshold: float = 0.7) -> str:
         """Genera system prompt dinámico"""
         return self.render_prompt('system_prompt', 
-                                strategy=strategy.value,
+                                strategy='intelligent',  # ✅ Siempre inteligente
                                 debug_mode=debug_mode,
                                 confidence_threshold=confidence_threshold)
     
-    def get_extraction_prompt(self, chunk_text: str, strategy: ExtractionStrategy = ExtractionStrategy.BALANCED,
-                            debug_mode: bool = False, chunk_index: int = 0, **kwargs) -> str:
+    def get_extraction_prompt(self, chunk_text: str, debug_mode: bool = False, chunk_index: int = 0, **kwargs) -> str:
         """Genera prompt de extracción dinámico"""
         
         # Definir campos requeridos con descripciones mejoradas para mejor diferenciación
@@ -565,8 +559,8 @@ FORMATO JSON EXTENDIDO:
 class ModularRFXExtractor:
     """Extractor modular que coordina todos los extractores especializados"""
     
-    def __init__(self, strategy: ExtractionStrategy = ExtractionStrategy.BALANCED, debug_mode: bool = False):
-        self.strategy = strategy
+    def __init__(self, debug_mode: bool = False):
+        # ✅ ELIMINADO: strategy parameter - Siempre inteligente
         self.debug_mode = debug_mode or FeatureFlags.eval_debug_enabled()
         
         # Inicializar extractores especializados
@@ -828,20 +822,15 @@ class RFXProcessorService:
         self.openai_client = OpenAI(api_key=self.openai_config.api_key)
         self.db_client = get_database_client()
         
-        # Validation helpers (legacy - mantenemos para compatibilidad)
-        self.email_validator = EmailValidator()
-        self.date_validator = DateValidator()
-        self.time_validator = TimeValidator()
+        # ✅ ELIMINADO: Validadores externos - El LLM valida automáticamente
+        # self.email_validator = EmailValidator()
+        # self.date_validator = DateValidator()
+        # self.time_validator = TimeValidator()
         
-        # 🆕 NUEVO SISTEMA MODULAR
-        # Inicializar extractor modular con configuración dinámica
-        debug_mode = FeatureFlags.eval_debug_enabled()
-        extraction_strategy = self._get_extraction_strategy()
-        
-        self.modular_extractor = ModularRFXExtractor(
-            strategy=extraction_strategy,
-            debug_mode=debug_mode
-        )
+        # ✅ CAMBIO #3: ELIMINADO ModularRFXExtractor - El LLM hace todo en una llamada
+        # self.modular_extractor = ModularRFXExtractor(debug_mode=debug_mode)
+        # Ya no necesitamos extractores especializados (ProductExtractor, SolicitanteExtractor, etc.)
+        self.debug_mode = FeatureFlags.eval_debug_enabled()
         
         # 🚀 FUNCTION CALLING EXTRACTOR (Fase 2B)
         # Inicializar solo si está habilitado por feature flag
@@ -851,7 +840,7 @@ class RFXProcessorService:
                 self.function_calling_extractor = FunctionCallingRFXExtractor(
                     openai_client=self.openai_client,
                     model=self.openai_config.model,
-                    debug_mode=debug_mode
+                    debug_mode=self.debug_mode
                 )
                 logger.info("🚀 Function Calling Extractor initialized successfully")
             except Exception as e:
@@ -866,15 +855,9 @@ class RFXProcessorService:
             'fallback_usage_count': 0
         }
         
-        logger.info(f"🚀 RFXProcessorService inicializado - Estrategia: {extraction_strategy.value}, Debug: {debug_mode}")
+        logger.info(f"🚀 RFXProcessorService inicializado - Debug: {self.debug_mode}")
     
-    def _get_extraction_strategy(self) -> ExtractionStrategy:
-        """Determina estrategia de extracción basada en configuración"""
-        # Puedes añadir feature flags para controlar la estrategia
-        if FeatureFlags.eval_debug_enabled():
-            return ExtractionStrategy.AGGRESSIVE  # Más sensible en modo debug
-        else:
-            return ExtractionStrategy.BALANCED    # Balance por defecto
+    # ✅ ELIMINADO: _get_extraction_strategy() - No necesitamos estrategias múltiples
     
     def process_rfx_document(self, rfx_input: RFXInput, pdf_content: bytes) -> RFXProcessed:
         """
@@ -898,15 +881,13 @@ class RFXProcessorService:
             validated_data = self._validate_and_clean_data(raw_data, rfx_input.id)
             logger.info(f"✅ Data validated successfully")
             
-            # Log modular processing statistics if available
-            if self.modular_extractor.debug_mode and 'modular_debug_info' in raw_data:
-                debug_info = raw_data['modular_debug_info']
-                logger.info(f"📊 Modular processing stats: Strategy={debug_info['extraction_strategy']}, Time={debug_info['total_processing_time']:.3f}s")
-                
-                # Update service-level statistics
-                self.processing_stats['total_documents_processed'] += 1
-                if debug_info['extraction_summary']['extraction_quality'] == 'fallback':
-                    self.processing_stats['fallback_usage_count'] += 1
+            # ✅ CAMBIO #3: ELIMINADO - Ya no usamos modular_extractor
+            # if self.modular_extractor.debug_mode and 'modular_debug_info' in raw_data:
+            #     debug_info = raw_data['modular_debug_info']
+            #     logger.info(f"📊 Modular processing stats: Time={debug_info['total_processing_time']:.3f}s")
+            #     self.processing_stats['total_documents_processed'] += 1
+            #     if debug_info['extraction_summary']['extraction_quality'] == 'fallback':
+            #         self.processing_stats['fallback_usage_count'] += 1
             
             # Step 3.5: Intelligent RFX evaluation (if enabled)
             evaluation_metadata = self._evaluate_rfx_intelligently(validated_data, rfx_input.id)
@@ -1042,26 +1023,12 @@ class RFXProcessorService:
             word_count = len(text.split())
             estimated_tokens = int(word_count * 1.2)  # Conservative estimate
             
-            logger.info(f"🚀 Starting COMPLETE AI processing for text of {len(text)} characters (~{estimated_tokens} tokens)")
+            logger.info(f"🤖 Processing RFX document ({len(text)} chars, ~{estimated_tokens} tokens)")
             
-            # 🔍 DEBUG: Log text preview and key indicators
-            logger.info(f"📄 TEXT_PREVIEW: {text[:500]}...")
-            
-            # Quick analysis for completeness validation
-            text_lower = text.lower()
-            keywords_found = []
-            if "fecha" in text_lower: keywords_found.append("fecha")
-            if "hora" in text_lower: keywords_found.append("hora") 
-            if "entrega" in text_lower: keywords_found.append("entrega")
-            if "productos" in text_lower or "servicios" in text_lower: keywords_found.append("productos")
-            
-            logger.info(f"🗓️ KEYWORDS_FOUND: {keywords_found}" if keywords_found else "⚠️ NO_KEYWORDS_FOUND")
-            
-            # Validate text size for model limits (GPT-4o: 128K tokens)
+            # ✅ CAMBIO #2: GPT-4o tiene 128K tokens - suficiente para documentos completos
             if estimated_tokens > 120000:
-                logger.warning(f"⚠️ Text might exceed model limits: {estimated_tokens} tokens")
-                # Fallback to chunking only if absolutely necessary
-                return self._process_with_ai_chunked_fallback(text)
+                logger.warning(f"⚠️ Document very large: {estimated_tokens} tokens - processing anyway")
+                # GPT-4o puede manejar hasta 128k tokens
             
             # 🎯 ESTRATEGIA DE EXTRACCIÓN CON FALLBACKS
             extracted_data = None
@@ -1069,12 +1036,8 @@ class RFXProcessorService:
             # 1️⃣ PRIMERA OPCIÓN: Function Calling (más robusto)
             if self.function_calling_extractor and FeatureFlags.function_calling_enabled():
                 try:
-                    logger.info(f"🚀 Attempting Function Calling extraction...")
                     db_result = self.function_calling_extractor.extract_rfx_data(text)
-                    
-                    # Convertir resultado de function calling a formato legacy
                     extracted_data = self._convert_function_calling_to_legacy_format(db_result)
-                    logger.info(f"✅ Function Calling extraction successful")
                     
                 except Exception as e:
                     logger.warning(f"⚠️ Function Calling extraction failed: {e}")
@@ -1084,17 +1047,23 @@ class RFXProcessorService:
             # 2️⃣ SEGUNDA OPCIÓN: JSON Mode (sistema actual)
             if not extracted_data and FeatureFlags.json_mode_fallback_enabled():
                 try:
-                    logger.info(f"🔄 Falling back to JSON Mode extraction...")
                     extracted_data = self._extract_complete_with_ai(text)
-                    logger.info(f"✅ JSON Mode extraction successful")
                     
                 except Exception as e:
                     logger.warning(f"⚠️ JSON Mode extraction failed: {e}")
             
-            # 3️⃣ TERCERA OPCIÓN: Legacy fallback
+            # ✅ CAMBIO #2: Sin fallback a chunking - si falla, retornar estructura vacía
             if not extracted_data:
-                logger.warning(f"🔄 Falling back to legacy extraction...")
-                extracted_data = self._process_with_ai_chunked_fallback(text)
+                logger.error(f"❌ All extraction methods failed")
+                extracted_data = {
+                    "productos": [],
+                    "email": "",
+                    "fecha_entrega": "",
+                    "hora_entrega": "",
+                    "lugar": "",
+                    "nombre_solicitante": "",
+                    "currency": "USD"
+                }
             
             # 🔍 Validate completeness automatically (for metrics only)
             completeness_result = self._validate_product_completeness(extracted_data, text)
@@ -1103,17 +1072,10 @@ class RFXProcessorService:
             processing_time = time.time() - start_time
             self.processing_stats['total_documents_processed'] += 1
             
-            # Enhanced logging
+            # ✅ Logging simple y útil
             products_found = len(extracted_data.get('productos', []))
-            logger.info(f"✅ COMPLETE AI processing completed in {processing_time:.3f}s")
-            logger.info(f"📊 Products found: {products_found}")
-            logger.info(f"💰 Cost optimization: Single call vs multiple chunks")
-            
-            if extracted_data.get("productos"):
-                product_names = [p['nombre'] for p in extracted_data['productos']]
-                logger.info(f"📦 Product names: {product_names}")
-            else:
-                logger.error(f"❌ NO PRODUCTS found!")
+            logger.info(f"✅ Extraction completed in {processing_time:.2f}s")
+            logger.info(f"📊 Extracted: {products_found} products")
                 
             # Add completeness validation results
             extracted_data['completeness_validation'] = completeness_result
@@ -1625,8 +1587,11 @@ Responde SOLO con el JSON solicitado - asegúrate de haber encontrado TODOS los 
             return {'validation_status': 'unknown', 'products_found': 0}
     
     def _process_with_ai_chunked_fallback(self, text: str) -> Dict[str, Any]:
-        """🔄 FALLBACK: Sistema de chunking solo cuando es absolutamente necesario"""
-        logger.warning(f"🔄 Using chunked fallback processing")
+        """
+        ⚠️ DEPRECATED: Ya no se usa chunking - GPT-4o tiene 128k tokens
+        ✅ CAMBIO #2: Método mantenido solo por compatibilidad
+        """
+        logger.warning(f"⚠️ DEPRECATED: Chunked fallback called - should not be used")
         
         try:
             # Very simple fallback - try to extract at least basic info
@@ -1902,275 +1867,49 @@ TEXTO: {text[:5000]}"""
         return currency
     
     def _validate_and_clean_data(self, raw_data: Dict[str, Any], rfx_id: str) -> Dict[str, Any]:
-        """Validate and clean extracted data with fallbacks for invalid values"""
-        # 🔍 DEBUG: Log validation process
-        logger.info(f"🔍 Starting validation for RFX: {rfx_id}")
-        logger.debug(f"📦 Raw data to validate: {raw_data}")
+        """
+        ✅ SIMPLIFICADO: El LLM ya validó, solo verificar estructura básica y mapear campos
+        """
+        logger.info(f"🔍 Validating structure for RFX: {rfx_id}")
         
-        # 🛡️ SAFETY CHECK: Handle None raw_data - Create minimal structure
+        # Handle None raw_data
         if raw_data is None:
-            logger.warning(f"⚠️ raw_data is None for RFX: {rfx_id} - Creating minimal structure")
-            raw_data = {
-                "productos": [],
-                "email": None,
-                "fecha_entrega": None,
-                "hora_entrega": None,
-                "lugar": None,
-                "nombre_solicitante": None,
-                "currency": None
-            }
+            logger.warning(f"⚠️ raw_data is None for RFX: {rfx_id}")
+            raw_data = {}
         
-        cleaned_data = raw_data.copy()
-        validation_status = {
-            "email_valid": False,
-            "fecha_valid": False,
-            "hora_valid": False,
-            "has_original_data": True
+        # Log para debugging - ver qué campos vienen del LLM
+        logger.debug(f"📦 Raw data keys: {list(raw_data.keys())}")
+        
+        # Mapear campos - El LLM retorna con nombres específicos según el prompt
+        validated = {
+            # Campos del solicitante (persona)
+            'email': raw_data.get('email_solicitante') or raw_data.get('email', ''),
+            'nombre_solicitante': raw_data.get('nombre_solicitante') or raw_data.get('nombre', ''),
+            'telefono_solicitante': raw_data.get('telefono_solicitante') or raw_data.get('telefono', ''),
+            'cargo_solicitante': raw_data.get('cargo_solicitante') or raw_data.get('cargo', ''),
+            
+            # Campos de empresa (organización)
+            'nombre_empresa': raw_data.get('nombre_empresa') or raw_data.get('empresa', ''),
+            'email_empresa': raw_data.get('email_empresa') or '',
+            'telefono_empresa': raw_data.get('telefono_empresa') or '',
+            
+            # Campos del evento
+            'fecha': raw_data.get('fecha') or raw_data.get('fecha_entrega', ''),
+            'hora_entrega': raw_data.get('hora_entrega') or raw_data.get('hora', ''),
+            'lugar': raw_data.get('lugar', ''),
+            
+            # Productos y otros
+            'currency': raw_data.get('currency', 'USD'),
+            'productos': raw_data.get('productos', []),
+            'requirements': raw_data.get('requirements', ''),
+            'requirements_confidence': raw_data.get('requirements_confidence', 0.0)
         }
         
-        # Validate and clean email - PRESERVE original even if invalid
-        email = raw_data.get("email", "") or ""
-        email = email.strip() if email else ""
-        if email:
-            if self.email_validator.validate(email):
-                cleaned_data["email"] = email
-                validation_status["email_valid"] = True
-                logger.info(f"✅ Email validated successfully: {email}")
-            else:
-                # Keep original email but mark as invalid
-                cleaned_data["email"] = email
-                validation_status["email_valid"] = False
-                logger.warning(f"⚠️ Email format invalid but preserved: {email}")
-        else:
-            # Leave as null - user will complete in interface
-            cleaned_data["email"] = None
-            validation_status["email_valid"] = False
-            validation_status["has_original_data"] = False
-            logger.info(f"📝 No email found - left as null for user completion")
+        # Log de campos importantes para debugging
+        logger.info(f"✅ Validated: {len(validated.get('productos', []))} products, "
+                   f"email={validated.get('email')}, empresa={validated.get('nombre_empresa')}")
         
-                # Validate and clean date - NORMALIZE before validation 
-        fecha = raw_data.get("fecha", "") or ""
-        fecha = fecha.strip() if fecha else ""
-        # Clean AI null responses
-        if fecha in ["null", "None", "", "undefined"]:
-            fecha = ""
-        
-        if fecha:
-            # Normalize date format to YYYY-MM-DD for Pydantic
-            fecha_normalized = self._normalize_date_format(fecha)
-            if self.date_validator.validate(fecha_normalized):
-                cleaned_data["fecha"] = fecha_normalized
-                validation_status["fecha_valid"] = True
-                logger.info(f"✅ Date validated and normalized: {fecha} → {fecha_normalized}")
-            else:
-                # Try with normalized format anyway for Pydantic
-                cleaned_data["fecha"] = fecha_normalized
-                validation_status["fecha_valid"] = False
-                logger.warning(f"⚠️ Date format may be invalid but normalized: {fecha} → {fecha_normalized}")
-        else:
-            # Leave as null - user will complete in interface
-            cleaned_data["fecha"] = None
-            validation_status["fecha_valid"] = False
-            logger.info(f"📝 No date found - left as null for user completion")
-        
-        # Validate and clean time - NORMALIZE format for Pydantic
-        hora = raw_data.get("hora_entrega", "") or ""
-        hora = hora.strip() if hora else ""
-        # Clean AI null responses
-        if hora in ["null", "None", "", "undefined"]:
-            hora = ""
-            
-        if hora:
-            # Normalize common time formats
-            hora_normalized = self._normalize_time_format(hora)
-            if self.time_validator.validate(hora_normalized):
-                cleaned_data["hora_entrega"] = hora_normalized
-                validation_status["hora_valid"] = True
-                logger.info(f"✅ Time validated successfully: {hora} → {hora_normalized}")
-            else:
-                # Try with normalized format anyway for Pydantic
-                cleaned_data["hora_entrega"] = hora_normalized
-                validation_status["hora_valid"] = False
-                logger.warning(f"⚠️ Time format may be invalid but preserved: {hora} → {hora_normalized}")
-        else:
-            # Leave as null - user will complete in interface
-            cleaned_data["hora_entrega"] = None
-            validation_status["hora_valid"] = False
-            logger.info(f"📝 No time found - left as null for user completion")
-        
-        # Clean and validate client name - MORE PERMISSIVE
-        nombre_solicitante = raw_data.get("nombre_solicitante", "") or ""
-        nombre_solicitante = nombre_solicitante.strip() if nombre_solicitante else ""
-        if nombre_solicitante and nombre_solicitante.lower() not in ["null", "none", ""]:
-            cleaned_data["nombre_solicitante"] = nombre_solicitante.title()
-            logger.info(f"✅ Solicitante name processed: {nombre_solicitante}")
-        else:
-            # Leave as null - user will complete in interface
-            cleaned_data["nombre_solicitante"] = None
-            validation_status["has_original_data"] = False
-            logger.info(f"📝 No client name found - left as null for user completion")
-        
-        # Clean place - MORE PERMISSIVE
-        lugar = raw_data.get("lugar", "") or ""
-        lugar = lugar.strip() if lugar else ""
-        if lugar and lugar.lower() not in ["null", "none", ""]:
-            cleaned_data["lugar"] = lugar
-            logger.info(f"✅ Location preserved: {lugar}")
-        else:
-            # Leave as null - user will complete in interface
-            cleaned_data["lugar"] = None
-            logger.info(f"📝 No location found - left as null for user completion")
-        
-        # 🆕 Currency validation and normalization
-        currency = raw_data.get("currency", "") or ""
-        currency = currency.strip().upper() if currency else ""
-        cleaned_data["currency"] = self._validate_and_normalize_currency(currency)
-        logger.info(f"💰 Currency processed: '{raw_data.get('currency', '')}' → '{cleaned_data['currency']}'")
-        
-        # Validate products - VERY PERMISSIVE (Allow empty products for informational RFXs)
-        productos = raw_data.get("productos", [])
-        logger.info(f"🔍 Validating {len(productos)} products from AI extraction")
-        logger.debug(f"📦 Raw products data: {productos}")
-        
-        if not productos:
-            logger.warning(f"⚠️ No products array found in AI response - treating as informational RFX")
-            logger.debug(f"📦 Full raw_data keys: {list(raw_data.keys())}")
-            # Don't raise error - some RFXs might be informational without products
-            cleaned_data["productos"] = []
-            validation_status["has_products"] = False
-            validation_status["product_count"] = 0
-            # 🔧 FIX: Initialize cleaned_productos to prevent UnboundLocalError
-            cleaned_productos = []
-            logger.info(f"📄 Processing as informational RFX without products")
-        else:
-            # Clean and validate each product - VERY PERMISSIVE
-            cleaned_productos = []
-            for i, producto in enumerate(productos):
-                logger.debug(f"🔍 Processing product {i+1}: {producto}")
-                
-                # Handle different formats of product data
-                if isinstance(producto, dict):
-                    nombre = None
-                    cantidad = 1
-                    unidad = "unidades"
-                    
-                    # Try to extract name from various possible keys
-                    for name_key in ["nombre", "name", "product", "producto", "item"]:
-                        if producto.get(name_key):
-                            nombre = str(producto[name_key]).strip()
-                            break
-                    
-                    # Try to extract quantity
-                    for qty_key in ["cantidad", "quantity", "qty", "count", "numero"]:
-                        if producto.get(qty_key):
-                            try:
-                                cantidad = max(1, int(float(producto[qty_key])))
-                                break
-                            except (ValueError, TypeError):
-                                logger.warning(f"⚠️ Invalid quantity for product {i+1}: {producto.get(qty_key)}")
-                                continue
-                    
-                    # Try to extract unit
-                    for unit_key in ["unidad", "unit", "units", "medida"]:
-                        if producto.get(unit_key):
-                            unidad = str(producto[unit_key]).strip().lower()
-                            break
-                    
-                    # Accept product if it has any meaningful name
-                    if nombre and len(nombre.strip()) > 0 and nombre.lower() not in ["null", "none", "", "undefined"]:
-                        cleaned_producto = {
-                            "nombre": nombre.title(),
-                            "cantidad": cantidad,
-                            "unidad": unidad or "unidades"
-                        }
-                        cleaned_productos.append(cleaned_producto)
-                        logger.info(f"✅ Product {i+1} accepted: {cleaned_producto}")
-                    else:
-                        logger.warning(f"⚠️ Product {i+1} rejected - invalid name: {nombre}")
-                        
-                elif isinstance(producto, str):
-                    # Handle product as simple string
-                    nombre = producto.strip()
-                    if nombre and len(nombre) > 0 and nombre.lower() not in ["null", "none", "", "undefined"]:
-                        cleaned_producto = {
-                            "nombre": nombre.title(),
-                            "cantidad": 1,
-                            "unidad": "unidades"
-                        }
-                        cleaned_productos.append(cleaned_producto)
-                        logger.info(f"✅ Product {i+1} accepted as string: {cleaned_producto}")
-                    else:
-                        logger.warning(f"⚠️ Product {i+1} rejected - invalid string: {nombre}")
-                else:
-                    logger.warning(f"⚠️ Product {i+1} skipped - unrecognized format: {type(producto)}")
-            
-            logger.info(f"📊 Product validation completed: {len(cleaned_productos)} valid products from {len(productos)} raw products")
-            
-            if not cleaned_productos:
-                logger.error(f"❌ No valid products could be processed from AI extraction")
-                logger.error(f"🔍 Original products data: {productos}")
-                # Create a fallback product to avoid complete failure
-                logger.warning(f"⚠️ Creating fallback product to prevent complete failure")
-                cleaned_productos = [{
-                    "nombre": "Producto No Especificado",
-                    "cantidad": 1,
-                    "unidad": "unidades"
-                }]
-                logger.info(f"✅ Fallback product created: {cleaned_productos[0]}")
-            
-            cleaned_data["productos"] = cleaned_productos
-        
-        # ✨ PRESERVE: Datos de empresa sin validación (son opcionales)
-        empresa_fields = ["nombre_empresa", "email_empresa", "telefono_empresa", "telefono_solicitante", "cargo_solicitante"]
-        for field in empresa_fields:
-            if field in raw_data and raw_data[field]:
-                cleaned_data[field] = str(raw_data[field]).strip()
-                logger.info(f"✅ Empresa field preserved: {field} = {cleaned_data[field]}")
-            else:
-                cleaned_data[field] = ""
-                logger.debug(f"📝 Empresa field empty: {field}")
-        
-        # 🆕 MVP: Validate and clean requirements
-        requirements = raw_data.get("requirements", "")
-        requirements_confidence = raw_data.get("requirements_confidence", 0.0)
-        
-        if requirements and requirements.strip():
-            # Aplicar validación básica
-            validation_result = self._validate_basic_requirements(
-                requirements.strip(), 
-                float(requirements_confidence) if requirements_confidence else 0.0
-            )
-            
-            # Guardar resultados validados
-            cleaned_data["requirements"] = validation_result['validated_requirements']
-            cleaned_data["requirements_confidence"] = validation_result['adjusted_confidence']
-            
-            # Actualizar validation status
-            validation_status["requirements_valid"] = not validation_result['needs_review']
-            validation_status["requirements_issues"] = validation_result['validation_issues']
-            
-            # Log extraction para mejora continua
-            self._log_requirements_extraction(rfx_id, validation_result)
-            
-            logger.info(f"✅ Requirements processed: confidence={validation_result['adjusted_confidence']:.3f}, "
-                       f"issues={len(validation_result['validation_issues'])}")
-        else:
-            # No hay requirements extraídos
-            cleaned_data["requirements"] = None
-            cleaned_data["requirements_confidence"] = 0.0
-            validation_status["requirements_valid"] = True  # Válido que no haya requirements
-            validation_status["requirements_issues"] = []
-            logger.debug(f"📝 No requirements extracted for RFX: {rfx_id}")
-        
-        # Add validation metadata
-        cleaned_data["validation_metadata"] = validation_status
-        
-        # 🔍 DEBUG: Log final validation result
-        logger.info(f"✅ Validation completed for {len(cleaned_productos)} products")
-        logger.info(f"📊 Validation status: {validation_status}")
-        logger.debug(f"📦 Final cleaned data: {cleaned_data}")
-        
-        return cleaned_data
+        return validated
     
     def _create_rfx_processed(self, validated_data: Dict[str, Any], rfx_input: RFXInput, evaluation_metadata: Optional[Dict[str, Any]] = None) -> RFXProcessed:
         """Create RFXProcessed object from validated data and evaluation results"""
@@ -2236,9 +1975,9 @@ TEXTO: {text[:5000]}"""
                 id=rfx_uuid,
                 rfx_type=rfx_input.rfx_type,
                 title=f"RFX Request - {validated_data.get('nombre_solicitante', 'Unknown')} - {rfx_input.rfx_type.value if hasattr(rfx_input.rfx_type, 'value') else str(rfx_input.rfx_type)}",
-                location=validated_data["lugar"],
-                delivery_date=validated_data["fecha"],
-                delivery_time=validated_data["hora_entrega"],
+                location=validated_data["lugar"] or None,
+                delivery_date=validated_data["fecha"] or None,
+                delivery_time=validated_data["hora_entrega"] or None,  # ✅ AI-FIRST: None si vacío
                 status=RFXStatus.IN_PROGRESS,
                 original_pdf_text=rfx_input.extracted_content,
                 requested_products=[p.dict() for p in productos] if productos else [],
@@ -2661,16 +2400,16 @@ TEXTO: {text[:5000]}"""
         """🆕 Retorna estadísticas de procesamiento para monitoring y debugging"""
         base_stats = self.processing_stats.copy()
         
-        # Añadir estadísticas del extractor modular
-        if hasattr(self, 'modular_extractor'):
-            extraction_summary = self.modular_extractor.get_extraction_summary()
-            base_stats.update({
-                'modular_extractor_stats': extraction_summary.dict(),
-                'modular_extraction_quality': extraction_summary.extraction_quality,
-                'modular_chunks_processed': extraction_summary.chunk_count,
-                'modular_ai_calls': extraction_summary.ai_calls_made,
-                'modular_retries': extraction_summary.retries_attempted
-            })
+        # ✅ CAMBIO #3: ELIMINADO - Ya no usamos modular_extractor
+        # if hasattr(self, 'modular_extractor'):
+        #     extraction_summary = self.modular_extractor.get_extraction_summary()
+        #     base_stats.update({
+        #         'modular_extractor_stats': extraction_summary.dict(),
+        #         'modular_extraction_quality': extraction_summary.extraction_quality,
+        #         'modular_chunks_processed': extraction_summary.chunk_count,
+        #         'modular_ai_calls': extraction_summary.ai_calls_made,
+        #         'modular_retries': extraction_summary.retries_attempted
+        #     })
         
         # Calcular ratios y métricas derivadas
         if base_stats['total_documents_processed'] > 0:
@@ -2691,31 +2430,31 @@ TEXTO: {text[:5000]}"""
             'fallback_usage_count': 0
         }
         
-        if hasattr(self, 'modular_extractor'):
-            # Resetear estadísticas del extractor modular
-            self.modular_extractor.extraction_stats = {
-                'chunks_processed': 0,
-                'ai_calls_made': 0,
-                'retries_attempted': 0,
-                'total_processing_time': 0.0
-            }
+        # ✅ CAMBIO #3: ELIMINADO - Ya no usamos modular_extractor
+        # if hasattr(self, 'modular_extractor'):
+        #     self.modular_extractor.extraction_stats = {
+        #         'chunks_processed': 0,
+        #         'ai_calls_made': 0,
+        #         'retries_attempted': 0,
+        #         'total_processing_time': 0.0
+        #     }
         
         logger.info("📊 Processing statistics reset")
     
     def get_debug_mode_status(self) -> Dict[str, Any]:
         """🆕 Retorna estado del modo debug y configuración actual"""
         return {
-            'debug_mode_enabled': getattr(self.modular_extractor, 'debug_mode', False),
-            'extraction_strategy': getattr(self.modular_extractor, 'strategy', ExtractionStrategy.BALANCED).value,
+            'debug_mode_enabled': self.debug_mode,  # ✅ CAMBIO #3: Usar self.debug_mode
+            'extraction_strategy': 'intelligent',  # ✅ Siempre inteligente
             'feature_flags': {
                 'evals_enabled': FeatureFlags.evals_enabled(),
                 'eval_debug_enabled': FeatureFlags.eval_debug_enabled(),
                 'meta_prompting_enabled': FeatureFlags.meta_prompting_enabled() if hasattr(FeatureFlags, 'meta_prompting_enabled') else False,
                 'vertical_agent_enabled': FeatureFlags.vertical_agent_enabled() if hasattr(FeatureFlags, 'vertical_agent_enabled') else False
             },
-            'processing_version': '2.1_modular',
-            'available_extractors': ['ProductExtractor', 'ClientExtractor', 'EventExtractor'],
-            'template_manager_initialized': hasattr(self.modular_extractor, 'template_manager')
+            'processing_version': '3.0_simplified',  # ✅ CAMBIO #3: Nueva versión sin extractores
+            'available_extractors': [],  # ✅ CAMBIO #3: Ya no hay extractores especializados
+            'single_call_extraction': True  # ✅ CAMBIO #3: Todo en una llamada
         }
 
     # NEW: Multi-file processing

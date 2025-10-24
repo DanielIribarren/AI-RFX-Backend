@@ -13,7 +13,13 @@ class ProposalPrompts:
     @staticmethod
     def _format_products(products: List[Dict]) -> str:
         """Helper para formatear productos en texto"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"📦 _format_products called with {len(products)} products")
+        
         if not products:
+            logger.warning("⚠️ NO PRODUCTS TO FORMAT - returning empty message")
             return "No hay productos especificados"
         
         formatted = []
@@ -24,11 +30,16 @@ class ProposalPrompts:
             price = product.get('precio_unitario', product.get('unit_price', 0))
             total = product.get('total', 0)
             
+            logger.info(f"   Product {i}: {name} | Qty: {qty} | Price: ${price:.2f}")
+            
             formatted.append(
                 f"{i}. {name} - {desc} | "
                 f"Qty: {qty} | Precio: ${price:.2f} | Total: ${total:.2f}"
             )
-        return "\n".join(formatted)
+        
+        result = "\n".join(formatted)
+        logger.info(f"✅ Formatted {len(formatted)} products into text")
+        return result
     
     @staticmethod
     def get_prompt_with_branding(
@@ -76,30 +87,234 @@ Eres un experto en generación de presupuestos profesionales en HTML con el esti
 
 ---
 
-# INFORMACIÓN DE LA EMPRESA
+# 🚨 INSTRUCCIONES CRÍTICAS DE CONSISTENCIA - MEJORA #3
 
-{company_info}
+**PRIORIDAD MÁXIMA: FIDELIDAD AL BRANDING (ESTILOS)**
 
-## Logo de la Empresa
-URL del logo: {logo_endpoint}
+1. **USA EXCLUSIVAMENTE los colores del branding:**
+   - Color primario: {primary_color}
+   - Header tabla fondo: {table_header_bg}
+   - Header tabla texto: {table_header_text}
+   - Bordes: {table_border}
+   - ❌ NO uses colores por defecto si hay branding diferente
+   - ❌ NO inventes colores nuevos
+
+2. **ESTRUCTURA DEL LAYOUT:**
+   - Sigue EXACTAMENTE la estructura mostrada abajo
+   - ❌ NO agregues ni quites secciones
+   - ❌ NO reordenes elementos
+
+3. **TABLA DE PRODUCTOS:**
+   - Estilo de bordes: 1pt solid {table_border}
+   - Fondo del header: {table_header_bg}
+   - Texto del header: {table_header_text}
+   - ❌ NO uses estilos alternativos
+
+4. **LOGO:**
+   - URL exacta: {logo_endpoint}
+   - Altura: 15mm (NO cambiar)
+   - Posición: Según plantilla
+   - ❌ NO reposiciones ni redimensiones
+
+5. **PRICING CONDICIONAL:**
+   - Coordinación: {'MOSTRAR' if show_coordination else 'NO MOSTRAR (omitir completamente)'}
+   - Impuestos: {'MOSTRAR' if show_tax else 'NO MOSTRAR (omitir completamente)'}
+   - Costo por persona: {'MOSTRAR' if show_cost_per_person else 'NO MOSTRAR (omitir completamente)'}
+   - ❌ NO muestres filas si el flag es False
+
+⚠️ **CHECKLIST DE VALIDACIÓN ANTES DE GENERAR:**
+- [ ] ¿Usé SOLO los colores del branding especificados arriba?
+- [ ] ¿Seguí EXACTAMENTE el layout sin modificaciones?
+- [ ] ¿Los estilos son consistentes en todo el documento?
+- [ ] ¿NO improvisé ningún elemento visual?
+- [ ] ¿Respeté los flags de pricing condicional?
 
 ---
 
-# DATOS DEL PRESUPUESTO
+# 📚 EJEMPLO DE OUTPUT CORRECTO - MEJORA #4 (FEW-SHOT LEARNING)
 
-## Información del Cliente
-- Cliente: {rfx_data.get('client_name', 'N/A')}
-- Solicitud: {rfx_data.get('solicitud', 'N/A')}
+**ESTE ES UN EJEMPLO DE CÓMO DEBE VERSE EL HTML GENERADO:**
 
-## Fechas del Presupuesto
-- Fecha actual: {rfx_data.get('current_date', '2025-10-20')}
-- Vigencia: 30 días desde la fecha actual (calcular: fecha_actual + 30 días)
+```html
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  /* 🎨 COLORES DEL BRANDING - NO CAMBIAR */
+  @page {{ size: letter; margin: 0; }}
+  body {{ 
+    font-family: Arial, sans-serif; 
+    color: #333; 
+    width: 216mm; 
+    height: 279mm;
+    margin: 0;
+    padding: 0;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }}
+  
+  /* Header con color primario del branding */
+  .header {{ border-bottom: 3pt solid {primary_color}; }}
+  .logo {{ height: 15mm; }}
+  
+  /* Tabla con colores exactos del branding */
+  table {{ 
+    width: calc(100% - 20mm); 
+    margin: 5mm 10mm; 
+    border-collapse: collapse; 
+  }}
+  th {{ 
+    background-color: {table_header_bg};  /* Color EXACTO del branding */
+    color: {table_header_text};  /* Color EXACTO del branding */
+    padding: 2mm; 
+    border: 1pt solid {table_border}; 
+    font-weight: bold;
+  }}
+  td {{ 
+    padding: 2mm; 
+    border: 1pt solid {table_border}; 
+  }}
+  
+  /* Cajas de información con color primario */
+  .info-label {{ 
+    background: {primary_color}; 
+    color: white; 
+    padding: 2mm 3mm; 
+    font-weight: bold; 
+  }}
+  .info-value {{ 
+    border: 1pt solid {primary_color}; 
+    padding: 2mm 3mm; 
+  }}
+  
+  /* NO agregar más estilos - mantener minimalista */
+</style>
+</head>
+<body>
+  <!-- HEADER -->
+  <div class="header" style="display: flex; justify-content: space-between; align-items: center; padding: 5mm 10mm;">
+    <img src="{logo_endpoint}" alt="Logo" class="logo">
+    <h1 style="font-size: 24pt; color: {primary_color}; margin: 0;">PRESUPUESTO</h1>
+  </div>
+  
+  <!-- INFORMACIÓN DEL CLIENTE -->
+  <div style="padding: 0 10mm; margin: 3mm 0;">
+    <span class="info-label">Cliente:</span>
+    <span class="info-value">[NOMBRE CLIENTE]</span>
+  </div>
+  
+  <!-- TABLA DE PRODUCTOS -->
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th>Descripción</th>
+        <th>Cant</th>
+        <th>Precio unitario</th>
+        <th>Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td style="text-align: center;">1</td>
+        <td>[PRODUCTO] - [DESCRIPCIÓN]</td>
+        <td style="text-align: center;">[CANTIDAD]</td>
+        <td style="text-align: right;">[PRECIO]</td>
+        <td style="text-align: right;">[TOTAL]</td>
+      </tr>
+      <!-- MÁS PRODUCTOS... -->
+      
+      <!-- TOTAL -->
+      <tr>
+        <td colspan="3"></td>
+        <td style="font-weight: bold;">TOTAL</td>
+        <td style="font-weight: bold; text-align: right;">[TOTAL]</td>
+      </tr>
+    </tbody>
+  </table>
+</body>
+</html>
+```
 
-## Productos/Servicios
+**IMPORTANTE SOBRE ESTE EJEMPLO:**
+- ✅ Usa colores consistentes del branding ({primary_color}, {table_header_bg}, {table_header_text})
+- ✅ Estructura limpia y minimalista
+- ✅ Estilos específicos, NO genéricos
+- ✅ NO mezcla estilos diferentes
+- ✅ Unidades en mm/pt para PDF
+- ✅ Comentarios HTML para claridad
+
+🚨 **INSTRUCCIÓN CRÍTICA - NO COPIES EJEMPLOS LITERALMENTE:**
+
+El ejemplo de arriba es una PLANTILLA que muestra la ESTRUCTURA.
+Cuando generes el HTML final, debes:
+
+1. ✅ **USAR LA ESTRUCTURA** del ejemplo (layout, orden de secciones)
+2. ✅ **REEMPLAZAR TODOS LOS PLACEHOLDERS** con los datos reales de abajo
+3. ❌ **NO COPIES** literalmente `[NOMBRE CLIENTE]`, `[PRODUCTO]`, `[CANTIDAD]`, etc.
+4. ❌ **NO DEJES** placeholders sin reemplazar en el HTML final
+
+---
+
+# 📊 DATOS REALES DEL PRESUPUESTO (USA ESTOS DATOS PARA GENERAR EL PRESUPUESTO CON LOS ESTILOS DEL BRANDING)
+
+## Información de la Empresa
+{company_info}
+
+## Logo de la Empresa
+**URL EXACTA DEL LOGO:** {logo_endpoint}
+⚠️ Usa ESTA URL exacta en el tag <img src="...">
+
+---
+
+## 👤 INFORMACIÓN DEL CLIENTE - DATOS REALES DEL RFX
+
+🚨 **INSTRUCCIÓN CRÍTICA:** NO escribas "N/A" - USA los datos específicos de abajo:
+
+**Cliente (USAR ESTE NOMBRE EXACTO):**
+{rfx_data.get('client_name', 'N/A')}
+
+**Solicitud (USAR ESTE TEXTO EXACTO):**
+{rfx_data.get('solicitud', 'N/A')}
+
+---
+
+## 📅 FECHAS DEL PRESUPUESTO - DATOS REALES DEL RFX
+
+**Fecha actual (USAR ESTA FECHA EXACTA):**
+{rfx_data.get('current_date', '2025-10-20')}
+
+**Vigencia:**
+30 días desde la fecha actual (calcular: fecha_actual + 30 días)
+
+---
+
+## 📦 PRODUCTOS/SERVICIOS - DATOS REALES DEL RFX
+
+🚨 **INSTRUCCIÓN CRÍTICA:** La tabla de productos NO debe estar vacía.
+Debes incluir TODOS Y CADA UNO de los productos listados abajo.
+
+**PRODUCTOS COMPLETOS DEL RFX:**
+
 {products_formatted}
 
-## Pricing
+⚠️ **VERIFICACIÓN OBLIGATORIA:**
+- ¿Incluiste TODOS los productos de arriba en la tabla HTML?
+- ¿La tabla tiene filas con datos reales (NO está vacía)?
+- ¿Cada producto tiene: nombre, descripción, cantidad, precio, total?
+
+---
+
+## 💰 TOTALES DE PRICING - DATOS REALES DEL RFX
+
+🚨 **INSTRUCCIÓN CRÍTICA:** Usa estos valores EXACTOS en la tabla:
+
 {pricing_lines}
+
+⚠️ **VERIFICACIÓN OBLIGATORIA:**
+- ¿El TOTAL en el HTML coincide con el total de arriba?
+- ¿Incluiste la fila de Coordinación si está activa?
 
 ---
 
@@ -256,11 +471,67 @@ Antes de generar el HTML final, verifica que incluya:
 
 ---
 
+# 🔒 STRICT MODE ACTIVADO - MEJORA #7
+
+Este presupuesto será validado automáticamente. Si no cumple EXACTAMENTE con el branding:
+
+✅ DEBE CUMPLIR:
+- Colores SOLO del branding: {primary_color}, {table_header_bg}, {table_header_text}
+- Estructura EXACTA según las plantillas de arriba
+- Tipografía consistente en todo el documento
+- Logo en la posición especificada: {logo_endpoint}
+- Pricing condicional según flags: coordination={show_coordination}, tax={show_tax}
+
+❌ SERÁ RECHAZADO si:
+- Usas colores no especificados (ej: colores hardcodeados diferentes)
+- Cambias la estructura del layout
+- Improvisas estilos o elementos no solicitados
+- No sigues las reglas de contraste de colores
+- Incluyes Términos y Condiciones (NO INCLUIR)
+
+⚠️ GENERA EL HTML CON MÁXIMA PRECISIÓN. NO hay margen para creatividad.
+⚠️ PRIORIZA CONSISTENCIA sobre estética.
+⚠️ SIGUE LAS PLANTILLAS EXACTAMENTE como se muestran arriba.
+
+---
+
+# 🎯 INSTRUCCIÓN FINAL - GENERA EL HTML AHORA
+
+🚨 **VERIFICACIÓN FINAL ANTES DE GENERAR:**
+
+**1. DATOS DEL CLIENTE (NO ESCRIBAS "N/A"):**
+   - ✅ Cliente: {rfx_data.get('client_name', 'N/A')}
+   - ✅ Solicitud: {rfx_data.get('solicitud', 'N/A')}
+   - ❌ NO escribas "N/A" en el HTML
+   - ❌ NO dejes las cajas vacías
+
+**2. TABLA DE PRODUCTOS (NO DEBE ESTAR VACÍA):**
+   - ✅ Incluir los {len(rfx_data.get('products', []))} productos listados arriba
+   - ✅ Cada producto debe tener: nombre, descripción, cantidad, precio, total
+   - ❌ NO generes una tabla vacía
+   - ❌ NO uses productos de ejemplo
+
+**3. TOTALES (USAR VALORES REALES):**
+   - ✅ Subtotal: {pricing_data.get('subtotal_formatted', '$0.00')}
+   - ✅ Coordinación: {pricing_data.get('coordination_formatted', '$0.00')} {'(INCLUIR)' if show_coordination else '(OMITIR)'}
+   - ✅ TOTAL: {pricing_data.get('total_formatted', '$0.00')}
+   - ❌ NO inventes valores
+
+**4. COLORES DEL BRANDING:**
+   - ✅ Primario: {primary_color}
+   - ✅ Header tabla: {table_header_bg} / {table_header_text}
+
+**AHORA GENERA EL HTML COMPLETO CON TODOS LOS DATOS REALES DE ARRIBA.**
+
+---
+
 # OUTPUT
 
 Genera ÚNICAMENTE el código HTML completo.
 NO incluyas markdown, NO incluyas explicaciones.
 SOLO el código HTML puro con comentarios internos.
+
+RESPONDE SOLO CON EL HTML COMPLETO (sin ```html, sin markdown, sin texto adicional).
 """
     
     @staticmethod

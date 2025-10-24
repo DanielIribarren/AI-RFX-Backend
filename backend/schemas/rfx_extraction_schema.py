@@ -27,7 +27,10 @@ class PriorityLevel(str, Enum):
     URGENT = "urgent"
 
 class ProductCategory(str, Enum):
-    """Categorías de productos para catering/eventos"""
+    """
+    ⚠️ DEPRECATED: Categorías rígidas - Usar solo como referencia
+    ✅ AI-FIRST: El LLM decide la categoría apropiada según el dominio
+    """
     COMIDA = "comida"
     BEBIDA = "bebida"
     SERVICIO = "servicio"
@@ -35,10 +38,17 @@ class ProductCategory(str, Enum):
     PERSONAL = "personal"
     DECORACION = "decoracion"
     TRANSPORTE = "transporte"
+    MATERIAL = "material"  # ✅ Construcción
+    HERRAMIENTA = "herramienta"  # ✅ Construcción
+    MOBILIARIO = "mobiliario"  # ✅ Oficina/Equipamiento
+    TECNOLOGIA = "tecnologia"  # ✅ IT/Electrónica
     OTRO = "otro"
 
 class UnitOfMeasure(str, Enum):
-    """Unidades de medida estándar"""
+    """
+    ⚠️ DEPRECATED: Unidades rígidas - Usar solo como referencia
+    ✅ AI-FIRST: El LLM decide la unidad apropiada según el producto
+    """
     UNIDADES = "unidades"
     PERSONAS = "personas"
     PAX = "pax"
@@ -53,6 +63,13 @@ class UnitOfMeasure(str, Enum):
     CAJAS = "cajas"
     PAQUETES = "paquetes"
     VASOS = "vasos"
+    # ✅ Agregadas unidades para construcción y otros dominios
+    SACO = "saco"
+    BARRA = "barra"
+    M3 = "m³"
+    M2 = "m²"
+    METRO = "metro"
+    TONELADA = "tonelada"
 
 # ============================================================================
 # ESQUEMA PRINCIPAL DE FUNCTION CALLING PARA OPENAI
@@ -62,7 +79,7 @@ RFX_EXTRACTION_FUNCTION = {
     "type": "function",
     "function": {
         "name": "extract_rfx_data",
-        "description": "Extrae información estructurada completa de un documento RFX/RFP/RFQ de catering o eventos, mapeando directamente a base de datos V2.2",
+        "description": "✅ AI-FIRST MULTI-DOMINIO: Extrae información estructurada de documentos RFX/RFP/RFQ de CUALQUIER industria (catering, construcción, IT, logística, etc.), adaptando categorías y unidades al dominio detectado",
         "parameters": {
             "type": "object",
             "properties": {
@@ -194,8 +211,8 @@ RFX_EXTRACTION_FUNCTION = {
                             },
                             "category": {
                                 "type": "string",
-                                "enum": ["comida", "bebida", "servicio", "equipo", "personal", "decoracion", "transporte", "otro"],
-                                "description": "Categoría del producto para organización y pricing"
+                                "enum": ["comida", "bebida", "servicio", "equipo", "personal", "decoracion", "transporte", "material", "herramienta", "mobiliario", "tecnologia", "otro"],
+                                "description": "✅ AI-FIRST: Categoría del producto según el dominio (catering: comida/bebida, construcción: material/herramienta, oficina: mobiliario/tecnologia, etc.)"
                             },
                             "quantity": {
                                 "type": "number",
@@ -204,8 +221,8 @@ RFX_EXTRACTION_FUNCTION = {
                             },
                             "unit_of_measure": {
                                 "type": "string",
-                                "enum": ["unidades", "personas", "pax", "kg", "g", "litros", "ml", "porciones", "servicios", "horas", "dias", "cajas", "paquetes", "vasos"],
-                                "description": "Unidad de medida del producto. Normalizar a unidades estándar"
+                                "enum": ["unidades", "personas", "pax", "kg", "g", "litros", "ml", "porciones", "servicios", "horas", "dias", "cajas", "paquetes", "vasos", "saco", "barra", "m³", "m²", "metro", "tonelada"],
+                                "description": "✅ AI-FIRST: Unidad apropiada según el producto y dominio (catering: kg/litros/porciones, construcción: saco/barra/m³, etc.)"
                             },
                             "specifications": {
                                 "type": "string",
