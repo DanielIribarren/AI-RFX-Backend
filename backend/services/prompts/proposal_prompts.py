@@ -36,7 +36,8 @@ class ProposalPrompts:
         logo_endpoint: str,
         company_info: dict,
         rfx_data: dict,
-        pricing_data: dict
+        pricing_data: dict,
+        branding_config: dict = None
     ) -> str:
         """
         Prompt cuando el usuario TIENE branding configurado
@@ -45,14 +46,21 @@ class ProposalPrompts:
         
         products_formatted = ProposalPrompts._format_products(rfx_data.get('products', []))
         
-        # Determinar qué campos de pricing mostrar (solo si > 0)
+        # ✅ Usar flags inteligentes de pricing (activo Y valor > 0)
         coord_val = pricing_data.get('coordination_formatted', '$0.00')
         tax_val = pricing_data.get('tax_formatted', '$0.00')
         cpp_val = pricing_data.get('cost_per_person_formatted', '$0.00')
         
-        show_coordination = coord_val not in ['$0.00', '$0', '0']
-        show_tax = tax_val not in ['$0.00', '$0', '0']
-        show_cost_per_person = cpp_val not in ['$0.00', '$0', '0']
+        show_coordination = pricing_data.get('show_coordination', False)
+        show_tax = pricing_data.get('show_tax', False)
+        show_cost_per_person = pricing_data.get('show_cost_per_person', False)
+        
+        # ✅ Extraer colores reales del branding (con fallbacks)
+        branding_config = branding_config or {}
+        primary_color = branding_config.get('primary_color', '#0e2541')
+        table_header_bg = branding_config.get('table_header_bg', '#0e2541')
+        table_header_text = branding_config.get('table_header_text', '#ffffff')
+        table_border = branding_config.get('table_border', '#000000')
         
         pricing_lines = f"- Subtotal: {pricing_data.get('subtotal_formatted')}"
         if show_coordination:
@@ -97,9 +105,24 @@ URL del logo: {logo_endpoint}
 
 # INSTRUCCIONES DE DISEÑO - ESTILO SABRA CORPORATION
 
-## COLOR CORPORATIVO
-- **Azul Sabra:** #0e2541 (usar en headers de tabla y cajas de información)
-- **Texto blanco:** #ffffff (para texto sobre fondo azul)
+## COLORES CORPORATIVOS (EXTRAÍDOS DEL BRANDING)
+- **Color primario:** {primary_color} (usar en headers de tabla y cajas de información)
+- **Header de tabla - Fondo:** {table_header_bg}
+- **Header de tabla - Texto:** {table_header_text}
+- **Bordes:** {table_border}
+
+🚨 **CRÍTICO - USAR ESTOS COLORES EXACTOS:**
+Los ejemplos de código abajo son PLANTILLAS. Cuando generes el HTML final:
+- Reemplaza TODOS los colores con los valores REALES de arriba
+- NO copies los ejemplos literalmente con colores hardcodeados
+- Usa {primary_color}, {table_header_bg}, {table_header_text}, {table_border}
+
+⚠️ **IMPORTANTE SOBRE COLORES:**
+1. Usa EXACTAMENTE estos colores del branding como base
+2. **SÉ INTELIGENTE CON EL CONTRASTE:** Si el color de fondo es claro (ej: #ffffff, #f0f0f0), usa texto OSCURO (#000000). Si el fondo es oscuro (ej: #0e2541, #2c5f7c), usa texto CLARO (#ffffff)
+3. **NUNCA uses blanco sobre blanco o negro sobre negro** - esto es ilegible
+4. Valida mentalmente el contraste antes de aplicar: ¿El texto será legible sobre ese fondo?
+5. Si tienes duda, aplica la regla: fondos claros → texto oscuro, fondos oscuros → texto claro
 
 ## ESTRUCTURA DEL DOCUMENTO
 
@@ -107,7 +130,7 @@ URL del logo: {logo_endpoint}
 <!-- Logo a la izquierda, título PRESUPUESTO a la derecha -->
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5mm; padding: 5mm 10mm 0 10mm;">
     <img src="{logo_endpoint}" alt="Logo" style="height: 15mm;">
-    <h1 style="font-size: 24pt; color: #0e2541; margin: 0;">PRESUPUESTO</h1>
+    <h1 style="font-size: 24pt; color: {primary_color}; margin: 0;">PRESUPUESTO</h1>
 </div>
 
 <!-- Información de la empresa (dirección, teléfono, etc.) -->
@@ -129,48 +152,51 @@ IMPORTANTE sobre las fechas:
 - Vigencia: Calcula 30 días desde la fecha actual y muestra la fecha resultante
 - Código: Genera un código único basado en el año actual (ej: SABRA-PO-2025-001)
 
-### 2. INFORMACIÓN DEL CLIENTE (Cajas azules)
+### 2. INFORMACIÓN DEL CLIENTE (Cajas con colores del branding)
 <!-- Solo incluir: Cliente y Solicitud -->
 
 <div style="padding: 0 10mm; margin-bottom: 3mm;">
-    <div style="background: #0e2541; color: white; padding: 2mm 3mm; font-weight: bold; display: inline-block; min-width: 30mm;">Cliente:</div>
-    <div style="border: 1pt solid #0e2541; padding: 2mm 3mm; display: inline-block; min-width: 120mm;">{rfx_data.get('client_name', 'N/A')}</div>
+    <div style="background: {primary_color}; color: white; padding: 2mm 3mm; font-weight: bold; display: inline-block; min-width: 30mm;">Cliente:</div>
+    <div style="border: 1pt solid {primary_color}; padding: 2mm 3mm; display: inline-block; min-width: 120mm;">{rfx_data.get('client_name', 'N/A')}</div>
 </div>
 
 <div style="padding: 0 10mm; margin-bottom: 3mm;">
-    <div style="background: #0e2541; color: white; padding: 2mm 3mm; font-weight: bold; display: inline-block; min-width: 30mm;">Solicitud:</div>
-    <div style="border: 1pt solid #0e2541; padding: 2mm 3mm; display: inline-block; min-width: 120mm;">{rfx_data.get('solicitud', 'N/A')}</div>
+    <div style="background: {primary_color}; color: white; padding: 2mm 3mm; font-weight: bold; display: inline-block; min-width: 30mm;">Solicitud:</div>
+    <div style="border: 1pt solid {primary_color}; padding: 2mm 3mm; display: inline-block; min-width: 120mm;">{rfx_data.get('solicitud', 'N/A')}</div>
 </div>
 
-### 3. TABLA DE PRODUCTOS (Header azul con texto blanco)
+### 3. TABLA DE PRODUCTOS (Header con colores del branding)
 <table style="width: calc(100% - 20mm); margin: 5mm 10mm; border-collapse: collapse;">
     <thead>
-        <tr style="background: #0e2541; color: white;">
-            <th style="padding: 2mm; border: 1pt solid #000; text-align: center; font-weight: bold;">Item</th>
-            <th style="padding: 2mm; border: 1pt solid #000; text-align: left; font-weight: bold;">Descripción</th>
-            <th style="padding: 2mm; border: 1pt solid #000; text-align: center; font-weight: bold;">Cant</th>
-            <th style="padding: 2mm; border: 1pt solid #000; text-align: right; font-weight: bold;">Precio unitario</th>
-            <th style="padding: 2mm; border: 1pt solid #000; text-align: right; font-weight: bold;">Total</th>
+        <tr style="background: {table_header_bg}; color: {table_header_text};">
+            <th style="padding: 2mm; border: 1pt solid {table_border}; text-align: center; font-weight: bold;">Item</th>
+            <th style="padding: 2mm; border: 1pt solid {table_border}; text-align: left; font-weight: bold;">Descripción</th>
+            <th style="padding: 2mm; border: 1pt solid {table_border}; text-align: center; font-weight: bold;">Cant</th>
+            <th style="padding: 2mm; border: 1pt solid {table_border}; text-align: right; font-weight: bold;">Precio unitario</th>
+            <th style="padding: 2mm; border: 1pt solid {table_border}; text-align: right; font-weight: bold;">Total</th>
         </tr>
     </thead>
     <tbody>
         <!-- Filas de productos con fondo blanco -->
         <tr>
-            <td style="padding: 2mm; border: 1pt solid #000; text-align: center;">1</td>
-            <td style="padding: 2mm; border: 1pt solid #000;">[NOMBRE] - [DESCRIPCIÓN]</td>
-            <td style="padding: 2mm; border: 1pt solid #000; text-align: center;">[CANTIDAD]</td>
-            <td style="padding: 2mm; border: 1pt solid #000; text-align: right;">[PRECIO]</td>
-            <td style="padding: 2mm; border: 1pt solid #000; text-align: right;">[TOTAL]</td>
+            <td style="padding: 2mm; border: 1pt solid {table_border}; text-align: center;">1</td>
+            <td style="padding: 2mm; border: 1pt solid {table_border};">[NOMBRE] - [DESCRIPCIÓN]</td>
+            <td style="padding: 2mm; border: 1pt solid {table_border}; text-align: center;">[CANTIDAD]</td>
+            <td style="padding: 2mm; border: 1pt solid {table_border}; text-align: right;">[PRECIO]</td>
+            <td style="padding: 2mm; border: 1pt solid {table_border}; text-align: right;">[TOTAL]</td>
         </tr>
         
-        <!-- IMPORTANTE: Fila de Coordinación y Logística (SOLO SI show_coordination = True) -->
-        {f'<tr><td colspan="3" style="padding: 2mm; border: 1pt solid #000;">Coordinación y Logística</td><td colspan="2" style="padding: 2mm; border: 1pt solid #000; text-align: right;">{coord_val}</td></tr>' if show_coordination else '<!-- Coordinación omitida (valor = $0) -->'}
+        <!-- ✅ IMPORTANTE: Fila de Coordinación SOLO SI está ACTIVA en configuración -->
+        {f'<tr><td colspan="3" style="padding: 2mm; border: 1pt solid {table_border};">Coordinación y Logística</td><td colspan="2" style="padding: 2mm; border: 1pt solid {table_border}; text-align: right;">{coord_val}</td></tr>' if show_coordination else '<!-- Coordinación omitida (no activa o valor = $0) -->'}
+        
+        <!-- ✅ IMPORTANTE: Fila de Impuestos SOLO SI está ACTIVA en configuración -->
+        {f'<tr><td colspan="3" style="padding: 2mm; border: 1pt solid {table_border};">Impuestos</td><td colspan="2" style="padding: 2mm; border: 1pt solid {table_border}; text-align: right;">{tax_val}</td></tr>' if show_tax else '<!-- Impuestos omitidos (no activos o valor = $0) -->'}
         
         <!-- Fila de TOTAL (última fila de la tabla) -->
         <tr>
-            <td colspan="3" style="padding: 2mm; border: 1pt solid #000;"></td>
-            <td style="padding: 2mm; border: 1pt solid #000; text-align: right; font-weight: bold;">TOTAL</td>
-            <td style="padding: 2mm; border: 1pt solid #000; text-align: right; font-weight: bold; font-size: 12pt;">{pricing_data.get('total_formatted')}</td>
+            <td colspan="3" style="padding: 2mm; border: 1pt solid {table_border};"></td>
+            <td style="padding: 2mm; border: 1pt solid {table_border}; text-align: right; font-weight: bold;">TOTAL</td>
+            <td style="padding: 2mm; border: 1pt solid {table_border}; text-align: right; font-weight: bold; font-size: 12pt;">{pricing_data.get('total_formatted')}</td>
         </tr>
     </tbody>
 </table>
@@ -206,8 +232,8 @@ IMPORTANTE sobre las fechas:
    - Impuestos: {'Mostrar' if show_tax else 'NO mostrar'}
    - Costo por persona: {'Mostrar' if show_cost_per_person else 'NO mostrar'}
 ✅ **Pricing dentro de la tabla** (última fila con TOTAL)
-✅ **Cajas azules** para Cliente, Solicitud, Empresa, Fecha, Lugar
-✅ **Header de tabla azul** (#0e2541) con texto blanco
+✅ **Cajas con color primario** ({primary_color}) para Cliente, Solicitud
+✅ **Header de tabla** con colores del branding: fondo {table_header_bg}, texto {table_header_text}
 
 ---
 
@@ -218,10 +244,11 @@ Antes de generar el HTML final, verifica que incluya:
 [ ] Estructura HTML completa (<!DOCTYPE>, <html>, <head>, <body>)
 [ ] Logo con la URL correcta: {logo_endpoint}
 [ ] Información de la empresa en el header
-[ ] Cajas azules para información del cliente
-[ ] Tabla con header azul y texto blanco
+[ ] Cajas con colores del branding para información del cliente
+[ ] Tabla con header usando colores del branding ({table_header_bg} / {table_header_text})
 [ ] TODOS los productos en la tabla
-[ ] Fila de Coordinación SOLO si > $0
+[ ] Fila de Coordinación SOLO si está ACTIVA (show_coordination = {show_coordination})
+[ ] Fila de Impuestos SOLO si está ACTIVA (show_tax = {show_tax})
 [ ] Fila de TOTAL al final de la tabla
 [ ] Comentarios HTML en cada sección
 [ ] CSS optimizado para PDF (unidades en mm/pt)
@@ -250,8 +277,8 @@ SOLO el código HTML puro con comentarios internos.
         
         products_formatted = ProposalPrompts._format_products(rfx_data.get('products', []))
         
-        # Logo por defecto de Sabra Corporation
-        default_logo_endpoint = f"{base_url}/api/branding/default/logo"
+        # Logo por defecto de Sabra Corporation - usar ruta relativa
+        default_logo_endpoint = "/api/branding/default/logo"
         
         # Determinar qué campos de pricing mostrar (solo si > 0)
         coord_val = pricing_data.get('coordination_formatted', '$0.00')

@@ -241,8 +241,8 @@ class ProposalGenerationService:
                 'email': 'N/A'
             }
     
-    def _format_pricing_data(self, pricing_calculation: Any, currency: str) -> Dict[str, str]:
-        """Formatea datos de pricing para los prompts"""
+    def _format_pricing_data(self, pricing_calculation: Any, currency: str, rfx_id: str = None) -> Dict[str, str]:
+        """Formatea datos de pricing para los prompts CON flags de configuración activa"""
         try:
             # Obtener símbolo de moneda
             symbols = {
@@ -257,25 +257,48 @@ class ProposalGenerationService:
                 subtotal = pricing_calculation.get('subtotal', 0) or 0
                 coordination = pricing_calculation.get('coordination_amount', 0) or 0
                 coordination_rate = (pricing_calculation.get('coordination_rate') or 0) * 100
+                coordination_enabled = pricing_calculation.get('coordination_enabled', False)
                 tax = pricing_calculation.get('tax_amount', 0) or 0
                 tax_rate = (pricing_calculation.get('tax_rate') or 0) * 100
+                taxes_enabled = pricing_calculation.get('taxes_enabled', False)
                 total = pricing_calculation.get('total', 0) or 0
+                cost_per_person = pricing_calculation.get('cost_per_person', 0) or 0
+                cost_per_person_enabled = pricing_calculation.get('cost_per_person_enabled', False)
             else:
                 subtotal = getattr(pricing_calculation, 'subtotal', 0) or 0
                 coordination = getattr(pricing_calculation, 'coordination_amount', 0) or 0
                 coordination_rate = (getattr(pricing_calculation, 'coordination_rate', 0) or 0) * 100
+                coordination_enabled = getattr(pricing_calculation, 'coordination_enabled', False)
                 tax = getattr(pricing_calculation, 'tax_amount', 0) or 0
                 tax_rate = (getattr(pricing_calculation, 'tax_rate', 0) or 0) * 100
+                taxes_enabled = getattr(pricing_calculation, 'taxes_enabled', False)
                 total = getattr(pricing_calculation, 'total_cost', 0) or 0
+                cost_per_person = getattr(pricing_calculation, 'cost_per_person', 0) or 0
+                cost_per_person_enabled = getattr(pricing_calculation, 'cost_per_person_enabled', False)
+            
+            # ✅ LÓGICA INTELIGENTE: Solo mostrar si está ACTIVO Y tiene valor > 0
+            show_coordination = coordination_enabled and coordination > 0
+            show_tax = taxes_enabled and tax > 0
+            show_cost_per_person = cost_per_person_enabled and cost_per_person > 0
+            
+            logger.info(f"💰 Pricing flags - Coordination: {show_coordination} (enabled={coordination_enabled}, amount={coordination})")
+            logger.info(f"💰 Pricing flags - Tax: {show_tax} (enabled={taxes_enabled}, amount={tax})")
+            logger.info(f"💰 Pricing flags - Cost per person: {show_cost_per_person} (enabled={cost_per_person_enabled}, amount={cost_per_person})")
             
             return {
                 'subtotal_formatted': f"{symbol}{subtotal:.2f}",
                 'coordination_formatted': f"{symbol}{coordination:.2f}",
                 'coordination_percentage': f"{coordination_rate:.1f}",
+                'coordination_enabled': coordination_enabled,
+                'show_coordination': show_coordination,  # ✅ Flag inteligente
                 'tax_formatted': f"{symbol}{tax:.2f}",
                 'tax_percentage': f"{tax_rate:.1f}",
+                'taxes_enabled': taxes_enabled,
+                'show_tax': show_tax,  # ✅ Flag inteligente
                 'total_formatted': f"{symbol}{total:.2f}",
-                'cost_per_person_formatted': f"{symbol}0.00"  # Calcular si es necesario
+                'cost_per_person_formatted': f"{symbol}{cost_per_person:.2f}",
+                'cost_per_person_enabled': cost_per_person_enabled,
+                'show_cost_per_person': show_cost_per_person  # ✅ Flag inteligente
             }
         except Exception as e:
             logger.error(f"Error formatting pricing data: {e}")
@@ -283,10 +306,16 @@ class ProposalGenerationService:
                 'subtotal_formatted': '$0.00',
                 'coordination_formatted': '$0.00',
                 'coordination_percentage': '0',
+                'coordination_enabled': False,
+                'show_coordination': False,
                 'tax_formatted': '$0.00',
                 'tax_percentage': '0',
+                'taxes_enabled': False,
+                'show_tax': False,
                 'total_formatted': '$0.00',
-                'cost_per_person_formatted': '$0.00'
+                'cost_per_person_formatted': '$0.00',
+                'cost_per_person_enabled': False,
+                'show_cost_per_person': False
             }
     
     def _has_complete_branding(self, user_id: str) -> bool:
@@ -320,7 +349,7 @@ class ProposalGenerationService:
             return False
     
     def _get_branding_config(self, user_id: str) -> Dict[str, Any]:
-        """Obtiene configuración de branding completa"""
+        """Obtiene configuración de branding completa con colores reales del template"""
         try:
             from backend.services.user_branding_service import user_branding_service
             
@@ -329,12 +358,35 @@ class ProposalGenerationService:
             if not branding:
                 return {}
             
+            template_analysis = branding.get('template_analysis', {})
+            logo_analysis = branding.get('logo_analysis', {})
+            
+            # ✅ EXTRAER COLORES REALES DEL TEMPLATE ANALYSIS
+            color_scheme = template_analysis.get('color_scheme', {})
+            table_style = template_analysis.get('table_style', {})
+            
+            # Colores principales
+            primary_color = color_scheme.get('primary', '#2c5f7c')
+            secondary_color = color_scheme.get('secondary', '#ffffff')
+            
+            # Colores específicos de tabla
+            table_header_bg = table_style.get('header_background', '#f0f0f0')
+            table_header_text = color_scheme.get('text', '#000000')
+            table_border = color_scheme.get('borders', '#000000')
+            
+            logger.info(f"🎨 Branding colors - Primary: {primary_color}, Secondary: {secondary_color}")
+            logger.info(f"🎨 Table colors - Header BG: {table_header_bg}, Header Text: {table_header_text}")
+            
             return {
                 'logo_url': branding.get('logo_url'),
-                'logo_analysis': branding.get('logo_analysis', {}),
-                'template_analysis': branding.get('template_analysis', {}),
-                'primary_color': branding.get('logo_analysis', {}).get('primary_color', '#2c5f7c'),
-                'secondary_color': branding.get('logo_analysis', {}).get('secondary_color', '#ffffff')
+                'logo_analysis': logo_analysis,
+                'template_analysis': template_analysis,
+                'primary_color': primary_color,
+                'secondary_color': secondary_color,
+                'table_header_bg': table_header_bg,
+                'table_header_text': table_header_text,
+                'table_border': table_border,
+                'typography': template_analysis.get('typography', {})
             }
             
         except Exception as e:
@@ -348,10 +400,9 @@ class ProposalGenerationService:
         """🎨 Genera propuesta CON branding usando ProposalPrompts"""
         logger.info(f"🎨 Building prompt with branding for user {user_id}")
         
-        # Construir URL del logo
-        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
-        logo_endpoint = f"{base_url}/api/branding/files/{user_id}/logo"
-        logger.info(f"🎨 Logo endpoint: {logo_endpoint}")
+        # Construir URL del logo - Usar ruta relativa para compatibilidad con servidor
+        logo_endpoint = f"/api/branding/files/{user_id}/logo"
+        logger.info(f"🎨 Logo endpoint (relative): {logo_endpoint}")
         
         # Preparar datos para el prompt
         company_info = self._get_company_info(user_id)
@@ -373,7 +424,8 @@ class ProposalGenerationService:
             logo_endpoint=logo_endpoint,
             company_info=company_info,
             rfx_data=mapped_rfx_data,
-            pricing_data=pricing_data
+            pricing_data=pricing_data,
+            branding_config=branding_config  # ✅ Pasar colores del branding
         )
         
         return await self._call_ai(prompt)
@@ -393,8 +445,8 @@ class ProposalGenerationService:
         # 🔧 MAPEAR datos al formato que espera el prompt
         mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
         
-        # Obtener base_url para el logo por defecto
-        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
+        # Usar ruta relativa para el logo por defecto - compatibilidad con servidor
+        base_url = ""  # Ruta relativa, no necesita dominio completo
         
         # Llamar al prompt con los parámetros correctos
         prompt = ProposalPrompts.get_prompt_default(
@@ -421,8 +473,8 @@ class ProposalGenerationService:
         # Reconstruir el prompt original (sin llamar a AI)
         if has_branding:
             branding_config = self._get_branding_config(user_id)
-            base_url = os.getenv('BASE_URL', 'http://localhost:5001')
-            logo_endpoint = f"{base_url}/api/branding/files/{user_id}/logo"
+            # Usar ruta relativa para compatibilidad con servidor
+            logo_endpoint = f"/api/branding/files/{user_id}/logo"
             
             # Preparar datos para el prompt
             company_info = self._get_company_info(user_id)
@@ -433,7 +485,8 @@ class ProposalGenerationService:
                 logo_endpoint=logo_endpoint,
                 company_info=company_info,
                 rfx_data=rfx_data,
-                pricing_data=pricing_data
+                pricing_data=pricing_data,
+                branding_config=branding_config  # ✅ Pasar colores del branding
             )
         else:
             company_info = self._get_company_info(user_id)

@@ -1127,6 +1127,250 @@ def rfx_webhook_compatibility():
     return process_rfx()
 
 
+@rfx_bp.route("/<rfx_id>/products", methods=["POST"])
+def create_rfx_product(rfx_id: str):
+    """
+    ➕ Crear un nuevo producto para un RFX existente
+    
+    Body: {
+        "nombre": "Nombre del producto",
+        "cantidad": 10,
+        "unidad": "unidades",
+        "precio_unitario": 100.50,  // opcional
+        "descripcion": "Descripción",  // opcional
+        "notas": "Notas adicionales"  // opcional
+    }
+    """
+    try:
+        logger.info(f"➕ Creating new product for RFX: {rfx_id}")
+        
+        if not request.is_json:
+            return jsonify({
+                "status": "error",
+                "message": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # Validar campos requeridos
+        nombre = data.get("nombre") or data.get("product_name")
+        if not nombre:
+            return jsonify({
+                "status": "error",
+                "message": "Product name is required (nombre or product_name)",
+                "error": "Missing required field"
+            }), 400
+        
+        from ..core.database import get_database_client
+        db_client = get_database_client()
+        
+        # Verificar que el RFX existe
+        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        if not rfx_record:
+            return jsonify({
+                "status": "error",
+                "message": "RFX not found",
+                "error": f"No RFX found with ID: {rfx_id}"
+            }), 404
+        
+        # Preparar datos del producto con valores por defecto
+        product_data = {
+            "product_name": nombre.strip(),
+            "quantity": int(data.get("cantidad") or data.get("quantity") or 1),
+            "unit": (data.get("unidad") or data.get("unit") or "unidades").strip().lower(),
+            "estimated_unit_price": float(data.get("precio_unitario") or data.get("estimated_unit_price") or 0) if data.get("precio_unitario") or data.get("estimated_unit_price") else None,
+            "description": (data.get("descripcion") or data.get("description") or "").strip() or None,
+            "notes": (data.get("notas") or data.get("notes") or "").strip() or None
+        }
+        
+        # Calcular total si hay precio unitario
+        if product_data["estimated_unit_price"]:
+            product_data["total_estimated_cost"] = product_data["estimated_unit_price"] * product_data["quantity"]
+        
+        logger.info(f"📦 Product data prepared: {product_data}")
+        
+        # Insertar producto en la base de datos
+        try:
+            inserted_products = db_client.insert_rfx_products(rfx_id, [product_data])
+            
+            if inserted_products and len(inserted_products) > 0:
+                created_product = inserted_products[0]
+                logger.info(f"✅ Product created successfully: {created_product.get('id')}")
+                
+                # Crear evento en historial
+                history_event = {
+                    "rfx_id": rfx_id,
+                    "event_type": "product_added",
+                    "description": f"New product added: {product_data['product_name']}",
+                    "new_values": {
+                        "product_id": created_product.get('id'),
+                        "product_name": product_data['product_name'],
+                        "quantity": product_data['quantity'],
+                        "unit": product_data['unit']
+                    },
+                    "performed_by": "user"
+                }
+                db_client.insert_rfx_history(history_event)
+                
+                # Formatear respuesta
+                response_product = {
+                    "id": created_product.get("id"),
+                    "nombre": created_product.get("product_name"),
+                    "cantidad": created_product.get("quantity"),
+                    "unidad": created_product.get("unit"),
+                    "precio_unitario": created_product.get("estimated_unit_price"),
+                    "subtotal": created_product.get("total_estimated_cost"),
+                    "descripcion": created_product.get("description"),
+                    "notas": created_product.get("notes"),
+                    "created_at": created_product.get("created_at")
+                }
+                
+                return jsonify({
+                    "status": "success",
+                    "message": "Product created successfully",
+                    "data": {
+                        "rfx_id": rfx_id,
+                        "product": response_product
+                    }
+                }), 201
+            else:
+                logger.error(f"❌ Failed to create product - no data returned")
+                return jsonify({
+                    "status": "error",
+                    "message": "Failed to create product",
+                    "error": "Database insert returned no data"
+                }), 500
+                
+        except Exception as db_error:
+            logger.error(f"❌ Database error creating product: {db_error}")
+            return jsonify({
+                "status": "error",
+                "message": "Database error while creating product",
+                "error": str(db_error)
+            }), 500
+        
+    except ValueError as ve:
+        logger.error(f"❌ Validation error: {ve}")
+        return jsonify({
+            "status": "error",
+            "message": "Invalid data format",
+            "error": str(ve)
+        }), 400
+        
+    except Exception as e:
+        logger.error(f"❌ Exception in create_rfx_product: {e}")
+        import traceback
+        logger.error(f"❌ Full traceback: {traceback.format_exc()}")
+        return jsonify({
+            "status": "error",
+            "message": "Internal server error",
+            "error": str(e)
+        }), 500
+
+
+@rfx_bp.route("/<rfx_id>/products/<product_id>", methods=["DELETE"])
+def delete_rfx_product(rfx_id: str, product_id: str):
+    """
+    🗑️ Eliminar un producto específico de un RFX
+    
+    DELETE /api/rfx/<rfx_id>/products/<product_id>
+    """
+    try:
+        logger.info(f"🗑️ Deleting product {product_id} from RFX: {rfx_id}")
+        
+        from ..core.database import get_database_client
+        db_client = get_database_client()
+        
+        # Verificar que el RFX existe
+        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        if not rfx_record:
+            return jsonify({
+                "status": "error",
+                "message": "RFX not found",
+                "error": f"No RFX found with ID: {rfx_id}"
+            }), 404
+        
+        # Verificar que el producto existe antes de eliminarlo
+        try:
+            product_check = db_client.client.table("rfx_products")\
+                .select("id, product_name")\
+                .eq("rfx_id", rfx_id)\
+                .eq("id", product_id)\
+                .execute()
+            
+            if not product_check.data or len(product_check.data) == 0:
+                return jsonify({
+                    "status": "error",
+                    "message": "Product not found",
+                    "error": f"No product found with ID: {product_id} in RFX: {rfx_id}"
+                }), 404
+            
+            product_name = product_check.data[0].get("product_name", "Unknown")
+            
+        except Exception as check_error:
+            logger.error(f"❌ Error checking product existence: {check_error}")
+            return jsonify({
+                "status": "error",
+                "message": "Error verifying product",
+                "error": str(check_error)
+            }), 500
+        
+        # Eliminar el producto
+        try:
+            success = db_client.delete_rfx_product(rfx_id, product_id)
+            
+            if success:
+                logger.info(f"✅ Product {product_id} deleted successfully from RFX {rfx_id}")
+                
+                # Crear evento en historial
+                history_event = {
+                    "rfx_id": rfx_id,
+                    "event_type": "product_deleted",
+                    "description": f"Product deleted: {product_name}",
+                    "old_values": {
+                        "product_id": product_id,
+                        "product_name": product_name
+                    },
+                    "performed_by": "user"
+                }
+                db_client.insert_rfx_history(history_event)
+                
+                return jsonify({
+                    "status": "success",
+                    "message": f"Product '{product_name}' deleted successfully",
+                    "data": {
+                        "rfx_id": rfx_id,
+                        "product_id": product_id,
+                        "product_name": product_name
+                    }
+                }), 200
+            else:
+                logger.error(f"❌ Failed to delete product {product_id}")
+                return jsonify({
+                    "status": "error",
+                    "message": "Failed to delete product",
+                    "error": "Database delete operation failed"
+                }), 500
+                
+        except Exception as delete_error:
+            logger.error(f"❌ Database error deleting product: {delete_error}")
+            return jsonify({
+                "status": "error",
+                "message": "Database error while deleting product",
+                "error": str(delete_error)
+            }), 500
+        
+    except Exception as e:
+        logger.error(f"❌ Exception in delete_rfx_product: {e}")
+        import traceback
+        logger.error(f"❌ Full traceback: {traceback.format_exc()}")
+        return jsonify({
+            "status": "error",
+            "message": "Internal server error",
+            "error": str(e)
+        }), 500
+
+
 @rfx_bp.route("/<rfx_id>/products/<product_id>", methods=["PUT"])
 def update_rfx_product(rfx_id: str, product_id: str):
     """Actualizar un producto específico del RFX"""

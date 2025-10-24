@@ -115,7 +115,13 @@ def get_pricing_configuration(rfx_id: str):
 @pricing_bp.route("/config/<rfx_id>", methods=["PUT"])
 def update_pricing_configuration(rfx_id: str):
     """
-    ⚙️ Actualizar configuración de pricing para un RFX
+    ⚙️ Actualizar configuración de pricing para un RFX (ENDPOINT GENERAL - FALLBACK)
+    
+    ⚠️ NOTA: Este endpoint actualiza TODA la configuración a la vez.
+    Para actualizaciones independientes y más eficientes, usar:
+    - PATCH /config/<rfx_id>/coordination - Solo coordinación
+    - PATCH /config/<rfx_id>/cost-per-person - Solo costo por persona
+    - PATCH /config/<rfx_id>/taxes - Solo impuestos
     """
     try:
         logger.info(f"🔄 Updating pricing configuration for RFX: {rfx_id}")
@@ -205,6 +211,212 @@ def update_pricing_configuration(rfx_id: str):
         return jsonify({
             "status": "error",
             "message": "Failed to update pricing configuration",
+            "error": str(e)
+        }), 500
+
+
+@pricing_bp.route("/config/<rfx_id>/coordination", methods=["PATCH"])
+def update_coordination_config(rfx_id: str):
+    """
+    🔧 Actualizar SOLO configuración de coordinación y logística
+    """
+    try:
+        logger.info(f"🔧 Updating coordination config for RFX: {rfx_id}")
+        
+        if not request.is_json:
+            return jsonify({
+                "status": "error",
+                "message": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # 🧠 Smart RFX lookup
+        db_client = get_database_client()
+        rfx_record = db_client.find_rfx_by_identifier(rfx_id)
+        
+        if not rfx_record:
+            return jsonify({
+                "status": "error",
+                "message": f"RFX not found: {rfx_id}"
+            }), 404
+        
+        actual_rfx_id = str(rfx_record["id"])
+        
+        # Actualizar solo coordinación
+        pricing_service = PricingConfigurationServiceV2()
+        updated_config = pricing_service.update_coordination_only(
+            rfx_id=actual_rfx_id,
+            enabled=data.get("coordination_enabled", False),
+            rate=data.get("coordination_rate"),
+            level=data.get("coordination_level")
+        )
+        
+        if not updated_config:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to update coordination configuration"
+            }), 500
+        
+        response = {
+            "status": "success",
+            "message": "Coordination configuration updated",
+            "data": {
+                "rfx_id": actual_rfx_id,
+                "coordination_enabled": updated_config.has_coordination(),
+                "coordination_rate": updated_config.get_coordination_rate(),
+                "updated_at": datetime.now().isoformat()
+            }
+        }
+        
+        logger.info(f"✅ Coordination config updated for RFX {actual_rfx_id}")
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating coordination config: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to update coordination configuration",
+            "error": str(e)
+        }), 500
+
+
+@pricing_bp.route("/config/<rfx_id>/cost-per-person", methods=["PATCH"])
+def update_cost_per_person_config(rfx_id: str):
+    """
+    👥 Actualizar SOLO configuración de costo por persona
+    """
+    try:
+        logger.info(f"👥 Updating cost per person config for RFX: {rfx_id}")
+        
+        if not request.is_json:
+            return jsonify({
+                "status": "error",
+                "message": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # 🧠 Smart RFX lookup
+        db_client = get_database_client()
+        rfx_record = db_client.find_rfx_by_identifier(rfx_id)
+        
+        if not rfx_record:
+            return jsonify({
+                "status": "error",
+                "message": f"RFX not found: {rfx_id}"
+            }), 404
+        
+        actual_rfx_id = str(rfx_record["id"])
+        
+        # Actualizar solo costo por persona
+        pricing_service = PricingConfigurationServiceV2()
+        updated_config = pricing_service.update_cost_per_person_only(
+            rfx_id=actual_rfx_id,
+            enabled=data.get("cost_per_person_enabled", False),
+            headcount=data.get("headcount"),
+            display_in_proposal=data.get("per_person_display", True)
+        )
+        
+        if not updated_config:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to update cost per person configuration"
+            }), 500
+        
+        response = {
+            "status": "success",
+            "message": "Cost per person configuration updated",
+            "data": {
+                "rfx_id": actual_rfx_id,
+                "cost_per_person_enabled": updated_config.has_cost_per_person(),
+                "headcount": updated_config.get_headcount(),
+                "updated_at": datetime.now().isoformat()
+            }
+        }
+        
+        logger.info(f"✅ Cost per person config updated for RFX {actual_rfx_id}")
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating cost per person config: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to update cost per person configuration",
+            "error": str(e)
+        }), 500
+
+
+@pricing_bp.route("/config/<rfx_id>/taxes", methods=["PATCH"])
+def update_taxes_config(rfx_id: str):
+    """
+    💵 Actualizar SOLO configuración de impuestos
+    """
+    try:
+        logger.info(f"💵 Updating taxes config for RFX: {rfx_id}")
+        
+        if not request.is_json:
+            return jsonify({
+                "status": "error",
+                "message": "Content-Type must be application/json"
+            }), 400
+        
+        data = request.get_json()
+        
+        # 🧠 Smart RFX lookup
+        db_client = get_database_client()
+        rfx_record = db_client.find_rfx_by_identifier(rfx_id)
+        
+        if not rfx_record:
+            return jsonify({
+                "status": "error",
+                "message": f"RFX not found: {rfx_id}"
+            }), 404
+        
+        actual_rfx_id = str(rfx_record["id"])
+        
+        # Actualizar solo impuestos
+        pricing_service = PricingConfigurationServiceV2()
+        updated_config = pricing_service.update_taxes_only(
+            rfx_id=actual_rfx_id,
+            enabled=data.get("taxes_enabled", False),
+            tax_rate=data.get("tax_rate"),
+            tax_type=data.get("tax_type")
+        )
+        
+        if not updated_config:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to update taxes configuration"
+            }), 500
+        
+        # Obtener información de impuestos
+        tax_rate = None
+        tax_type = None
+        if updated_config.taxes and updated_config.taxes.is_enabled:
+            tax_rate = updated_config.taxes.config_value.tax_rate
+            tax_type = updated_config.taxes.config_value.tax_type
+        
+        response = {
+            "status": "success",
+            "message": "Taxes configuration updated",
+            "data": {
+                "rfx_id": actual_rfx_id,
+                "taxes_enabled": updated_config.taxes and updated_config.taxes.is_enabled,
+                "tax_rate": tax_rate,
+                "tax_type": tax_type,
+                "updated_at": datetime.now().isoformat()
+            }
+        }
+        
+        logger.info(f"✅ Taxes config updated for RFX {actual_rfx_id}")
+        return jsonify(response), 200
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating taxes config: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to update taxes configuration",
             "error": str(e)
         }), 500
 

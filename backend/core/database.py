@@ -408,6 +408,22 @@ class DatabaseClient:
             logger.error(f"❌ Failed to update product cost: {e}")
             return False
     
+    def delete_rfx_product(self, rfx_id: Union[str, UUID], product_id: str) -> bool:
+        """Delete a specific RFX product"""
+        try:
+            response = self.client.table("rfx_products")\
+                .delete()\
+                .eq("rfx_id", str(rfx_id))\
+                .eq("id", product_id)\
+                .execute()
+            
+            # Supabase delete returns empty data on success
+            logger.info(f"✅ Deleted product {product_id} from RFX {rfx_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to delete product {product_id}: {e}")
+            return False
+    
     # ========================
     # SUPPLIER OPERATIONS
     # ========================

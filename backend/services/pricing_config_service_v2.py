@@ -234,9 +234,173 @@ class PricingConfigurationServiceV2:
             logger.error(f"❌ Error saving pricing configuration: {e}")
             return False
     
+    def update_coordination_only(self, rfx_id: str, enabled: bool, 
+                                  rate: Optional[float] = None, 
+                                  level: Optional[str] = None) -> Optional[RFXPricingConfiguration]:
+        """Actualizar SOLO configuración de coordinación (método simplificado)"""
+        try:
+            logger.info(f"🔧 [Independent] Updating coordination only for RFX {rfx_id}: enabled={enabled}")
+            
+            # 1) Obtener o crear configuración principal activa
+            pricing_config_id = self._get_or_create_active_pricing_config_id(rfx_id)
+            
+            # 2) Valores por defecto
+            desired_rate = rate if rate is not None else 0.18
+            desired_level = level if level else 'standard'
+            
+            # Normalizar nivel
+            allowed_levels = {'basic', 'standard', 'premium', 'custom'}
+            if desired_level.lower() not in allowed_levels:
+                desired_level = 'standard'
+            
+            # 3) Upsert coordinación
+            coord_existing = self.db_client.client.table('coordination_configurations')\
+                .select('id')\
+                .eq('pricing_config_id', pricing_config_id)\
+                .limit(1)\
+                .execute()
+            
+            if coord_existing.data:
+                self.db_client.client.table('coordination_configurations')\
+                    .update({
+                        'is_enabled': bool(enabled),
+                        'rate': float(desired_rate),
+                        'coordination_type': str(desired_level),
+                        'updated_at': datetime.now().isoformat()
+                    })\
+                    .eq('id', coord_existing.data[0]['id'])\
+                    .execute()
+            else:
+                self.db_client.client.table('coordination_configurations')\
+                    .insert({
+                        'pricing_config_id': pricing_config_id,
+                        'is_enabled': bool(enabled),
+                        'rate': float(desired_rate),
+                        'coordination_type': str(desired_level),
+                        'description': 'Coordinación y logística'
+                    })\
+                    .execute()
+            
+            logger.info(f"✅ Coordination config updated independently for RFX {rfx_id}")
+            return self.get_rfx_pricing_configuration(rfx_id)
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating coordination only: {e}")
+            return None
+    
+    def update_cost_per_person_only(self, rfx_id: str, enabled: bool,
+                                     headcount: Optional[int] = None,
+                                     display_in_proposal: bool = True) -> Optional[RFXPricingConfiguration]:
+        """Actualizar SOLO configuración de costo por persona (método simplificado)"""
+        try:
+            logger.info(f"👥 [Independent] Updating cost per person only for RFX {rfx_id}: enabled={enabled}")
+            
+            # 1) Obtener o crear configuración principal activa
+            pricing_config_id = self._get_or_create_active_pricing_config_id(rfx_id)
+            
+            # 2) Valor por defecto
+            desired_headcount = headcount if (headcount and headcount > 0) else 120
+            
+            # 3) Upsert costo por persona
+            cpp_existing = self.db_client.client.table('cost_per_person_configurations')\
+                .select('id, headcount')\
+                .eq('pricing_config_id', pricing_config_id)\
+                .limit(1)\
+                .execute()
+            
+            if cpp_existing.data:
+                preserved_headcount = cpp_existing.data[0].get('headcount') or desired_headcount
+                self.db_client.client.table('cost_per_person_configurations')\
+                    .update({
+                        'is_enabled': bool(enabled),
+                        'headcount': int(desired_headcount if enabled else preserved_headcount),
+                        'display_in_proposal': bool(display_in_proposal),
+                        'calculation_base': 'final_total',
+                        'updated_at': datetime.now().isoformat()
+                    })\
+                    .eq('id', cpp_existing.data[0]['id'])\
+                    .execute()
+            else:
+                self.db_client.client.table('cost_per_person_configurations')\
+                    .insert({
+                        'pricing_config_id': pricing_config_id,
+                        'is_enabled': bool(enabled),
+                        'headcount': int(desired_headcount),
+                        'display_in_proposal': bool(display_in_proposal),
+                        'calculation_base': 'final_total',
+                        'description': 'Cálculo de costo individual'
+                    })\
+                    .execute()
+            
+            logger.info(f"✅ Cost per person config updated independently for RFX {rfx_id}")
+            return self.get_rfx_pricing_configuration(rfx_id)
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating cost per person only: {e}")
+            return None
+    
+    def update_taxes_only(self, rfx_id: str, enabled: bool,
+                          tax_rate: Optional[float] = None,
+                          tax_type: Optional[str] = None) -> Optional[RFXPricingConfiguration]:
+        """Actualizar SOLO configuración de impuestos (método simplificado)"""
+        try:
+            logger.info(f"💵 [Independent] Updating taxes only for RFX {rfx_id}: enabled={enabled}")
+            
+            # 1) Obtener o crear configuración principal activa
+            pricing_config_id = self._get_or_create_active_pricing_config_id(rfx_id)
+            
+            # 2) Valores por defecto
+            desired_tax_rate = tax_rate if tax_rate is not None else 0.16
+            desired_tax_type = tax_type or 'IVA'
+            
+            # 3) Upsert impuestos
+            tax_existing = self.db_client.client.table('tax_configurations')\
+                .select('id')\
+                .eq('pricing_config_id', pricing_config_id)\
+                .limit(1)\
+                .execute()
+            
+            if enabled:
+                if tax_existing.data:
+                    self.db_client.client.table('tax_configurations')\
+                        .update({
+                            'is_enabled': True,
+                            'tax_rate': float(desired_tax_rate),
+                            'tax_name': str(desired_tax_type),
+                            'updated_at': datetime.now().isoformat()
+                        })\
+                        .eq('id', tax_existing.data[0]['id'])\
+                        .execute()
+                else:
+                    self.db_client.client.table('tax_configurations')\
+                        .insert({
+                            'pricing_config_id': pricing_config_id,
+                            'is_enabled': True,
+                            'tax_rate': float(desired_tax_rate),
+                            'tax_name': str(desired_tax_type)
+                        })\
+                        .execute()
+            else:
+                # Deshabilitar si existe
+                if tax_existing.data:
+                    self.db_client.client.table('tax_configurations')\
+                        .update({
+                            'is_enabled': False,
+                            'updated_at': datetime.now().isoformat()
+                        })\
+                        .eq('id', tax_existing.data[0]['id'])\
+                        .execute()
+            
+            logger.info(f"✅ Taxes config updated independently for RFX {rfx_id}")
+            return self.get_rfx_pricing_configuration(rfx_id)
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating taxes only: {e}")
+            return None
+    
     def update_coordination_config(self, rfx_id: str, enabled: bool, rate: float = 0.18, 
                                  coordination_type: str = 'standard', updated_by: str = 'user') -> bool:
-        """Actualizar solo la configuración de coordinación"""
+        """Actualizar solo la configuración de coordinación (método legacy)"""
         try:
             logger.info(f"🤝 Updating coordination config for RFX {rfx_id}: enabled={enabled}, rate={rate}")
             

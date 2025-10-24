@@ -65,7 +65,7 @@ class ServerConfig:
             self.cors_origins = ["http://localhost:3000"]
         
         if self.cors_methods is None:
-            self.cors_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+            self.cors_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]  # ✅ Added PATCH
         
         if self.cors_headers is None:
             self.cors_headers = ["Content-Type", "Authorization", "X-Requested-With", "Accept"]
@@ -142,7 +142,7 @@ class Config:
             port=int(os.getenv("PORT", "3186")),
             debug=self.environment == Environment.DEVELOPMENT,
             cors_origins=cors_origins.split(",") if cors_origins else [],
-            cors_methods=os.getenv("CORS_METHODS", "GET,POST,PUT,DELETE,OPTIONS").split(","),
+            cors_methods=os.getenv("CORS_METHODS", "GET,POST,PUT,PATCH,DELETE,OPTIONS").split(","),  # ✅ Added PATCH
             cors_headers=os.getenv("CORS_HEADERS", "Content-Type,Authorization,X-Requested-With,Accept").split(",")
         )
     

@@ -1,0 +1,71 @@
+module.exports = {
+  apps: [
+    {
+      // 🚀 Configuración para desarrollo en Ubuntu Server
+      name: 'RFX-dev',
+      script: 'run_backend_simple.py',
+      interpreter: './venv/bin/python',
+      // ⚠️ IMPORTANTE: Esta ruta debe coincidir con tu servidor Ubuntu
+      cwd: '/home/ubuntu/nodejs/AI-RFX-Backend-Clean', // Ajusta esta ruta
+      
+      // Variables de entorno - Development
+      env: {
+        ENVIRONMENT: 'development',
+        FLASK_ENV: 'development', 
+        FLASK_DEBUG: 'true',
+        PYTHONPATH: '.',
+        PORT: '3186',
+        HOST: '0.0.0.0',
+        
+        // Base de datos
+        SUPABASE_URL: 'https://mjwnmzdgxcxubanubvms.supabase.co',
+        SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qd25temRneGN4dWJhbnVidm1zIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDkyMjg5MzIsImV4cCI6MjA2NDgwNDkzMn0.0fuBXpygfoj_Ar5Uav4Joo-DV-v2AU1HQAAHYARsRGY',
+        
+        // OpenAI
+        OPENAI_API_KEY: '123...',
+        
+        // Aplicación
+        SECRET_KEY: 'dev-secret-key-change-in-production',
+        DEBUG: 'true',
+        
+        // CORS
+        CORS_ORIGINS: 'http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001',
+        
+        // File Upload
+        MAX_FILE_SIZE: '16777216',
+        UPLOAD_FOLDER: '/tmp/rfx_uploads',
+        
+        // Feature Flags - AI Agent Improvements
+        ENABLE_EVALS: 'true',
+        ENABLE_META_PROMPTING: 'false',
+        ENABLE_VERTICAL_AGENT: 'false',
+        EVAL_DEBUG_MODE: 'true'
+      },
+      
+      // Configuración de logs para Ubuntu Development
+      log_file: './logs/ai-rfx-dev-combined.log',
+      out_file: './logs/ai-rfx-dev-out.log',
+      error_file: './logs/ai-rfx-dev-error.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      
+      // Configuración de restart
+      watch: false,
+      ignore_watch: ['node_modules', 'logs', '__pycache__', '.git', '*.pyc'],
+      restart_delay: 1000,
+      max_restarts: 5,
+      min_uptime: '5s',
+      
+      // Configuración de instancias
+      instances: 1,
+      exec_mode: 'fork',
+      
+      // Health monitoring
+              health_check_url: 'http://localhost:3186/health',
+      health_check_grace_period: 30000,
+      
+      // Auto restart en caso de error
+      autorestart: true,
+      max_memory_restart: '500M'
+    }
+  ]
+};

@@ -4,9 +4,10 @@
 !.env.example
 !.env.*.example
 env-variables.txt
-ecosystem.dev.config.js
 ecosystem.prod.config.js
-ecosystem.*.config.js
+ecosystem.dev.config.js
+ecosystem.dev.config.js.backup
+ecosystem.*.config.js.backup
 
 # 🐍 Python
 __pycache__/

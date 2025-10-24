@@ -50,7 +50,7 @@ def create_app(config_name: str = None) -> Flask:
     server_config = get_server_config()
     CORS(app, 
          origins=["*"],  # Temporary: Allow all origins
-         methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],  # ✅ Added PATCH for independent pricing updates
          allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept"],
          supports_credentials=True,
          expose_headers=["Content-Disposition", "Content-Type"]
