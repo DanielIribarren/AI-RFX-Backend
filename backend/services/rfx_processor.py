@@ -64,6 +64,7 @@ class ProductExtraction(BaseModel):
     cantidad: int = Field(..., ge=1, le=10000, description="Cantidad del producto")
     unidad: str = Field(..., min_length=1, max_length=50, description="Unidad de medida")
     confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="Confidence score")
+    precio_unitario: Optional[float] = Field(default=0.0, ge=0, description="Precio unitario del producto")
     
     @validator('nombre')
     def validate_nombre(cls, v):
@@ -169,6 +170,7 @@ class ProductExtractor(BaseExtractor):
                     nombre = self._extract_product_name(producto_raw)
                     cantidad = self._extract_product_quantity(producto_raw)
                     unidad = self._extract_product_unit(producto_raw)
+                    precio_unitario = self._extract_product_price(producto_raw)
                     
                     if nombre:  # Solo proceder si tenemos nombre válido
                         confidence = self.calculate_confidence(nombre, raw_text)
@@ -177,7 +179,8 @@ class ProductExtractor(BaseExtractor):
                             nombre=nombre,
                             cantidad=cantidad,
                             unidad=unidad,
-                            confidence=confidence
+                            confidence=confidence,
+                            precio_unitario=precio_unitario
                         )
                         productos_validated.append(producto)
                         
@@ -194,7 +197,8 @@ class ProductExtractor(BaseExtractor):
                         nombre=producto_raw.strip(),
                         cantidad=1,
                         unidad="unidades",
-                        confidence=confidence
+                        confidence=confidence,
+                        precio_unitario=0.0
                     )
                     productos_validated.append(producto)
                     
@@ -233,6 +237,18 @@ class ProductExtractor(BaseExtractor):
             if key in producto_dict and producto_dict[key]:
                 return str(producto_dict[key]).strip().lower()
         return "unidades"
+    
+    def _extract_product_price(self, producto_dict: Dict[str, Any]) -> float:
+        """Extrae precio unitario del producto con fallback a 0.0"""
+        price_keys = ["precio_unitario", "price", "unit_price", "precio", "cost"]
+        for key in price_keys:
+            if key in producto_dict and producto_dict[key] is not None:
+                try:
+                    price = float(producto_dict[key])
+                    return max(0.0, price)  # Asegurar que no sea negativo
+                except (ValueError, TypeError):
+                    continue
+        return 0.0
 
 class SolicitanteExtractor(BaseExtractor):
     """Extractor especializado para información del solicitante"""
@@ -416,7 +432,8 @@ MODO DEBUG ACTIVADO:
     {
       "nombre": "nombre exacto del producto/servicio",
       "cantidad": número_entero,
-      "unidad": "unidades/personas/kg/litros/etc"
+      "unidad": "unidades/personas/kg/litros/etc",
+      "precio_unitario": número_decimal
     }
   ],
 {% endif %}
@@ -438,6 +455,51 @@ EJEMPLOS EMPRESA vs SOLICITANTE:
 PARA PRODUCTOS: busca comida, bebida, materiales, equipos, servicios
 PARA FECHAS: busca "entrega", "evento", "deadline" con fechas DD/MM/YYYY  
 PARA HORAS: busca "hora", "entrega", "inicio" con formato HH:MM
+
+🔍 IDENTIFICACIÓN AUTOMÁTICA DE DOCUMENTOS:
+Tienes múltiples documentos. Identifica automáticamente:
+- Documento(s) de licitación/RFX/solicitud → Extrae productos de aquí
+- Documento(s) de lista de precios/catálogo → Busca precios aquí
+- Otros documentos → Ignora o usa como contexto
+
+💰 EXTRACCIÓN DE PRECIOS UNITARIOS:
+
+Para cada producto que extraigas:
+
+1. Busca el producto en la lista de precios (si existe)
+2. Matching flexible:
+   - "Tequeños" = "Tequeño Premium" = "Mini Tequeños"
+   - Ignora mayúsculas, acentos, plurales
+   - Busca por nombre, categoría, descripción similar
+
+3. Asignación de precio:
+   - Si encuentras match claro → usa ese precio
+   - Si hay duda entre varios → usa el más cercano
+   - Si NO encuentras el producto → precio_unitario = 0.0
+   - NUNCA inventes precios
+
+4. Unidades:
+   - Verifica que las unidades coincidan
+   - Si la lista dice "por kg" y piden "100 unidades", precio = 0.0
+
+EJEMPLO DE RESPUESTA CON PRECIOS:
+
+{
+  "productos": [
+    {
+      "nombre": "Tequeños variados",
+      "cantidad": 200,
+      "unidad": "unidades",
+      "precio_unitario": 2.50
+    },
+    {
+      "nombre": "Sushi premium",
+      "cantidad": 100,
+      "unidad": "piezas",
+      "precio_unitario": 0.0
+    }
+  ]
+}
 
 TEXTO A ANALIZAR:
 {{ chunk_text }}
@@ -1459,6 +1521,7 @@ Responde SOLO con el JSON solicitado - asegúrate de haber encontrado TODOS los 
                     "categoria": product.get('category', 'otro'),
                     "cantidad": product.get('quantity', 1),
                     "unidad": product.get('unit_of_measure', 'unidades'),
+                    "precio_unitario": product.get('estimated_unit_price', 0.0),  # ← CRÍTICO: Mapear precio
                     "especificaciones": product.get('specifications', ''),
                     "es_obligatorio": product.get('is_mandatory', True),
                     "orden_prioridad": product.get('priority_order', i),
@@ -1922,7 +1985,8 @@ TEXTO: {text[:5000]}"""
                 ProductoRFX(
                     product_name=p["nombre"],
                     quantity=p["cantidad"],
-                    unit=p["unidad"]
+                    unit=p["unidad"],
+                    precio_unitario=p.get("precio_unitario", 0.0)  # ← CRÍTICO: Incluir precio
                 )
                 for p in validated_data["productos"]
             ]
@@ -2105,11 +2169,14 @@ TEXTO: {text[:5000]}"""
             if rfx_processed.products:
                 structured_products = []
                 for product in rfx_processed.products:
+                    # Map precio_unitario from extraction to estimated_unit_price for DB
+                    precio = getattr(product, 'precio_unitario', None) or getattr(product, 'estimated_unit_price', None)
+                    
                     product_data = {
                         "product_name": product.product_name if hasattr(product, 'product_name') else product.nombre,
                         "quantity": product.quantity if hasattr(product, 'quantity') else product.cantidad,
                         "unit": product.unit if hasattr(product, 'unit') else product.unidad,
-                        "estimated_unit_price": getattr(product, 'estimated_unit_price', None),
+                        "estimated_unit_price": precio if precio and precio > 0 else None,
                         "notes": f"Extracted from RFX processing"
                     }
                     structured_products.append(product_data)

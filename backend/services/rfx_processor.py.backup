@@ -10,10 +10,17 @@ import re
 import json
 import PyPDF2
 import time
+import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union, Tuple
 from enum import Enum
 from openai import OpenAI
+import zipfile
+import mimetypes
+
+# Feature flags for optional functionality
+USE_OCR = os.getenv("RFX_USE_OCR", "true").lower() in {"1","true","yes","on"}
+USE_ZIP = os.getenv("RFX_USE_ZIP", "true").lower() in {"1","true","yes","on"}
 
 # Pydantic imports for robust validation
 from pydantic import BaseModel, Field, validator, ValidationError
@@ -30,9 +37,10 @@ from backend.models.rfx_models import (
 from backend.models.proposal_models import ProposalRequest, ProposalNotes
 from backend.core.config import get_openai_config
 from backend.core.database import get_database_client
-from backend.utils.validators import EmailValidator, DateValidator, TimeValidator
-from backend.utils.text_utils import chunk_text, clean_json_string
+# ✅ ELIMINADO: from backend.utils.validators import EmailValidator, DateValidator, TimeValidator
+from backend.utils.text_utils import clean_json_string
 from backend.core.feature_flags import FeatureFlags
+from backend.services.function_calling_extractor import FunctionCallingRFXExtractor
 
 import logging
 
@@ -56,6 +64,7 @@ class ProductExtraction(BaseModel):
     cantidad: int = Field(..., ge=1, le=10000, description="Cantidad del producto")
     unidad: str = Field(..., min_length=1, max_length=50, description="Unidad de medida")
     confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="Confidence score")
+    precio_unitario: Optional[float] = Field(default=0.0, ge=0, description="Precio unitario del producto")
     
     @validator('nombre')
     def validate_nombre(cls, v):
@@ -115,11 +124,7 @@ class ExtractionDebugInfo(BaseModel):
 # 🏭 SISTEMA MODULAR DE EXTRACTORES
 # ============================================================================
 
-class ExtractionStrategy(Enum):
-    """Estrategias de extracción disponibles"""
-    CONSERVATIVE = "conservative"  # Alta precisión, baja sensibilidad
-    BALANCED = "balanced"         # Balance entre precisión y sensibilidad 
-    AGGRESSIVE = "aggressive"     # Alta sensibilidad, menor precisión
+# ✅ ELIMINADO: ExtractionStrategy enum - El LLM siempre es inteligente y completo
 
 class BaseExtractor:
     """Extractor base con funcionalidad común"""
@@ -165,6 +170,7 @@ class ProductExtractor(BaseExtractor):
                     nombre = self._extract_product_name(producto_raw)
                     cantidad = self._extract_product_quantity(producto_raw)
                     unidad = self._extract_product_unit(producto_raw)
+                    precio_unitario = self._extract_product_price(producto_raw)
                     
                     if nombre:  # Solo proceder si tenemos nombre válido
                         confidence = self.calculate_confidence(nombre, raw_text)
@@ -173,7 +179,8 @@ class ProductExtractor(BaseExtractor):
                             nombre=nombre,
                             cantidad=cantidad,
                             unidad=unidad,
-                            confidence=confidence
+                            confidence=confidence,
+                            precio_unitario=precio_unitario
                         )
                         productos_validated.append(producto)
                         
@@ -190,7 +197,8 @@ class ProductExtractor(BaseExtractor):
                         nombre=producto_raw.strip(),
                         cantidad=1,
                         unidad="unidades",
-                        confidence=confidence
+                        confidence=confidence,
+                        precio_unitario=0.0
                     )
                     productos_validated.append(producto)
                     
@@ -229,6 +237,18 @@ class ProductExtractor(BaseExtractor):
             if key in producto_dict and producto_dict[key]:
                 return str(producto_dict[key]).strip().lower()
         return "unidades"
+    
+    def _extract_product_price(self, producto_dict: Dict[str, Any]) -> float:
+        """Extrae precio unitario del producto con fallback a 0.0"""
+        price_keys = ["precio_unitario", "price", "unit_price", "precio", "cost"]
+        for key in price_keys:
+            if key in producto_dict and producto_dict[key] is not None:
+                try:
+                    price = float(producto_dict[key])
+                    return max(0.0, price)  # Asegurar que no sea negativo
+                except (ValueError, TypeError):
+                    continue
+        return 0.0
 
 class SolicitanteExtractor(BaseExtractor):
     """Extractor especializado para información del solicitante"""
@@ -400,94 +420,91 @@ MODO DEBUG ACTIVADO:
 {% endif %}"""
 
     def _get_extraction_prompt_template(self) -> str:
-        """Template del prompt de extracción con campos dinámicos"""
-        return """Analiza cuidadosamente este texto de un documento de catering/evento y extrae la siguiente información en formato JSON:
+        """Template del prompt de extracción BALANCEADO para efectividad sin exceder tokens"""
+        return """Extrae información del texto en formato JSON:
 
 {
 {% for field in required_fields %}
-  "{{ field.name }}": "{{ field.description }} ({{ field.format if field.format else 'null si no se encuentra' }})",
+  "{{ field.name }}": "{{ field.description }}",
 {% endfor %}
 {% if include_products %}
   "productos": [
     {
       "nombre": "nombre exacto del producto/servicio",
       "cantidad": número_entero,
-      "unidad": "unidades/personas/kg/litros/etc"
-      {% if debug_mode %},
-      "confidence": "confidence score 0.0-1.0",
-      "extraction_notes": "notas sobre la extracción"
-      {% endif %}
+      "unidad": "unidades/personas/kg/litros/etc",
+      "precio_unitario": número_decimal
     }
   ],
 {% endif %}
-{% if debug_mode %}
-  "extraction_metadata": {
-    "chunk_quality": "calidad del chunk: high/medium/low",
-    "extraction_strategy": "{{ strategy }}",
-    "processing_notes": "notas del procesamiento"
-  },
-{% endif %}
-  "texto_original_relevante": "fragmento del texto donde encontraste la información principal"
+  "texto_original_relevante": "fragmento relevante del texto"
 }
 
-REGLAS CRÍTICAS PARA EMPRESA vs SOLICITANTE:
-- EMPRESA = compañía/organización que solicita el servicio
-- SOLICITANTE = persona individual dentro de la empresa
-- Si ves "juan.perez@chevron.com" → nombre_empresa="Chevron", email_solicitante="juan.perez@chevron.com"
-- Si ves "Sofia Elena Camejo" → nombre_solicitante="Sofia Elena Camejo"
-- Si solo hay un email corporativo, extrae la empresa del dominio (@chevron.com → Chevron)
+REGLAS CRÍTICAS:
+- Si no encuentras un dato, usa null
+- EMPRESA = compañía/organización (ej: Chevron, PDVSA). Si solo hay email "juan@chevron.com" → empresa: "Chevron"  
+- SOLICITANTE = persona individual (ej: "Juan Pérez", "Sofia Elena Camejo")
+- DIFERENCIA EMAILS: email_empresa (general: info@empresa.com) vs email_solicitante (personal: juan@empresa.com)
 
-EJEMPLOS DE DIFERENCIACIÓN:
-- Email: "sofia.elena@chevron.com" + Nombre: "Sofia Elena"
+EJEMPLOS EMPRESA vs SOLICITANTE:
+- "Cristóbal Lopenza, Chevron, Cristobal.Lopenza@chevron.com"
   → nombre_empresa: "Chevron"
-  → nombre_solicitante: "Sofia Elena"
-  → email_solicitante: "sofia.elena@chevron.com"
-- "Contacto: Maria Rodriguez, Coordinadora de PDVSA"
-  → nombre_empresa: "PDVSA"
-  → nombre_solicitante: "Maria Rodriguez"
-  → cargo_solicitante: "Coordinadora"
+  → nombre_solicitante: "Cristóbal Lopenza"  
+  → email_solicitante: "Cristobal.Lopenza@chevron.com"
 
-INSTRUCCIONES ESPECÍFICAS PARA PRODUCTOS:
-- Busca CUALQUIER tipo de comida, bebida o servicio de catering
-- Incluye: {{ product_categories | join(', ') }}
-- Busca cantidades: números seguidos de "personas", "pax", "unidades", "kg", "litros", "porciones"
-- Si solo encuentras nombres sin cantidades, usa cantidad = 1
-- Si encuentras "para X personas" pero no productos específicos, crea producto "Catering para X personas"
-- SIEMPRE incluye al menos un producto si el texto menciona cualquier tipo de comida o catering
+PARA PRODUCTOS: busca comida, bebida, materiales, equipos, servicios
+PARA FECHAS: busca "entrega", "evento", "deadline" con fechas DD/MM/YYYY  
+PARA HORAS: busca "hora", "entrega", "inicio" con formato HH:MM
 
-{% if strategy == 'aggressive' %}
-MODO AGRESIVO: Busca productos incluso en menciones indirectas o implícitas
-{% elif strategy == 'conservative' %}
-MODO CONSERVADOR: Solo extrae productos explícitamente mencionados con claridad
-{% endif %}
+🔍 IDENTIFICACIÓN AUTOMÁTICA DE DOCUMENTOS:
+Tienes múltiples documentos. Identifica automáticamente:
+- Documento(s) de licitación/RFX/solicitud → Extrae productos de aquí
+- Documento(s) de lista de precios/catálogo → Busca precios aquí
+- Otros documentos → Ignora o usa como contexto
 
-INSTRUCCIONES CRÍTICAS PARA REQUIREMENTS:
-- REQUIREMENTS = instrucciones específicas o restricciones del cliente
-- BUSCA: preferencias, restricciones, experiencia requerida, presupuesto, alergias, estándares
-- NO EXTRAER: descripciones generales como "necesitamos catering" o "queremos buen servicio"
-- SI NO HAY REQUIREMENTS ESPECÍFICOS: usar null y confidence 0.0
+💰 EXTRACCIÓN DE PRECIOS UNITARIOS:
 
-EJEMPLOS DE REQUIREMENTS VÁLIDOS:
-- "Personal con más de 5 años de experiencia" → requirements: "Personal con más de 5 años de experiencia", confidence: 0.9
-- "Sin frutos secos por alergias" → requirements: "Sin frutos secos por alergias", confidence: 0.95
-- "Presupuesto máximo $500" → requirements: "Presupuesto máximo $500", confidence: 1.0
-- "Opciones vegetarianas únicamente" → requirements: "Opciones vegetarianas únicamente", confidence: 0.9
-- "Servicio debe estar listo 2 horas antes" → requirements: "Servicio debe estar listo 2 horas antes", confidence: 0.85
+Para cada producto que extraigas:
 
-EJEMPLOS DE NO-REQUIREMENTS (usar null):
-- "Necesitamos catering para evento" → requirements: null, confidence: 0.0
-- "Queremos buen servicio" → requirements: null, confidence: 0.0
-- "Solicito cotización" → requirements: null, confidence: 0.0
+1. Busca el producto en la lista de precios (si existe)
+2. Matching flexible:
+   - "Tequeños" = "Tequeño Premium" = "Mini Tequeños"
+   - Ignora mayúsculas, acentos, plurales
+   - Busca por nombre, categoría, descripción similar
 
-EJEMPLOS DE PRODUCTOS VÁLIDOS:
-{% for example in product_examples %}
-- "{{ example.input }}" → {"nombre": "{{ example.nombre }}", "cantidad": {{ example.cantidad }}, "unidad": "{{ example.unidad }}"}
-{% endfor %}
+3. Asignación de precio:
+   - Si encuentras match claro → usa ese precio
+   - Si hay duda entre varios → usa el más cercano
+   - Si NO encuentras el producto → precio_unitario = 0.0
+   - NUNCA inventes precios
+
+4. Unidades:
+   - Verifica que las unidades coincidan
+   - Si la lista dice "por kg" y piden "100 unidades", precio = 0.0
+
+EJEMPLO DE RESPUESTA CON PRECIOS:
+
+{
+  "productos": [
+    {
+      "nombre": "Tequeños variados",
+      "cantidad": 200,
+      "unidad": "unidades",
+      "precio_unitario": 2.50
+    },
+    {
+      "nombre": "Sushi premium",
+      "cantidad": 100,
+      "unidad": "piezas",
+      "precio_unitario": 0.0
+    }
+  ]
+}
 
 TEXTO A ANALIZAR:
 {{ chunk_text }}
 
-Responde SOLO con el JSON solicitado:"""
+Responde SOLO JSON:"""
 
     def _get_debug_prompt_template(self) -> str:
         """Template específico para modo debug con información detallada"""
@@ -527,16 +544,14 @@ FORMATO JSON EXTENDIDO:
         template = self.jinja_env.from_string(self.templates[template_name])
         return template.render(**kwargs)
     
-    def get_system_prompt(self, strategy: ExtractionStrategy = ExtractionStrategy.BALANCED, 
-                         debug_mode: bool = False, confidence_threshold: float = 0.7) -> str:
+    def get_system_prompt(self, debug_mode: bool = False, confidence_threshold: float = 0.7) -> str:
         """Genera system prompt dinámico"""
         return self.render_prompt('system_prompt', 
-                                strategy=strategy.value,
+                                strategy='intelligent',  # ✅ Siempre inteligente
                                 debug_mode=debug_mode,
                                 confidence_threshold=confidence_threshold)
     
-    def get_extraction_prompt(self, chunk_text: str, strategy: ExtractionStrategy = ExtractionStrategy.BALANCED,
-                            debug_mode: bool = False, chunk_index: int = 0, **kwargs) -> str:
+    def get_extraction_prompt(self, chunk_text: str, debug_mode: bool = False, chunk_index: int = 0, **kwargs) -> str:
         """Genera prompt de extracción dinámico"""
         
         # Definir campos requeridos con descripciones mejoradas para mejor diferenciación
@@ -552,6 +567,7 @@ FORMATO JSON EXTENDIDO:
             {"name": "fecha", "description": "fecha de entrega del evento", "format": "YYYY-MM-DD"},
             {"name": "hora_entrega", "description": "hora de entrega del evento", "format": "HH:MM"},
             {"name": "lugar", "description": "dirección completa o ubicación donde se realizará el evento", "format": None},
+            {"name": "currency", "description": "MONEDA: código de moneda ISO 4217 de 3 letras mencionada en el documento. INSTRUCCIONES ESPECÍFICAS: 1) Buscar símbolos monetarios: $ (verificar contexto para USD/MXN/CAD), €, £, ¥, CHF, etc. 2) Buscar menciones explícitas: 'dólares americanos'=USD, 'euros'=EUR, 'pesos mexicanos'=MXN, 'libras'=GBP, 'yenes'=JPY, 'francos suizos'=CHF. 3) Buscar códigos ISO: USD, EUR, MXN, CAD, GBP, JPY, CHF, AUD, BRL, COP, PEN, etc. 4) Analizar contexto geográfico: Venezuela/Colombia→USD, México→MXN, Europa→EUR, Reino Unido→GBP. 5) Si hay precios con $ sin contexto adicional→USD. 6) Si NO hay ninguna mención de moneda→USD (predeterminado). EJEMPLOS: '$100 USD'→USD, '€50'→EUR, '100 pesos'→MXN, '$1000 canadienses'→CAD, 'precio en libras £200'→GBP", "format": "3-letter ISO code"},
             # 🆕 MVP: Campo requirements para instrucciones específicas del cliente
             {"name": "requirements", "description": "REQUIREMENTS: Instrucciones, preferencias o requisitos específicos mencionados por el cliente (ej: 'empleados con +5 años experiencia', 'solo opciones vegetarianas', 'presupuesto máximo $1000', 'sin frutos secos por alergias'). Solo extraer si hay instrucciones claras y específicas, NO descripciones generales", "format": None},
             {"name": "requirements_confidence", "description": "CONFIDENCE: Nivel de confianza 0.0-1.0 sobre la extracción de requirements. 1.0 = muy específicos y claros, 0.5 = algo ambiguos, 0.0 = no hay requirements específicos", "format": "decimal 0.0-1.0"}
@@ -605,8 +621,8 @@ FORMATO JSON EXTENDIDO:
 class ModularRFXExtractor:
     """Extractor modular que coordina todos los extractores especializados"""
     
-    def __init__(self, strategy: ExtractionStrategy = ExtractionStrategy.BALANCED, debug_mode: bool = False):
-        self.strategy = strategy
+    def __init__(self, debug_mode: bool = False):
+        # ✅ ELIMINADO: strategy parameter - Siempre inteligente
         self.debug_mode = debug_mode or FeatureFlags.eval_debug_enabled()
         
         # Inicializar extractores especializados
@@ -700,6 +716,15 @@ class ModularRFXExtractor:
                                system_prompt: str, user_prompt: str, max_retries: int = 2) -> Dict[str, Any]:
         """Llama a OpenAI con retry logic y parsing robusto"""
         
+        # 🔍 Debug: Log token estimates before sending
+        system_tokens = len(system_prompt.split()) * 1.3  # Rough estimate
+        user_tokens = len(user_prompt.split()) * 1.3
+        total_estimated = system_tokens + user_tokens
+        logger.info(f"📊 Token estimates - System: ~{int(system_tokens)}, User: ~{int(user_tokens)}, Total: ~{int(total_estimated)}")
+        
+        if total_estimated > 120000:  # 🚀 GPT-4o: 128k context - 4k response - 4k safety margin
+            logger.warning(f"⚠️ Token estimate ({int(total_estimated)}) exceeds safe limit (120000). May fail.")
+        
         for attempt in range(max_retries):
             try:
                 self.extraction_stats['ai_calls_made'] += 1
@@ -715,6 +740,7 @@ class ModularRFXExtractor:
                     ],
                     temperature=openai_config.temperature,
                     max_tokens=openai_config.max_tokens,
+                    response_format={"type": "json_object"},  # 🆕 JSON MODE: Sistema modular
                     timeout=30
                 )
                 
@@ -726,13 +752,22 @@ class ModularRFXExtractor:
             except Exception as e:
                 self.extraction_stats['retries_attempted'] += 1
                 
+                # 🔍 Enhanced error logging
+                error_type = type(e).__name__
+                error_msg = str(e)
+                
+                # Special handling for token limit errors
+                if "maximum context length" in error_msg or "context_length_exceeded" in error_msg:
+                    logger.error(f"❌ TOKEN LIMIT EXCEEDED - {error_msg}")
+                    logger.error(f"📊 Estimated tokens: {int(total_estimated)}, prompt lengths: system={len(system_prompt)}, user={len(user_prompt)}")
+                
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) + 1
                     if self.debug_mode:
-                        logger.warning(f"⚠️ Intento {attempt + 1} falló: {e}, reintentando en {wait_time}s")
+                        logger.warning(f"⚠️ Intento {attempt + 1} falló: {error_type}: {error_msg}, reintentando en {wait_time}s")
                     time.sleep(wait_time)
                 else:
-                    logger.error(f"❌ Todos los intentos OpenAI fallaron: {e}")
+                    logger.error(f"❌ Todos los intentos OpenAI fallaron: {error_type}: {error_msg}")
                     raise
     
     def _parse_json_response(self, output: str) -> Dict[str, Any]:
@@ -849,20 +884,30 @@ class RFXProcessorService:
         self.openai_client = OpenAI(api_key=self.openai_config.api_key)
         self.db_client = get_database_client()
         
-        # Validation helpers (legacy - mantenemos para compatibilidad)
-        self.email_validator = EmailValidator()
-        self.date_validator = DateValidator()
-        self.time_validator = TimeValidator()
+        # ✅ ELIMINADO: Validadores externos - El LLM valida automáticamente
+        # self.email_validator = EmailValidator()
+        # self.date_validator = DateValidator()
+        # self.time_validator = TimeValidator()
         
-        # 🆕 NUEVO SISTEMA MODULAR
-        # Inicializar extractor modular con configuración dinámica
-        debug_mode = FeatureFlags.eval_debug_enabled()
-        extraction_strategy = self._get_extraction_strategy()
+        # ✅ CAMBIO #3: ELIMINADO ModularRFXExtractor - El LLM hace todo en una llamada
+        # self.modular_extractor = ModularRFXExtractor(debug_mode=debug_mode)
+        # Ya no necesitamos extractores especializados (ProductExtractor, SolicitanteExtractor, etc.)
+        self.debug_mode = FeatureFlags.eval_debug_enabled()
         
-        self.modular_extractor = ModularRFXExtractor(
-            strategy=extraction_strategy,
-            debug_mode=debug_mode
-        )
+        # 🚀 FUNCTION CALLING EXTRACTOR (Fase 2B)
+        # Inicializar solo si está habilitado por feature flag
+        self.function_calling_extractor = None
+        if FeatureFlags.function_calling_enabled():
+            try:
+                self.function_calling_extractor = FunctionCallingRFXExtractor(
+                    openai_client=self.openai_client,
+                    model=self.openai_config.model,
+                    debug_mode=self.debug_mode
+                )
+                logger.info("🚀 Function Calling Extractor initialized successfully")
+            except Exception as e:
+                logger.warning(f"⚠️ Function Calling Extractor initialization failed: {e}")
+                logger.info("📋 Falling back to JSON mode extraction")
         
         # Estadísticas de procesamiento para debugging
         self.processing_stats = {
@@ -872,15 +917,9 @@ class RFXProcessorService:
             'fallback_usage_count': 0
         }
         
-        logger.info(f"🚀 RFXProcessorService inicializado - Estrategia: {extraction_strategy.value}, Debug: {debug_mode}")
+        logger.info(f"🚀 RFXProcessorService inicializado - Debug: {self.debug_mode}")
     
-    def _get_extraction_strategy(self) -> ExtractionStrategy:
-        """Determina estrategia de extracción basada en configuración"""
-        # Puedes añadir feature flags para controlar la estrategia
-        if FeatureFlags.eval_debug_enabled():
-            return ExtractionStrategy.AGGRESSIVE  # Más sensible en modo debug
-        else:
-            return ExtractionStrategy.BALANCED    # Balance por defecto
+    # ✅ ELIMINADO: _get_extraction_strategy() - No necesitamos estrategias múltiples
     
     def process_rfx_document(self, rfx_input: RFXInput, pdf_content: bytes) -> RFXProcessed:
         """
@@ -904,15 +943,13 @@ class RFXProcessorService:
             validated_data = self._validate_and_clean_data(raw_data, rfx_input.id)
             logger.info(f"✅ Data validated successfully")
             
-            # Log modular processing statistics if available
-            if self.modular_extractor.debug_mode and 'modular_debug_info' in raw_data:
-                debug_info = raw_data['modular_debug_info']
-                logger.info(f"📊 Modular processing stats: Strategy={debug_info['extraction_strategy']}, Time={debug_info['total_processing_time']:.3f}s")
-                
-                # Update service-level statistics
-                self.processing_stats['total_documents_processed'] += 1
-                if debug_info['extraction_summary']['extraction_quality'] == 'fallback':
-                    self.processing_stats['fallback_usage_count'] += 1
+            # ✅ CAMBIO #3: ELIMINADO - Ya no usamos modular_extractor
+            # if self.modular_extractor.debug_mode and 'modular_debug_info' in raw_data:
+            #     debug_info = raw_data['modular_debug_info']
+            #     logger.info(f"📊 Modular processing stats: Time={debug_info['total_processing_time']:.3f}s")
+            #     self.processing_stats['total_documents_processed'] += 1
+            #     if debug_info['extraction_summary']['extraction_quality'] == 'fallback':
+            #         self.processing_stats['fallback_usage_count'] += 1
             
             # Step 3.5: Intelligent RFX evaluation (if enabled)
             evaluation_metadata = self._evaluate_rfx_intelligently(validated_data, rfx_input.id)
@@ -952,8 +989,13 @@ class RFXProcessorService:
                 
                 full_text = "\n".join(text_pages)
                 
-                if not full_text.strip():
-                    logger.error("❌ No text extracted from PDF")
+                if not full_text.strip() or len(re.sub(r"\s+", "", full_text)) < 50:
+                    # Attempt OCR for scanned PDFs
+                    ocr_text = self._extract_text_with_ocr(pdf_content, kind="pdf")
+                    if ocr_text.strip():
+                        logger.info("🧠 Fallback OCR applied: PDF had no embedded text")
+                        return ocr_text
+                    logger.error("❌ No text extracted from PDF (even after OCR)")
                     raise ValueError("No text could be extracted from PDF")
                 
                 logger.info(f"✅ PDF extraction successful: {len(full_text)} total characters")
@@ -965,7 +1007,6 @@ class RFXProcessorService:
                 # This looks like a DOCX file (ZIP format)
                 try:
                     from docx import Document
-                    import io
                     
                     # Create a document from the bytes
                     doc_file = io.BytesIO(pdf_content)
@@ -1031,287 +1072,209 @@ class RFXProcessorService:
             
         except Exception as e:
             logger.error(f"❌ Text extraction failed: {e}")
+            # 🔍 Debug: Log more details about the failure
+            logger.error(f"📄 File size: {len(pdf_content)} bytes")
+            logger.error(f"📄 File starts with: {pdf_content[:50]}")
+            logger.error(f"📄 Error type: {type(e).__name__}: {str(e)}")
             raise ValueError(f"Failed to extract text from file: {e}")
     
     def _process_with_ai(self, text: str) -> Dict[str, Any]:
-        """🆕 REFACTORIZADO: Process extracted text with modular AI system"""
+        """🚀 REFACTORIZADO: Process COMPLETE text with single AI call - NO CHUNKING"""
         try:
             start_time = time.time()
-            logger.info(f"🤖 Starting MODULAR AI processing for text of {len(text)} characters")
+            word_count = len(text.split())
+            estimated_tokens = int(word_count * 1.2)  # Conservative estimate
             
-            if self.modular_extractor.debug_mode:
-                logger.debug(f"📄 Full text to process: {text[:1000]}..." if len(text) > 1000 else f"📄 Full text: {text}")
+            logger.info(f"🤖 Processing RFX document ({len(text)} chars, ~{estimated_tokens} tokens)")
             
-            # Split text into manageable chunks
-            chunks = chunk_text(text, max_tokens=1000)
-            logger.info(f"📝 Text split into {len(chunks)} chunks")
+            # ✅ CAMBIO #2: GPT-4o tiene 128K tokens - suficiente para documentos completos
+            if estimated_tokens > 120000:
+                logger.warning(f"⚠️ Document very large: {estimated_tokens} tokens - processing anyway")
+                # GPT-4o puede manejar hasta 128k tokens
             
-            # 🆕 Process each chunk using modular extractor
-            chunk_results = []
-            for i, chunk in enumerate(chunks):
-                logger.info(f"🤖 Processing chunk {i+1}/{len(chunks)} ({len(chunk)} characters)")
-                
-                if self.modular_extractor.debug_mode:
-                    logger.debug(f"📄 Chunk {i+1} content: {chunk[:300]}...")
-                
-                # Usar el nuevo sistema modular
-                chunk_result = self.modular_extractor.extract_from_chunk(
-                    chunk_text=chunk,
-                    chunk_index=i,
-                    openai_client=self.openai_client,
-                    openai_config=self.openai_config
-                )
-                
-                chunk_results.append(chunk_result)
-                
-                # Log what was found in this chunk (enhanced logging)
-                if chunk_result.productos:
-                    product_names = [p.nombre for p in chunk_result.productos]
-                    confidences = [f"{p.confidence:.2f}" for p in chunk_result.productos]
-                    logger.info(f"✅ Chunk {i+1} found {len(chunk_result.productos)} productos: {product_names}")
-                    if self.modular_extractor.debug_mode:
-                        logger.debug(f"   Confidence scores: {confidences}")
-                else:
-                    logger.warning(f"⚠️ Chunk {i+1} found NO productos")
-                
-                # Log extraction metadata if available
-                if self.modular_extractor.debug_mode and chunk_result.extraction_metadata:
-                    metadata = chunk_result.extraction_metadata
-                    logger.debug(f"📊 Chunk {i+1} metadata: Strategy={metadata.get('strategy')}, Fields={metadata.get('client_fields_found', 0)}+{metadata.get('event_fields_found', 0)}")
+            # 🎯 ESTRATEGIA DE EXTRACCIÓN CON FALLBACKS
+            extracted_data = None
             
-            # 🆕 Combine results using enhanced combination logic
-            logger.info(f"🔄 Combining results from {len(chunk_results)} chunks using modular system")
-            combined_data = self._combine_modular_chunk_results(chunk_results)
-            
-            # Update processing statistics
-            processing_time = time.time() - start_time
-            self.processing_stats['chunks_processed'] += len(chunks)
-            
-            # Enhanced logging with confidence information
-            logger.info(f"✅ MODULAR AI processing completed in {processing_time:.3f}s")
-            logger.info(f"📊 Final combined products: {len(combined_data.get('productos', []))} total")
-            
-            if combined_data.get("productos"):
-                product_names = [p['nombre'] for p in combined_data['productos']]
-                logger.info(f"📦 Product names found: {product_names}")
-                
-                if self.modular_extractor.debug_mode:
-                    avg_confidence = sum(p.get('confidence', 0) for p in combined_data['productos']) / len(combined_data['productos'])
-                    logger.debug(f"📊 Average product confidence: {avg_confidence:.3f}")
+            # 1️⃣ PRIMERA OPCIÓN: Function Calling (más robusto)
+            if self.function_calling_extractor and FeatureFlags.function_calling_enabled():
+                try:
+                    db_result = self.function_calling_extractor.extract_rfx_data(text)
+                    extracted_data = self._convert_function_calling_to_legacy_format(db_result)
                     
-                    # Log extraction summary
-                    extraction_summary = self.modular_extractor.get_extraction_summary()
-                    logger.debug(f"📈 Extraction Summary: Quality={extraction_summary.extraction_quality}, AI Calls={extraction_summary.ai_calls_made}, Retries={extraction_summary.retries_attempted}")
-            else:
-                logger.error(f"❌ NO PRODUCTS found in final combined data!")
-                self.processing_stats['fallback_usage_count'] += 1
+                except Exception as e:
+                    logger.warning(f"⚠️ Function Calling extraction failed: {e}")
+                    if not FeatureFlags.json_mode_fallback_enabled():
+                        raise  # Si no hay fallback habilitado, propagar error
             
-            # Store debug information in the combined data if in debug mode
-            if self.modular_extractor.debug_mode:
-                combined_data['modular_debug_info'] = {
-                    'extraction_strategy': self.modular_extractor.strategy.value,
-                    'total_processing_time': processing_time,
-                    'extraction_summary': self.modular_extractor.get_extraction_summary().dict(),
-                    'chunks_metadata': [result.extraction_metadata for result in chunk_results]
+            # 2️⃣ SEGUNDA OPCIÓN: JSON Mode (sistema actual)
+            if not extracted_data and FeatureFlags.json_mode_fallback_enabled():
+                try:
+                    extracted_data = self._extract_complete_with_ai(text)
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ JSON Mode extraction failed: {e}")
+            
+            # ✅ CAMBIO #2: Sin fallback a chunking - si falla, retornar estructura vacía
+            if not extracted_data:
+                logger.error(f"❌ All extraction methods failed")
+                extracted_data = {
+                    "productos": [],
+                    "email": "",
+                    "fecha_entrega": "",
+                    "hora_entrega": "",
+                    "lugar": "",
+                    "nombre_solicitante": "",
+                    "currency": "USD"
                 }
             
-            logger.debug(f"📦 Combined data keys: {list(combined_data.keys())}")
-            return combined_data
+            # 🔍 Validate completeness automatically (for metrics only)
+            completeness_result = self._validate_product_completeness(extracted_data, text)
+            
+            # Calculate processing metrics
+            processing_time = time.time() - start_time
+            self.processing_stats['total_documents_processed'] += 1
+            
+            # ✅ Logging simple y útil
+            products_found = len(extracted_data.get('productos', []))
+            logger.info(f"✅ Extraction completed in {processing_time:.2f}s")
+            logger.info(f"📊 Extracted: {products_found} products")
+                
+            # Add completeness validation results
+            extracted_data['completeness_validation'] = completeness_result
+            extracted_data['processing_metrics'] = {
+                'processing_time': processing_time,
+                'estimated_tokens': estimated_tokens,
+                'single_call': True,
+                'cost_optimized': True
+            }
+            
+            return extracted_data
             
         except Exception as e:
-            logger.error(f"❌ MODULAR AI processing failed: {e}")
+            logger.error(f"❌ COMPLETE AI processing failed: {e}")
             self.processing_stats['fallback_usage_count'] += 1
             
-            # En caso de error, usar el sistema legacy como fallback
-            logger.warning(f"🔄 Fallback to legacy system due to modular processing error")
-            return self._process_with_ai_legacy(text)
-    
-    def _combine_modular_chunk_results(self, chunk_results: List[ChunkExtractionResult]) -> Dict[str, Any]:
-        """🆕 Combina resultados de chunks usando el sistema modular mejorado"""
-        combined = {
-            "email": "",
-            "email_empresa": "",
-            "nombre_solicitante": "",
-            "nombre_empresa": "",
-            "telefono_solicitante": "",
-            "telefono_empresa": "",
-            "cargo_solicitante": "",
-            "tipo_solicitud": "",
-            "productos": [],
-            "hora_entrega": "",
-            "fecha": "",
-            "lugar": "",
-            "texto_original_relevante": ""
-        }
-        
-        # Estadísticas de combinación
-        confidence_scores = []
-        texto_fragments = []
-        extraction_metadata = []
-        
-        logger.info(f"🔄 Combining {len(chunk_results)} modular chunk results")
-        
-        for i, chunk_result in enumerate(chunk_results):
-            if self.modular_extractor.debug_mode:
-                logger.debug(f"📦 Processing chunk result {i+1}: {chunk_result.chunk_index}")
+            # Fallback to chunking only as last resort
+            logger.warning(f"🔄 Fallback to chunked processing due to error")
             
-            # Combinar campos usando prioridad de confidence si están disponibles
-            fields_to_combine = [
-                ("email", chunk_result.email),
-                ("email_empresa", chunk_result.email_empresa),
-                ("nombre_solicitante", chunk_result.nombre_solicitante),
-                ("nombre_empresa", chunk_result.nombre_empresa),
-                ("telefono_solicitante", chunk_result.telefono_solicitante),
-                ("telefono_empresa", chunk_result.telefono_empresa),
-                ("cargo_solicitante", chunk_result.cargo_solicitante),
-                ("tipo_solicitud", chunk_result.tipo_solicitud),
-                ("hora_entrega", chunk_result.hora_entrega),
-                ("fecha", chunk_result.fecha),
-                ("lugar", chunk_result.lugar)
-            ]
-            
-            for field_name, field_value in fields_to_combine:
-                if field_value and not combined[field_name]:
-                    combined[field_name] = field_value
-                    
-                    if self.modular_extractor.debug_mode:
-                        # Buscar confidence score para este campo
-                        field_confidence = next(
-                            (cs.confidence for cs in chunk_result.confidence_scores 
-                             if cs.field_name == field_name), 
-                            0.8
-                        )
-                        logger.debug(f"📧 Found {field_name} in chunk {i+1}: {field_value} (confidence: {field_confidence:.2f})")
-            
-            # Combinar productos con validación Pydantic ya aplicada
-            if chunk_result.productos:
-                productos_count = len(chunk_result.productos)
-                
-                # Convertir ProductExtraction a dict para compatibilidad
-                for producto in chunk_result.productos:
-                    producto_dict = {
-                        "nombre": producto.nombre,
-                        "cantidad": producto.cantidad,
-                        "unidad": producto.unidad
-                    }
-                    
-                    # Añadir confidence si está en modo debug
-                    if self.modular_extractor.debug_mode:
-                        producto_dict["confidence"] = producto.confidence
-                    
-                    combined["productos"].append(producto_dict)
-                
-                logger.debug(f"📦 Added {productos_count} productos from chunk {i+1}")
-            
-            # Recopilar texto relevante
-            if chunk_result.texto_original_relevante:
-                texto_fragments.append(f"Chunk {i+1}: {chunk_result.texto_original_relevante}")
-            
-            # Recopilar confidence scores
-            confidence_scores.extend(chunk_result.confidence_scores)
-            
-            # Recopilar metadata de extracción
-            if chunk_result.extraction_metadata:
-                extraction_metadata.append({
-                    'chunk_index': chunk_result.chunk_index,
-                    'metadata': chunk_result.extraction_metadata
-                })
-        
-        # Combinar fragmentos de texto
-        if texto_fragments:
-            combined["texto_original_relevante"] = " | ".join(texto_fragments)
-        
-        # Añadir metadata de debugging si está habilitado
-        if self.modular_extractor.debug_mode:
-            combined["modular_extraction_metadata"] = {
-                'total_confidence_scores': len(confidence_scores),
-                'chunks_with_products': len([cr for cr in chunk_results if cr.productos]),
-                'average_products_per_chunk': len(combined["productos"]) / len(chunk_results) if chunk_results else 0,
-                'extraction_metadata': extraction_metadata,
-                'combined_confidence_scores': [cs.dict() for cs in confidence_scores]
-            }
-        
-        # Log final combined result
-        logger.info(f"✅ Combined result: {len(combined['productos'])} productos total")
-        
-        if self.modular_extractor.debug_mode:
-            # Calcular estadísticas de confidence
-            if confidence_scores:
-                avg_confidence = sum(cs.confidence for cs in confidence_scores) / len(confidence_scores)
-                logger.debug(f"📊 Overall average confidence: {avg_confidence:.3f}")
-            
-            # Log breakdown by field type with empresa information
-            solicitante_fields = [k for k in combined.keys() if combined[k] and k in ['email', 'nombre_solicitante', 'telefono_solicitante', 'cargo_solicitante']]
-            empresa_fields = [k for k in combined.keys() if combined[k] and k in ['email_empresa', 'nombre_empresa', 'telefono_empresa']]
-            event_fields = [k for k in combined.keys() if combined[k] and k in ['fecha', 'hora_entrega', 'lugar']]
-            logger.info(f"📋 Fields found - Solicitante: {len(solicitante_fields)}, Empresa: {len(empresa_fields)}, Event: {len(event_fields)}, Products: {len(combined['productos'])}")
-            
-            # Log specific empresa and solicitante info if found
-            if empresa_fields:
-                empresa_details = [f"{k}: {combined[k]}" for k in empresa_fields if combined[k]]
-                logger.info(f"🏢 Empresa info: {', '.join(empresa_details)}")
-            
-            if solicitante_fields:
-                solicitante_details = [f"{k}: {combined[k]}" for k in solicitante_fields if combined[k]]
-                logger.info(f"👤 Solicitante info: {', '.join(solicitante_details)}")
-        
-        return combined
-    
-    def _process_with_ai_legacy(self, text: str) -> Dict[str, Any]:
-        """🔧 Sistema legacy como fallback para compatibilidad"""
-        logger.warning(f"⚠️ Using LEGACY processing system as fallback")
-        
-        try:
-            # Split text into manageable chunks
-            chunks = chunk_text(text, max_tokens=1000)
-            logger.info(f"📝 Legacy: Text split into {len(chunks)} chunks")
-            
-            # Process each chunk using legacy method
-            chunk_results = []
-            for i, chunk in enumerate(chunks):
-                result = self._extract_info_from_chunk_legacy(chunk)
-                chunk_results.append(result)
-            
-            # Combine results using legacy method
-            combined_data = self._combine_chunk_results_legacy(chunk_results)
-            return combined_data
-            
-        except Exception as e:
-            logger.error(f"❌ Legacy processing also failed: {e}")
-            # Return minimal fallback data
+            # Return minimal structure instead of None to prevent downstream errors
             return {
-                "email": "",
-                "nombre_solicitante": "",
                 "productos": [],
+                "email": "",
+                "fecha_entrega": "",
                 "hora_entrega": "",
-                "fecha": "",
                 "lugar": "",
-                "texto_original_relevante": ""
+                "nombre_solicitante": "",
+                "currency": "USD",
+                "processing_error": True,
+                "error_message": str(e)
             }
     
-    def _extract_info_from_chunk_legacy(self, chunk: str, max_retries: int = 2) -> Dict[str, Any]:
-        """🔧 LEGACY: Extract information from a single text chunk using OpenAI"""
+    def _extract_complete_with_ai(self, text: str) -> Dict[str, Any]:
+        """🎯 NUEVA FUNCIÓN: Extrae datos con una sola llamada a IA - SIN CHUNKING"""
+        try:
+            # 🎨 SYSTEM PROMPT PROFESIONAL (del sistema legacy optimizado)
+            system_prompt = """<rfx_analysis_system>
+  <identity>
+    <role>Especialista experto en análisis inteligente de documentos RFX con capacidades avanzadas de evaluación automática</role>
+    <version>4.0</version>
+    <capabilities>
+      <capability priority="critical">Evaluación automática de calidad con 95%+ precisión</capability>
+      <capability priority="critical">Detección automática de dominio multi-industria</capability>
+      <capability priority="high">Extracción de datos estructurados con validación contextual</capability>
+      <capability priority="high">Generación de insights específicos por industria</capability>
+      <capability priority="medium">Análisis de consistencia con reasoning avanzado</capability>
+      <capability priority="medium">Manejo robusto de errores y casos edge</capability>
+    </capabilities>
+    <specializations>
+      <domain confidence_threshold="0.7">catering</domain>
+      <domain confidence_threshold="0.7">construccion</domain>
+      <domain confidence_threshold="0.7">it_services</domain>
+      <domain confidence_threshold="0.7">eventos</domain>
+      <domain confidence_threshold="0.7">logistica</domain>
+      <domain confidence_threshold="0.7">marketing</domain>
+      <domain confidence_threshold="0.5">otro</domain>
+    </specializations>
+  </identity>
+
+  <core_principles>
+    <principle name="precision_absoluta">
+      <rule>Solo extraigo información explícitamente presente en el texto</rule>
+      <fallback>Uso null cuando no hay información clara</fallback>
+      <validation>Nunca inventar o asumir información no presente</validation>
+    </principle>
+    <principle name="validacion_contextual">
+      <rule>Cada dato debe tener coherencia interna y externa</rule>
+      <cross_validation>Verificar consistencia entre campos relacionados</cross_validation>
+      <error_detection>Identificar y reportar inconsistencias</error_detection>
+    </principle>
+    <principle name="diferenciacion_critica">
+      <rule>Distinguir claramente entre información empresarial vs personal</rule>
+      <separation_logic>Aplicar lógica específica para cada tipo de información</separation_logic>
+      <validation>Verificar correcta categorización de datos</validation>
+    </principle>
+    <principle name="completitud_total">
+      <rule>ENCONTRAR Y EXTRAER **TODOS** los productos/servicios mencionados sin excepción</rule>
+      <pattern_recognition>Si ves listas numeradas (1., 2., 3...) o con viñetas (-, •), extrae TODOS los ítems</pattern_recognition>
+      <validation>NO te detengas en los primeros productos encontrados</validation>
+      <completeness_check>Incluye comida, bebidas, equipos, servicios, personal, extras</completeness_check>
+      <verification>Verifica completitud antes de responder - si hay 15 productos, debes encontrar los 15</verification>
+    </principle>
+  </core_principles>
+
+  <output_requirements>
+    <format>JSON estructurado válido únicamente - SIN markdown fences</format>
+    <json_mode>Responder ÚNICAMENTE con objeto JSON válido, sin ```json ni texto adicional</json_mode>
+    <null_handling>Campos null cuando no hay información explícita</null_handling>
+    <evidence_based>Incluir fragmento de texto original como evidencia</evidence_based>
+    <confidence_required>Score de confianza obligatorio para cada extracción</confidence_required>
+    <error_transparency>Reportar problemas y limitaciones encontradas</error_transparency>
+  </output_requirements>
+
+  <data_extraction_rules>
+    <information_hierarchy>
+      <level_1 priority="critical">
+        <field>nombre_empresa</field>
+        <field>productos_servicios</field>
+        <field>moneda</field>
+        <field>fecha_requerida</field>
+        <field>ubicacion_servicio</field>
+      </level_1>
+      <level_2 priority="high">
+        <field>nombre_solicitante</field>
+        <field>email_solicitante</field>
+        <field>telefono_solicitante</field>
+        <field>tipo_solicitud</field>
+      </level_2>
+      <level_3 priority="medium">
+        <field>requisitos_especiales</field>
+        <field>especificaciones</field>
+        <field>presupuesto</field>
+      </level_3>
+    </information_hierarchy>
+
+    <validation_protocols>
+      <email_validation>
+        <pattern>RFC 5322 compliant</pattern>
+        <business_logic>Distinguir emails corporativos vs personales</business_logic>
+        <domain_extraction>Extraer empresa del dominio si aplicable</domain_extraction>
+      </email_validation>
+      <date_validation>
+        <formats>ISO 8601, DD/MM/YYYY, DD-MM-YYYY, natural language</formats>
+        <future_check>Validar que fechas sean futuras</future_check>
+        <reasonability>Verificar lead time apropiado por industria</reasonability>
+      </date_validation>
+      <quantity_validation>
+        <numeric_extraction>Identificar números y unidades</numeric_extraction>
+        <context_validation>Verificar coherencia con tipo de producto</context_validation>
+        <range_checking>Aplicar rangos razonables por dominio</range_checking>
+      </quantity_validation>
+    </validation_protocols>
+  </data_extraction_rules>
+</rfx_analysis_system>"""
         
-        system_prompt = """Eres un especialista experto en análisis de documentos RFX, catering y eventos 
-        corporativos con especialización en identificación de requisitos específicos del cliente.
-
-Tu trabajo es extraer información EXACTA del texto proporcionado, prestando especial atención a distinguir entre:
-- DESCRIPCIÓN GENERAL del servicio vs REQUISITOS ESPECÍFICOS del cliente
-- INFORMACIÓN FACTUAL vs PREFERENCIAS/RESTRICCIONES del solicitante
-
-REGLAS FUNDAMENTALES:
-- Si NO encuentras un dato específico, usa null (no inventes información)
-- Extrae solo lo que está explícitamente mencionado en el texto
-- Para requisitos, busca INSTRUCCIONES ESPECÍFICAS, no descripciones generales
-- Mantén el contexto original para validación posterior
-- Responde ÚNICAMENTE con JSON válido, sin texto adicional
-
-DEFINICIONES CRÍTICAS:
-- REQUIREMENTS = Instrucciones específicas, restricciones, preferencias o condiciones especiales mencionadas por el cliente
-- DESCRIPCIÓN = Información general sobre qué tipo de servicio se necesita
-- DATOS EMPRESARIALES = Información de contacto y organizacional"""
-        
-        user_prompt = f"""Analiza cuidadosamente este texto de un documento de catering/evento y extrae la siguiente información en formato JSON:
+            # 🎯 USER PROMPT con el documento a analizar
+            user_prompt = f"""Analiza cuidadosamente este texto de un documento de catering/evento y extrae la siguiente información en formato JSON:
 
         {{
         "nombre_empresa": "EMPRESA: nombre de la compañía/organización (ej: Chevron, Microsoft). Si solo hay email como juan@chevron.com, extrae 'Chevron' del dominio (null si no se encuentra)",
@@ -1332,67 +1295,29 @@ DEFINICIONES CRÍTICAS:
         "fecha": "fecha de entrega en formato YYYY-MM-DD (null si no se encuentra)",
         "hora_entrega": "hora de entrega en formato HH:MM (null si no se encuentra)",
         "lugar": "dirección completa o ubicación del evento (null si no se encuentra)",
+        "currency": "MONEDA: código de moneda ISO 4217 de 3 letras mencionada en el documento (ej: USD, EUR, MXN, CAD). Buscar símbolos como $, €, £, CAD$, USD$, menciones de 'dólares', 'euros', 'pesos', etc. Si no se encuentra específicamente, usar 'USD' como predeterminado",
         "requirements": "INSTRUCCIONES ESPECÍFICAS, preferencias o restricciones mencionadas por el cliente. NO incluir descripción general del servicio (null si no se encuentra)",
         "texto_original_relevante": "fragmento del texto donde encontraste la información principal",
         "confidence_score": número_decimal_entre_0_y_1_indicando_confianza_en_extracción
         }}
 
         ═══════════════════════════════════════════════════════════════════════════════════
-        🎯 INSTRUCCIONES CRÍTICAS PARA REQUIREMENTS
+🎯 INSTRUCCIONES CRÍTICAS PARA COMPLETITUD DE PRODUCTOS
         ═══════════════════════════════════════════════════════════════════════════════════
 
-        **QUÉ SON REQUIREMENTS (Buscar estas frases/patrones):**
-        ✅ Instrucciones específicas: "Necesito que...", "Debe incluir...", "Es importante que..."
-        ✅ Preferencias explícitas: "Prefiero...", "Me gustaría...", "Sería ideal..."
-        ✅ Restricciones: "No queremos...", "Evitar...", "Sin...", "Prohibido..."
-        ✅ Condiciones especiales: "Solo si...", "Siempre que...", "Mientras..."
-        ✅ Experiencia/calificaciones: "Con experiencia de...", "Certificado en...", "Que tenga..."
-        ✅ Presupuesto/calidad: "Económico", "Premium", "Máximo $...", "Presupuesto de..."
-        ✅ Timing específico: "Antes de las...", "Exactamente a...", "No después de..."
-        ✅ Especificaciones técnicas: "Vegetariano", "Sin gluten", "Halal", "Orgánico"
-        ✅ Requisitos de servicio: "Con meseros", "Auto-servicio", "Servicio completo"
-        ✅ Logística específica: "Montaje 2 horas antes", "Incluir vajilla", "Desmontaje incluido"
+**REGLAS ABSOLUTAS PARA PRODUCTOS:**
+✅ BUSCA Y EXTRAE **TODOS** LOS PRODUCTOS/SERVICIOS MENCIONADOS SIN EXCEPCIÓN
+✅ Si ves secciones con emojis (🥗, 🍽️, 🍰, ☕, 🥂), extrae TODO lo que aparece bajo cada sección
+✅ Si ves listas numeradas o con viñetas, extrae TODOS los ítems de la lista completa
+✅ Incluye TODAS las entradas, platos principales, postres, bebidas, servicios, extras
+✅ NO te detengas en los primeros productos - busca por TODO el documento
+✅ Cada línea con comida/bebida/servicio = un producto en la lista
 
-        **QUÉ NO SON REQUIREMENTS (No incluir):**
-        ❌ Descripción general: "Necesitamos catering" (esto es tipo_solicitud)
-        ❌ Información básica: "Para 50 personas" (esto va en productos)
-        ❌ Datos de contacto: "Llamar a Juan" (esto va en otros campos)
-        ❌ Ubicación básica: "En nuestra oficina" (esto va en lugar)
-        ❌ Fecha/hora estándar: "El viernes 15" (esto va en fecha)
-
-        **EJEMPLOS PRÁCTICOS:**
-
-        📋 **EJEMPLO 1 - CATERING CORPORATIVO:**
-        Texto: "Necesitamos catering para 60 personas el viernes. Queremos opciones vegetarianas y que no incluya frutos secos por alergias. Preferimos meseros uniformados y montaje 2 horas antes del evento."
-
-        ✅ CORRECTO requirements: "Opciones vegetarianas, no incluir frutos secos por alergias, meseros uniformados, montaje 2 horas antes del evento"
-        ❌ INCORRECTO: "Catering para 60 personas el viernes" (eso va en productos, cantidad, fecha)
-
-        📋 **EJEMPLO 2 - EVENTO CORPORATIVO:**
-        Texto: "Organizamos evento de fin de año para 100 empleados. El presupuesto es máximo $2000. Solo proveedores con más de 5 años de experiencia."
-
-        ✅ CORRECTO requirements: "Presupuesto máximo $2000, solo proveedores con más de 5 años de experiencia"
-        ❌ INCORRECTO: "Evento de fin de año para 100 empleados" (eso va en tipo_solicitud y productos)
-
-        📋 **EJEMPLO 3 - SIN REQUIREMENTS ESPECÍFICOS:**
-        Texto: "Hola, necesitamos catering para reunión de 30 personas mañana a las 12pm en sala de juntas."
-
-        ✅ CORRECTO requirements: null (solo información básica, sin instrucciones específicas)
-
-        ═══════════════════════════════════════════════════════════════════════════════════
-        🔍 VALIDACIÓN DE CONTEXTO PARA REQUIREMENTS
-        ═══════════════════════════════════════════════════════════════════════════════════
-
-        **ANTES DE INCLUIR COMO REQUIREMENT, PREGÚNTATE:**
-        1. ¿Es esto una instrucción específica del cliente?
-        2. ¿Va más allá de la información básica del servicio?
-        3. ¿Afecta cómo debe ejecutarse el servicio?
-        4. ¿Es una preferencia, restricción o condición especial?
-
-        **SI RESPONDES SÍ A ALGUNA → ES REQUIREMENT**
-        **SI TODAS SON NO → NO ES REQUIREMENT**
-
-        ═══════════════════════════════════════════════════════════════════════════════════
+**EJEMPLOS DE PRODUCTOS A BUSCAR:**
+- Comida: tequeños, empanadas, canapés, brochetas, ceviche, pollo, res, lasaña
+- Bebidas: jugos, agua, café, té, refrescos 
+- Servicios: meseros, montaje, coordinación, transporte
+- Extras: mantelería, copas, vajilla, decoración
 
         REGLAS CRÍTICAS PARA EMPRESA vs SOLICITANTE:
         - EMPRESA = compañía/organización que solicita el servicio
@@ -1413,135 +1338,414 @@ DEFINICIONES CRÍTICAS:
         - 0.0-0.2: Información muy incierta o extrapolada
 
         TEXTO A ANALIZAR:
-        {chunk}
+{text}
 
-        Responde SOLO con el JSON solicitado:"""
-        
-        try:
-            # 🔍 DEBUG: Log the chunk being processed
-            logger.info(f"🤖 Processing chunk of {len(chunk)} characters")
-            logger.debug(f"📄 Chunk content preview: {chunk[:200]}...")
+Responde SOLO con el JSON solicitado - asegúrate de haber encontrado TODOS los productos mencionados:"""
+
+            # 🚀 Llamada única a OpenAI con JSON MODE (elimina markdown fences)
+            logger.info(f"🤖 Sending to OpenAI: System prompt ({len(system_prompt)} chars), User prompt ({len(user_prompt)} chars)")
+            logger.info(f"🔧 Using JSON mode to prevent markdown fences")
             
-            # Retry logic with exponential backoff
-            response = self._call_openai_with_retry(
-                model=self.openai_config.model,
+            response = self.openai_client.chat.completions.create(
+                model=self.openai_config.model,  # GPT-4o
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=self.openai_config.temperature,
                 max_tokens=self.openai_config.max_tokens,
-                timeout=30  # 30s timeout as specified
+                response_format={"type": "json_object"},  # 🆕 JSON MODE: Elimina ```json fences
+                timeout=45  # Increased timeout for single call
             )
             
             output = response.choices[0].message.content.strip()
+            logger.info(f"🤖 OpenAI raw response length: {len(output)} characters")
             
-            # 🔍 DEBUG: Log AI response
-            logger.info(f"🤖 AI Response received: {len(output)} characters")
-            logger.debug(f"📝 AI Response preview: {output[:300]}...")
+            # Log first 500 chars of response for debugging
+            response_preview = output[:500].replace('\n', ' ')
+            logger.info(f"📝 OpenAI response preview: {response_preview}...")
             
-            # Extract JSON from response
-            json_start = output.find('{')
-            json_end = output.rfind('}') + 1
+            # Check if response is empty
+            if not output:
+                logger.error(f"❌ OpenAI returned empty response!")
+                return self._get_empty_extraction_result()
             
-            if json_start >= 0 and json_end > json_start:
-                json_str = output[json_start:json_end]
+            # Parse JSON response with robust handling (backup for JSON mode)
+            try:
+                # JSON mode should return clean JSON, but apply robust cleaning as backup
+                json_str = self._robust_json_clean(output)
+                logger.info(f"🧹 Cleaned JSON string length: {len(json_str)} characters")
                 
-                # Try to parse JSON with retries
-                for attempt in range(max_retries):
-                    try:
-                        parsed_data = json.loads(json_str)
-                        
-                        # 🔍 DEBUG: Log successfully parsed data
-                        logger.info(f"✅ Successfully parsed AI response on attempt {attempt + 1}")
-                        logger.debug(f"📦 Parsed data: {parsed_data}")
-                        
-                        return parsed_data
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"⚠️ JSON parse attempt {attempt + 1} failed: {e}")
-                        if attempt < max_retries - 1:
-                            json_str = clean_json_string(json_str)
-                            logger.info(f"🔄 Retrying with cleaned JSON...")
-                        else:
-                            logger.error(f"❌ Failed to parse JSON after {max_retries} attempts")
-                            logger.error(f"🔍 Raw JSON: {json_str}")
-                            break
-            else:
-                logger.error(f"❌ No valid JSON structure found in AI response")
-                logger.error(f"🔍 Full response: {output}")
-            
-            # Return empty structure if parsing fails
-            logger.warning(f"⚠️ Returning empty result due to parsing failure")
+                if not json_str.strip():
+                    logger.error(f"❌ Cleaned JSON string is empty!")
+                    logger.error(f"🔍 Original output: {output[:1000]}")
+                    return self._get_empty_extraction_result()
+                
+                result = json.loads(json_str)
+                logger.info(f"✅ JSON parsing successful with JSON mode")
+                logger.info(f"📦 Products found: {len(result.get('productos', []))}")
+                
+                # Log key extracted fields for debugging
+                logger.info(f"🏢 Company: {result.get('nombre_empresa', 'Not found')}")
+                logger.info(f"👤 Requester: {result.get('nombre_solicitante', 'Not found')}")
+                logger.info(f"📧 Email: {result.get('email_solicitante', 'Not found')}")
+                logger.info(f"📍 Location: {result.get('lugar', 'Not found')}")
+                logger.info(f"📅 Date: {result.get('fecha', 'Not found')}")
+                
+                return result
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ JSON parsing failed even with JSON mode and robust cleaning: {e}")
+                logger.error(f"🔍 Raw output (first 1000 chars): {output[:1000]}")
+                logger.error(f"🔍 Cleaned JSON (first 1000 chars): {json_str[:1000]}")
             return self._get_empty_extraction_result()
             
         except Exception as e:
-            logger.error(f"❌ OpenAI API call failed: {e}")
+            logger.error(f"❌ Complete AI extraction failed: {e}")
+            # Return empty result for fallback
             return self._get_empty_extraction_result()
     
-    def _combine_chunk_results_legacy(self, chunk_results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """🔧 LEGACY: Combine results from multiple text chunks into a single data structure"""
-        combined = {
-            "email": "",
-            "nombre_solicitante": "",
-            "productos": [],
-            "hora_entrega": "",
-            "fecha": "",
-            "lugar": "",
-            "texto_original_relevante": ""
-        }
+    def _robust_json_clean(self, raw_output: str) -> str:
+        """🔧 Limpieza robusta de JSON que maneja markdown fences correctamente"""
+        if not raw_output:
+            return ""
         
-        # 🔍 DEBUG: Log chunk combination process
-        logger.info(f"🔄 Combining results from {len(chunk_results)} chunks")
+        # Paso 1: Quitar markdown fences de cualquier tipo
+        text = raw_output.strip()
         
-        texto_fragments = []
+        # Remover fences comunes: ```json, ```JSON, ```Json, etc.
+        import re
+        text = re.sub(r'^```(?:json|JSON|Json)?\s*', '', text, flags=re.MULTILINE)
+        text = re.sub(r'\s*```\s*$', '', text, flags=re.MULTILINE)
         
-        for i, result in enumerate(chunk_results):
-            logger.debug(f"📦 Processing chunk {i+1} result: {result}")
-            
-            # Take the first non-empty value for each field
-            if result.get("email") and not combined["email"]:
-                combined["email"] = result["email"]
-                logger.debug(f"📧 Found email in chunk {i+1}: {result['email']}")
-                
-            if result.get("nombre_solicitante") and not combined["nombre_solicitante"]:
-                combined["nombre_solicitante"] = result["nombre_solicitante"]
-                logger.debug(f"👤 Found solicitante in chunk {i+1}: {result['nombre_solicitante']}")
-                
-            if result.get("hora_entrega") and not combined["hora_entrega"]:
-                combined["hora_entrega"] = result["hora_entrega"]
-                logger.debug(f"🕐 Found hora_entrega in chunk {i+1}: {result['hora_entrega']}")
-                
-            if result.get("fecha") and not combined["fecha"]:
-                combined["fecha"] = result["fecha"]
-                logger.debug(f"📅 Found fecha in chunk {i+1}: {result['fecha']}")
-                
-            if result.get("lugar") and not combined["lugar"]:
-                combined["lugar"] = result["lugar"]
-                logger.debug(f"📍 Found lugar in chunk {i+1}: {result['lugar']}")
-            
-            # Combine products from all chunks
-            if result.get("productos"):
-                productos_count = len(result["productos"])
-                combined["productos"].extend(result["productos"])
-                logger.debug(f"📦 Added {productos_count} productos from chunk {i+1}")
-            
-            # Collect text fragments
-            if result.get("texto_original_relevante"):
-                texto_fragments.append(f"Chunk {i+1}: {result['texto_original_relevante']}")
+        # Paso 2: Buscar el JSON válido más largo
+        # Encuentra el primer { y el último } balanceado
+        first_brace = text.find('{')
+        if first_brace == -1:
+            return text  # No JSON encontrado, devolver como está
         
-        # Combine text fragments
-        if texto_fragments:
-            combined["texto_original_relevante"] = " | ".join(texto_fragments)
+        # Contar llaves para encontrar el cierre balanceado
+        brace_count = 0
+        last_brace = -1
         
-        # 🔍 DEBUG: Log final combined result
-        logger.info(f"✅ Combined result: {len(combined['productos'])} productos total")
-        logger.debug(f"📦 Final combined data: {combined}")
+        for i in range(first_brace, len(text)):
+            if text[i] == '{':
+                brace_count += 1
+            elif text[i] == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    last_brace = i
+                    break
         
-        return combined
+        if last_brace == -1:
+            # No se encontró cierre balanceado, usar hasta el final
+            json_str = text[first_brace:]
+        else:
+            json_str = text[first_brace:last_brace + 1]
+        
+        # Paso 3: Limpiar caracteres problemáticos comunes
+        json_str = json_str.strip()
+        
+        # Remover texto antes del primer { si hay
+        if json_str.startswith('JSON:') or json_str.startswith('json:'):
+            json_str = json_str[5:].strip()
+        
+        logger.debug(f"🧹 JSON cleaning: {len(raw_output)} chars → {len(json_str)} chars")
+        return json_str
     
-    # ============================================================================
-    # 🆕 MVP: FUNCIONES DE VALIDACIÓN DE REQUIREMENTS
-    # ============================================================================
+    def _convert_function_calling_to_legacy_format(self, db_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        🔄 Convierte resultado de function calling a formato legacy esperado por el sistema
+        
+        Args:
+            db_result: Resultado estructurado de function calling con formato BD v2.2
+            
+        Returns:
+            Dict en formato legacy compatible con el resto del sistema
+        """
+        try:
+            rfx_data = db_result.get('rfx_data', {})
+            products_data = db_result.get('products_data', [])
+            company_data = db_result.get('company_data', {})
+            requester_data = db_result.get('requester_data', {})
+            
+            # Mapear a formato legacy
+            legacy_result = {
+                # Información básica
+                "titulo": rfx_data.get('title', ''),
+                "descripcion": rfx_data.get('description', ''),
+                "requirements": rfx_data.get('requirements', ''),
+                
+                # Fechas
+                "fecha": rfx_data.get('delivery_date', ''),
+                "fecha_entrega": rfx_data.get('delivery_date', ''),
+                "hora_entrega": rfx_data.get('delivery_time', ''),
+                
+                # Ubicación
+                "lugar": rfx_data.get('event_location', ''),
+                "ciudad": rfx_data.get('event_city', ''),
+                "pais": rfx_data.get('event_country', 'Mexico'),
+                
+                # Moneda y presupuesto
+                "currency": rfx_data.get('currency', 'USD'),
+                "presupuesto_min": rfx_data.get('budget_range_min'),
+                "presupuesto_max": rfx_data.get('budget_range_max'),
+                
+                # Información de empresa
+                "nombre_empresa": company_data.get('company_name', ''),
+                "email_empresa": company_data.get('company_email', ''),
+                "telefono_empresa": company_data.get('phone', ''),
+                "direccion_empresa": company_data.get('address', ''),
+                
+                # Información de solicitante
+                "nombre_solicitante": requester_data.get('name', ''),
+                "email_solicitante": requester_data.get('email', ''),
+                "telefono_solicitante": requester_data.get('phone', ''),
+                "cargo_solicitante": requester_data.get('position', ''),
+                "departamento_solicitante": requester_data.get('department', ''),
+                
+                # Productos (conversión crítica)
+            "productos": [],
+                
+                # Metadatos
+                "extraction_method": "function_calling",
+                "confidence_scores": rfx_data.get('metadata_json', {}).get('extraction_confidence', {}),
+                "texto_original_relevante": rfx_data.get('metadata_json', {}).get('additional_metadata', {}).get('original_text_sample', '')
+            }
+            
+            # Convertir productos a formato legacy
+            for i, product in enumerate(products_data, 1):
+                legacy_product = {
+                    "nombre": product.get('product_name', ''),
+                    "descripcion": product.get('description', ''),
+                    "categoria": product.get('category', 'otro'),
+                    "cantidad": product.get('quantity', 1),
+                    "unidad": product.get('unit_of_measure', 'unidades'),
+                    "precio_unitario": product.get('estimated_unit_price', 0.0),  # ← CRÍTICO: Mapear precio
+                    "especificaciones": product.get('specifications', ''),
+                    "es_obligatorio": product.get('is_mandatory', True),
+                    "orden_prioridad": product.get('priority_order', i),
+                    "notas": product.get('notes', '')
+                }
+                legacy_result["productos"].append(legacy_product)
+            
+            logger.info(f"🔄 Function calling result converted to legacy format")
+            logger.info(f"📦 Products converted: {len(legacy_result['productos'])}")
+            logger.info(f"🏢 Company: {legacy_result['nombre_empresa']}")
+            logger.info(f"👤 Requester: {legacy_result['nombre_solicitante']}")
+            
+            return legacy_result
+            
+        except Exception as e:
+            logger.error(f"❌ Error converting function calling result to legacy format: {e}")
+            raise
+    
+    def _is_input_incomplete(self, extracted_data: Dict[str, Any], original_text: str, completeness_result: Dict[str, Any]) -> bool:
+        """🚨 NUEVA FUNCIÓN: Determina si el input es incompleto y requiere más información del usuario"""
+        
+        logger.info(f"🔍 DEBUGGING COMPLETENESS CHECK:")
+        logger.info(f"📊 Extracted data keys: {list(extracted_data.keys()) if extracted_data else 'None'}")
+        
+        if not extracted_data:
+            logger.warning(f"❌ INCOMPLETE: No data extracted")
+            return True
+        
+        productos = extracted_data.get('productos', [])
+        logger.info(f"📦 Products to validate: {len(productos)}")
+        
+        # 1. NO PRODUCTS FOUND
+        if not productos:
+            logger.warning(f"❌ INCOMPLETE: No products found")
+            return True
+        
+        # 2. GENERIC/VAGUE PRODUCTS - STRICTER VALIDATION
+        generic_terms = ['material', 'producto', 'servicio', 'item', 'artículo', 'elemento', 'pop']
+        vague_products = []
+        
+        for i, producto in enumerate(productos):
+            nombre = producto.get('nombre', '').lower()
+            descripcion = producto.get('descripcion', '').lower()
+            cantidad = producto.get('cantidad', 0)
+            
+            logger.info(f"📦 Product {i+1}: '{nombre}' - Qty: {cantidad} - Desc: '{descripcion[:50]}...'")
+            
+            # Check if product name is too generic
+            is_generic = any(term in nombre for term in generic_terms)
+            
+            # Check if missing critical information
+            has_no_quantity = not cantidad or cantidad == 0
+            has_no_description = not descripcion or len(descripcion.strip()) < 10
+            
+            # More strict: Consider vague if generic OR lacks details
+            is_vague = is_generic or has_no_quantity or has_no_description
+            
+            if is_vague:
+                vague_products.append(nombre)
+                logger.warning(f"❌ VAGUE PRODUCT: '{nombre}' - Generic: {is_generic}, No quantity: {has_no_quantity}, No description: {has_no_description}")
+        
+        # If ANY product is vague, consider incomplete
+        if vague_products:
+            logger.warning(f"❌ INCOMPLETE: {len(vague_products)}/{len(productos)} products are vague: {vague_products}")
+            return True
+        
+        # 3. MISSING ESSENTIAL INFORMATION
+        essential_fields = ['nombre_solicitante', 'fecha_entrega']
+        missing_fields = []
+        
+        for field in essential_fields:
+            value = extracted_data.get(field, '')
+            if not value or (isinstance(value, str) and value.strip() == ''):
+                missing_fields.append(field)
+        
+        if missing_fields:
+            logger.warning(f"❌ INCOMPLETE: Missing essential fields: {missing_fields}")
+            return True
+        
+        # 4. COMPLETENESS RATIO TOO LOW - More strict
+        completeness_ratio = completeness_result.get('completeness_ratio', 0)
+        if completeness_ratio < 0.7:  # Increased from 30% to 70%
+            logger.warning(f"❌ INCOMPLETE: Completeness ratio too low: {completeness_ratio:.2f}")
+            return True
+        
+        # 5. TEXT TOO SHORT (likely incomplete description)
+        if len(original_text.strip()) < 200:  # Increased from 100 to 200 characters
+            logger.warning(f"❌ INCOMPLETE: Input text too short: {len(original_text)} characters")
+            return True
+        
+        logger.info(f"✅ INPUT COMPLETE: All validation checks passed")
+        return False
+
+    def _validate_product_completeness(self, extracted_data: Dict[str, Any], original_text: str) -> Dict[str, Any]:
+        """🔍 NUEVA FUNCIÓN: Valida que se extrajeron todos los productos usando heurísticas"""
+        try:
+            productos_found = len(extracted_data.get('productos', []))
+            
+            # Simple heuristics to estimate expected products
+            text_lower = original_text.lower()
+            
+            # Count potential food/service indicators
+            food_indicators = ['tequeños', 'empanadas', 'canapés', 'brochetas', 'ceviche', 'pollo', 'res', 'lasaña', 'tortas', 'cheesecake', 'frutas']
+            service_indicators = ['meseros', 'montaje', 'agua', 'jugos', 'café', 'té', 'refrescos']
+            
+            estimated_products = 0
+            for indicator in food_indicators + service_indicators:
+                if indicator in text_lower:
+                    estimated_products += 1
+            
+            completeness_ratio = productos_found / max(estimated_products, 1) if estimated_products > 0 else 1.0
+            
+            validation_result = {
+                'products_found': productos_found,
+                'estimated_products': estimated_products,
+                'completeness_ratio': min(completeness_ratio, 1.0),
+                'validation_status': 'complete' if completeness_ratio >= 0.8 else 'partial'
+            }
+            
+            logger.info(f"🔍 Completeness validation: Found {productos_found}, Estimated {estimated_products}, Ratio {completeness_ratio:.2f}")
+            
+            return validation_result
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Completeness validation failed: {e}")
+            return {'validation_status': 'unknown', 'products_found': 0}
+    
+    def _process_with_ai_chunked_fallback(self, text: str) -> Dict[str, Any]:
+        """
+        ⚠️ DEPRECATED: Ya no se usa chunking - GPT-4o tiene 128k tokens
+        ✅ CAMBIO #2: Método mantenido solo por compatibilidad
+        """
+        logger.warning(f"⚠️ DEPRECATED: Chunked fallback called - should not be used")
+        
+        try:
+            # Very simple fallback - try to extract at least basic info
+            logger.warning(f"⚠️ Implementing simple fallback extraction")
+            return self._process_with_ai_legacy(text)
+            
+        except Exception as e:
+            logger.error(f"❌ Even fallback processing failed: {e}")
+            return self._get_empty_extraction_result()
+    
+    def _process_with_ai_legacy(self, text: str) -> Dict[str, Any]:
+        """🔧 SIMPLIFIED FALLBACK: No chunking, basic extraction only"""
+        logger.warning(f"⚠️ Using SIMPLIFIED LEGACY fallback - no chunking")
+        
+        try:
+            # Very basic extraction with JSON mode compatible prompt
+            system_prompt = """Eres un extractor de datos básico. Responde ÚNICAMENTE en formato JSON válido sin markdown fences."""
+            
+            user_prompt = f"""Extrae información básica de este texto de catering en formato JSON:
+
+Estructura requerida:
+{{
+    "nombre_empresa": "nombre de la empresa si se encuentra",
+    "nombre_solicitante": "nombre de la persona que solicita",
+    "email": "email encontrado", 
+    "productos": [
+        {{"nombre": "producto", "cantidad": 1, "unidad": "unidades"}}
+    ],
+    "fecha": "fecha si se encuentra",
+    "lugar": "ubicación si se encuentra",
+    "currency": "USD"
+}}
+
+TEXTO: {text[:5000]}"""
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-3.5-turbo",  # Use simpler model for fallback
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.3,
+                max_tokens=1000,
+                response_format={"type": "json_object"},  # 🆕 JSON MODE: Fallback legacy
+                timeout=30
+            )
+            
+            output = response.choices[0].message.content.strip()
+            json_str = self._robust_json_clean(output)
+            result = json.loads(json_str)
+            
+            # Map to expected format
+            return {
+                "email": result.get("email", ""),
+                "nombre_solicitante": result.get("nombre_solicitante", ""),
+                "nombre_empresa": result.get("nombre_empresa", ""), 
+                "productos": result.get("productos", []),
+                "fecha": result.get("fecha", ""),
+                "lugar": result.get("lugar", ""),
+                "currency": "USD",
+                "texto_original_relevante": text[:500] if text else "",
+                "processing_error": "Used simplified fallback"
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Legacy fallback failed: {e}")
+            return {
+                "email": "",
+                "nombre_solicitante": "",
+                "productos": [],
+                "fecha": "",
+                "lugar": "",
+                "currency": "USD",
+                "texto_original_relevante": text[:500] if text else "",
+                "processing_error": f"Legacy fallback failed: {str(e)}"
+            }
+    
+    def _safe_get_requirements(self, validated_data: Dict[str, Any]) -> tuple:
+        """Safely get requirements with fallback"""
+        try:
+            requirements = validated_data.get("requirements")
+            confidence = validated_data.get("requirements_confidence", 0.0)
+            
+            # Si no hay requirements, usar valores seguros
+            if not requirements or requirements in ["null", "None", ""]:
+                return None, 0.0
+                
+            return requirements, float(confidence) if confidence else 0.0
+        except Exception as e:
+            logger.warning(f"⚠️ Requirements extraction failed: {e}")
+            return None, 0.0
     
     def _validate_basic_requirements(self, requirements: str, confidence: float) -> Dict[str, Any]:
         """Validación mínima para MVP de requirements"""
@@ -1639,232 +1843,136 @@ DEFINICIONES CRÍTICAS:
         # TODO: En el futuro, guardar en tabla de logs para análisis
         # self.requirements_logs.insert(log_data)
     
-    def _validate_and_clean_data(self, raw_data: Dict[str, Any], rfx_id: str) -> Dict[str, Any]:
-        """Validate and clean extracted data with fallbacks for invalid values"""
-        # 🔍 DEBUG: Log validation process
-        logger.info(f"🔍 Starting validation for RFX: {rfx_id}")
-        logger.debug(f"📦 Raw data to validate: {raw_data}")
+    def _validate_and_normalize_currency(self, currency: str) -> str | None:
+        """🆕 Valida y normaliza códigos de moneda ISO 4217"""
+        if not currency or currency.lower() in ["null", "none", "", "undefined"]:
+            logger.info(f"📝 No currency provided - left as null for user completion")
+            return None
         
-        cleaned_data = raw_data.copy()
-        validation_status = {
-            "email_valid": False,
-            "fecha_valid": False,
-            "hora_valid": False,
-            "has_original_data": True
+        # Lista de monedas válidas más comunes en el contexto de negocio
+        valid_currencies = {
+            # Monedas principales
+            "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD",
+            # Monedas latinoamericanas
+            "MXN", "BRL", "ARS", "COP", "PEN", "CLP", "UYU", "BOB", "VES",
+            # Monedas asiáticas
+            "CNY", "HKD", "SGD", "KRW", "INR", "THB", "MYR", "IDR",
+            # Otras monedas relevantes
+            "NOK", "SEK", "DKK", "PLN", "CZK", "HUF", "RUB", "ZAR"
         }
         
-        # Validate and clean email - PRESERVE original even if invalid
-        email = raw_data.get("email", "").strip()
-        if email:
-            if self.email_validator.validate(email):
-                cleaned_data["email"] = email
-                validation_status["email_valid"] = True
-                logger.info(f"✅ Email validated successfully: {email}")
-            else:
-                # Keep original email but mark as invalid
-                cleaned_data["email"] = email
-                validation_status["email_valid"] = False
-                logger.warning(f"⚠️ Email format invalid but preserved: {email}")
-        else:
-            # Only use fallback if completely empty
-            cleaned_data["email"] = "cliente@example.com"
-            validation_status["email_valid"] = False
-            validation_status["has_original_data"] = False
-            logger.warning(f"⚠️ No email found, using fallback")
+        # Normalizar entrada
+        currency_clean = currency.strip().upper()
         
-        # Validate and clean date - PRESERVE original even if invalid
-        fecha = raw_data.get("fecha", "").strip()
-        if fecha:
-            if self.date_validator.validate(fecha):
-                cleaned_data["fecha"] = fecha
-                validation_status["fecha_valid"] = True
-                logger.info(f"✅ Date validated successfully: {fecha}")
-            else:
-                # Try to preserve original date format
-                cleaned_data["fecha"] = fecha
-                validation_status["fecha_valid"] = False
-                logger.warning(f"⚠️ Date format may be invalid but preserved: {fecha}")
-        else:
-            # Only use fallback if completely empty
-            cleaned_data["fecha"] = datetime.now().strftime('%Y-%m-%d')
-            validation_status["fecha_valid"] = False
-            logger.warning(f"⚠️ No date found, using current date")
+        # Validación directa
+        if currency_clean in valid_currencies:
+            logger.debug(f"💰 Currency validated: {currency_clean}")
+            return currency_clean
         
-        # Validate and clean time - PRESERVE original even if invalid
-        hora = raw_data.get("hora_entrega", "").strip()
-        if hora:
-            if self.time_validator.validate(hora):
-                cleaned_data["hora_entrega"] = hora
-                validation_status["hora_valid"] = True
-                logger.info(f"✅ Time validated successfully: {hora}")
-            else:
-                # Keep original time but mark as invalid
-                cleaned_data["hora_entrega"] = hora
-                validation_status["hora_valid"] = False
-                logger.warning(f"⚠️ Time format may be invalid but preserved: {hora}")
-        else:
-            # Only use fallback if completely empty
-            cleaned_data["hora_entrega"] = "12:00"
-            validation_status["hora_valid"] = False
-            logger.warning(f"⚠️ No time found, using default")
-        
-        # Clean and validate client name - MORE PERMISSIVE
-        nombre_solicitante = raw_data.get("nombre_solicitante", "").strip()
-        if nombre_solicitante and nombre_solicitante.lower() not in ["null", "none", ""]:
-            cleaned_data["nombre_solicitante"] = nombre_solicitante.title()
-            logger.info(f"✅ Solicitante name processed: {nombre_solicitante}")
-        else:
-            cleaned_data["nombre_solicitante"] = f"Solicitante-{rfx_id}"
-            validation_status["has_original_data"] = False
-            logger.warning(f"⚠️ No client name found, using fallback")
-        
-        # Clean place - MORE PERMISSIVE
-        lugar = raw_data.get("lugar", "").strip()
-        if lugar and lugar.lower() not in ["null", "none", ""]:
-            cleaned_data["lugar"] = lugar
-            logger.info(f"✅ Location preserved: {lugar}")
-        else:
-            cleaned_data["lugar"] = "Ubicación por definir"
-            logger.warning(f"⚠️ No location found, using fallback")
-        
-        # Validate products - VERY PERMISSIVE
-        productos = raw_data.get("productos", [])
-        logger.info(f"🔍 Validating {len(productos)} products from AI extraction")
-        logger.debug(f"📦 Raw products data: {productos}")
-        
-        if not productos:
-            logger.error(f"❌ No products array found in AI response")
-            logger.debug(f"📦 Full raw_data keys: {list(raw_data.keys())}")
-            raise ValueError("No se encontraron productos en el documento")
-        
-        # Clean and validate each product - VERY PERMISSIVE
-        cleaned_productos = []
-        for i, producto in enumerate(productos):
-            logger.debug(f"🔍 Processing product {i+1}: {producto}")
+        # Mapeo de aliases comunes
+        currency_aliases = {
+            # Símbolos a códigos
+            "$": "USD",  # Predeterminado para $
+            "€": "EUR",
+            "£": "GBP", 
+            "¥": "JPY",
+            "₽": "RUB",
+            "₹": "INR",
             
-            # Handle different formats of product data
-            if isinstance(producto, dict):
-                nombre = None
-                cantidad = 1
-                unidad = "unidades"
-                
-                # Try to extract name from various possible keys
-                for name_key in ["nombre", "name", "product", "producto", "item"]:
-                    if producto.get(name_key):
-                        nombre = str(producto[name_key]).strip()
-                        break
-                
-                # Try to extract quantity
-                for qty_key in ["cantidad", "quantity", "qty", "count", "numero"]:
-                    if producto.get(qty_key):
-                        try:
-                            cantidad = max(1, int(float(producto[qty_key])))
-                            break
-                        except (ValueError, TypeError):
-                            logger.warning(f"⚠️ Invalid quantity for product {i+1}: {producto.get(qty_key)}")
-                            continue
-                
-                # Try to extract unit
-                for unit_key in ["unidad", "unit", "units", "medida"]:
-                    if producto.get(unit_key):
-                        unidad = str(producto[unit_key]).strip().lower()
-                        break
-                
-                # Accept product if it has any meaningful name
-                if nombre and len(nombre.strip()) > 0 and nombre.lower() not in ["null", "none", "", "undefined"]:
-                    cleaned_producto = {
-                        "nombre": nombre.title(),
-                        "cantidad": cantidad,
-                        "unidad": unidad or "unidades"
-                    }
-                    cleaned_productos.append(cleaned_producto)
-                    logger.info(f"✅ Product {i+1} accepted: {cleaned_producto}")
-                else:
-                    logger.warning(f"⚠️ Product {i+1} rejected - invalid name: {nombre}")
-                    
-            elif isinstance(producto, str):
-                # Handle product as simple string
-                nombre = producto.strip()
-                if nombre and len(nombre) > 0 and nombre.lower() not in ["null", "none", "", "undefined"]:
-                    cleaned_producto = {
-                        "nombre": nombre.title(),
-                        "cantidad": 1,
-                        "unidad": "unidades"
-                    }
-                    cleaned_productos.append(cleaned_producto)
-                    logger.info(f"✅ Product {i+1} accepted as string: {cleaned_producto}")
-                else:
-                    logger.warning(f"⚠️ Product {i+1} rejected - invalid string: {nombre}")
-            else:
-                logger.warning(f"⚠️ Product {i+1} skipped - unrecognized format: {type(producto)}")
-        
-        logger.info(f"📊 Product validation completed: {len(cleaned_productos)} valid products from {len(productos)} raw products")
-        
-        if not cleaned_productos:
-            logger.error(f"❌ No valid products could be processed from AI extraction")
-            logger.error(f"🔍 Original products data: {productos}")
-            # Create a fallback product to avoid complete failure
-            logger.warning(f"⚠️ Creating fallback product to prevent complete failure")
-            cleaned_productos = [{
-                "nombre": "Producto No Especificado",
-                "cantidad": 1,
-                "unidad": "unidades"
-            }]
-            logger.info(f"✅ Fallback product created: {cleaned_productos[0]}")
-        
-        cleaned_data["productos"] = cleaned_productos
-        
-        # ✨ PRESERVE: Datos de empresa sin validación (son opcionales)
-        empresa_fields = ["nombre_empresa", "email_empresa", "telefono_empresa", "telefono_solicitante", "cargo_solicitante"]
-        for field in empresa_fields:
-            if field in raw_data and raw_data[field]:
-                cleaned_data[field] = str(raw_data[field]).strip()
-                logger.info(f"✅ Empresa field preserved: {field} = {cleaned_data[field]}")
-            else:
-                cleaned_data[field] = ""
-                logger.debug(f"📝 Empresa field empty: {field}")
-        
-        # 🆕 MVP: Validate and clean requirements
-        requirements = raw_data.get("requirements", "")
-        requirements_confidence = raw_data.get("requirements_confidence", 0.0)
-        
-        if requirements and requirements.strip():
-            # Aplicar validación básica
-            validation_result = self._validate_basic_requirements(
-                requirements.strip(), 
-                float(requirements_confidence) if requirements_confidence else 0.0
-            )
+            # Variaciones textuales
+            "DOLLAR": "USD",
+            "DOLARES": "USD", 
+            "DÓLARES": "USD",
+            "DOLLARS": "USD",
+            "EURO": "EUR",
+            "EUROS": "EUR",
+            "POUND": "GBP",
+            "POUNDS": "GBP",
+            "LIBRA": "GBP",
+            "LIBRAS": "GBP",
+            "YEN": "JPY",
+            "PESO": "MXN",  # Predeterminado para peso sin contexto
+            "PESOS": "MXN",
+            "REAL": "BRL",
+            "REALES": "BRL",
+            "R$": "BRL",
             
-            # Guardar resultados validados
-            cleaned_data["requirements"] = validation_result['validated_requirements']
-            cleaned_data["requirements_confidence"] = validation_result['adjusted_confidence']
+            # Códigos con sufijos
+            "USD$": "USD",
+            "CAD$": "CAD",
+            "AUD$": "AUD",
+            "MXN$": "MXN",
             
-            # Actualizar validation status
-            validation_status["requirements_valid"] = not validation_result['needs_review']
-            validation_status["requirements_issues"] = validation_result['validation_issues']
+            # Variaciones regionales
+            "DÓLAR": "USD",
+            "DÓLARES AMERICANOS": "USD",
+            "DÓLARES ESTADOUNIDENSES": "USD",
+            "PESOS MEXICANOS": "MXN",
+            "PESOS COLOMBIANOS": "COP",
+            "SOLES": "PEN",
+            "BOLIVARES": "VES"
+        }
+        
+        # Buscar en aliases
+        if currency_clean in currency_aliases:
+            mapped_currency = currency_aliases[currency_clean]
+            logger.debug(f"💰 Currency mapped: {currency} → {mapped_currency}")
+            return mapped_currency
+        
+        # Intentar extraer código de una cadena más larga
+        for valid_code in valid_currencies:
+            if valid_code in currency_clean:
+                logger.debug(f"💰 Currency extracted from text: {currency} → {valid_code}")
+                return valid_code
+        
+        # Si no se puede validar, preservar para revisión manual
+        logger.warning(f"⚠️ Unrecognized currency '{currency}' - preserved for manual review")
+        return currency
+    
+    def _validate_and_clean_data(self, raw_data: Dict[str, Any], rfx_id: str) -> Dict[str, Any]:
+        """
+        ✅ SIMPLIFICADO: El LLM ya validó, solo verificar estructura básica y mapear campos
+        """
+        logger.info(f"🔍 Validating structure for RFX: {rfx_id}")
+        
+        # Handle None raw_data
+        if raw_data is None:
+            logger.warning(f"⚠️ raw_data is None for RFX: {rfx_id}")
+            raw_data = {}
+        
+        # Log para debugging - ver qué campos vienen del LLM
+        logger.debug(f"📦 Raw data keys: {list(raw_data.keys())}")
+        
+        # Mapear campos - El LLM retorna con nombres específicos según el prompt
+        validated = {
+            # Campos del solicitante (persona)
+            'email': raw_data.get('email_solicitante') or raw_data.get('email', ''),
+            'nombre_solicitante': raw_data.get('nombre_solicitante') or raw_data.get('nombre', ''),
+            'telefono_solicitante': raw_data.get('telefono_solicitante') or raw_data.get('telefono', ''),
+            'cargo_solicitante': raw_data.get('cargo_solicitante') or raw_data.get('cargo', ''),
             
-            # Log extraction para mejora continua
-            self._log_requirements_extraction(rfx_id, validation_result)
+            # Campos de empresa (organización)
+            'nombre_empresa': raw_data.get('nombre_empresa') or raw_data.get('empresa', ''),
+            'email_empresa': raw_data.get('email_empresa') or '',
+            'telefono_empresa': raw_data.get('telefono_empresa') or '',
             
-            logger.info(f"✅ Requirements processed: confidence={validation_result['adjusted_confidence']:.3f}, "
-                       f"issues={len(validation_result['validation_issues'])}")
-        else:
-            # No hay requirements extraídos
-            cleaned_data["requirements"] = None
-            cleaned_data["requirements_confidence"] = 0.0
-            validation_status["requirements_valid"] = True  # Válido que no haya requirements
-            validation_status["requirements_issues"] = []
-            logger.debug(f"📝 No requirements extracted for RFX: {rfx_id}")
+            # Campos del evento
+            'fecha': raw_data.get('fecha') or raw_data.get('fecha_entrega', ''),
+            'hora_entrega': raw_data.get('hora_entrega') or raw_data.get('hora', ''),
+            'lugar': raw_data.get('lugar', ''),
+            
+            # Productos y otros
+            'currency': raw_data.get('currency', 'USD'),
+            'productos': raw_data.get('productos', []),
+            'requirements': raw_data.get('requirements', ''),
+            'requirements_confidence': raw_data.get('requirements_confidence', 0.0)
+        }
         
-        # Add validation metadata
-        cleaned_data["validation_metadata"] = validation_status
+        # Log de campos importantes para debugging
+        logger.info(f"✅ Validated: {len(validated.get('productos', []))} products, "
+                   f"email={validated.get('email')}, empresa={validated.get('nombre_empresa')}")
         
-        # 🔍 DEBUG: Log final validation result
-        logger.info(f"✅ Validation completed for {len(cleaned_productos)} products")
-        logger.info(f"📊 Validation status: {validation_status}")
-        logger.debug(f"📦 Final cleaned data: {cleaned_data}")
-        
-        return cleaned_data
+        return validated
     
     def _create_rfx_processed(self, validated_data: Dict[str, Any], rfx_input: RFXInput, evaluation_metadata: Optional[Dict[str, Any]] = None) -> RFXProcessed:
         """Create RFXProcessed object from validated data and evaluation results"""
@@ -1877,7 +1985,8 @@ DEFINICIONES CRÍTICAS:
                 ProductoRFX(
                     product_name=p["nombre"],
                     quantity=p["cantidad"],
-                    unit=p["unidad"]
+                    unit=p["unidad"],
+                    precio_unitario=p.get("precio_unitario", 0.0)  # ← CRÍTICO: Incluir precio
                 )
                 for p in validated_data["productos"]
             ]
@@ -1896,7 +2005,9 @@ DEFINICIONES CRÍTICAS:
                 "email_empresa": validated_data.get("email_empresa", ""),
                 "telefono_empresa": validated_data.get("telefono_empresa", ""),
                 "telefono_solicitante": validated_data.get("telefono_solicitante", ""),
-                "cargo_solicitante": validated_data.get("cargo_solicitante", "")
+                "cargo_solicitante": validated_data.get("cargo_solicitante", ""),
+                # ✨ MONEDA: Currency extraída por AI
+                "validated_currency": validated_data.get("currency", "USD")
             }
             
             # Integrate intelligent evaluation metadata if available
@@ -1928,9 +2039,9 @@ DEFINICIONES CRÍTICAS:
                 id=rfx_uuid,
                 rfx_type=rfx_input.rfx_type,
                 title=f"RFX Request - {validated_data.get('nombre_solicitante', 'Unknown')} - {rfx_input.rfx_type.value if hasattr(rfx_input.rfx_type, 'value') else str(rfx_input.rfx_type)}",
-                location=validated_data["lugar"],
-                delivery_date=validated_data["fecha"],
-                delivery_time=validated_data["hora_entrega"],
+                location=validated_data["lugar"] or None,
+                delivery_date=validated_data["fecha"] or None,
+                delivery_time=validated_data["hora_entrega"] or None,  # ✅ AI-FIRST: None si vacío
                 status=RFXStatus.IN_PROGRESS,
                 original_pdf_text=rfx_input.extracted_content,
                 requested_products=[p.dict() for p in productos] if productos else [],
@@ -1943,9 +2054,9 @@ DEFINICIONES CRÍTICAS:
                 company_name=validated_data.get("nombre_empresa", ""),
                 products=productos,  # productos is already a list of RFXProductRequest objects
                 
-                # 🆕 MVP: Requirements específicos del cliente
-                requirements=validated_data.get("requirements"),
-                requirements_confidence=validated_data.get("requirements_confidence")
+                # 🆕 MVP: Requirements específicos del cliente (SAFE)
+                requirements=self._safe_get_requirements(validated_data)[0],
+                requirements_confidence=self._safe_get_requirements(validated_data)[1]
             )
             
             # 🔍 DEBUG: Log successful creation
@@ -1976,9 +2087,13 @@ DEFINICIONES CRÍTICAS:
             logger.error(f"❌ Failed to create RFXProcessed object: {e}")
             raise
     
-    def _save_rfx_to_database(self, rfx_processed: RFXProcessed) -> None:
+    def _save_rfx_to_database(self, rfx_processed: RFXProcessed, user_id: str = None) -> None:
         """Save processed RFX to database V2.0 with normalized structure"""
         try:
+            if user_id:
+                logger.info(f"💾 Saving RFX with user_id: {user_id}")
+            else:
+                logger.warning(f"⚠️ Saving RFX without user_id - will be NULL in database")
             # Extract company and requester information from metadata
             metadata = rfx_processed.metadata_json or {}
             
@@ -2033,11 +2148,19 @@ DEFINICIONES CRÍTICAS:
                 "requested_products": rfx_processed.requested_products or [],
                 "received_at": rfx_processed.received_at.isoformat() if rfx_processed.received_at else None,
                 "metadata_json": rfx_processed.metadata_json,
+                "currency": rfx_processed.metadata_json.get('validated_currency', 'USD') if rfx_processed.metadata_json else 'USD',
                 
                 # 🆕 MVP: Requirements específicos del cliente
                 "requirements": rfx_processed.requirements,
                 "requirements_confidence": rfx_processed.requirements_confidence
             }
+            
+            # 🆕 CRITICAL: Add user_id if provided
+            if user_id:
+                rfx_data["user_id"] = user_id
+                logger.info(f"✅ Added user_id to rfx_data: {user_id}")
+            else:
+                logger.warning(f"⚠️ No user_id provided - rfx_data will not have user_id field")
             
             # 4. Insert RFX data
             rfx_record = self.db_client.insert_rfx(rfx_data)
@@ -2046,11 +2169,14 @@ DEFINICIONES CRÍTICAS:
             if rfx_processed.products:
                 structured_products = []
                 for product in rfx_processed.products:
+                    # Map precio_unitario from extraction to estimated_unit_price for DB
+                    precio = getattr(product, 'precio_unitario', None) or getattr(product, 'estimated_unit_price', None)
+                    
                     product_data = {
                         "product_name": product.product_name if hasattr(product, 'product_name') else product.nombre,
                         "quantity": product.quantity if hasattr(product, 'quantity') else product.cantidad,
                         "unit": product.unit if hasattr(product, 'unit') else product.unidad,
-                        "estimated_unit_price": getattr(product, 'estimated_unit_price', None),
+                        "estimated_unit_price": precio if precio and precio > 0 else None,
                         "notes": f"Extracted from RFX processing"
                     }
                     structured_products.append(product_data)
@@ -2325,7 +2451,12 @@ DEFINICIONES CRÍTICAS:
             "hora_entrega": "",
             "fecha": "",
             "lugar": "",
-            "texto_original_relevante": ""
+            "currency": "USD",
+            "texto_original_relevante": "",
+            # 🆕 MVP: Requirements fields for compatibility
+            "requirements": None,
+            "requirements_confidence": 0.0,
+            "confidence_score": 0.0  # Legacy compatibility
         }
     
     # ============================================================================
@@ -2336,16 +2467,16 @@ DEFINICIONES CRÍTICAS:
         """🆕 Retorna estadísticas de procesamiento para monitoring y debugging"""
         base_stats = self.processing_stats.copy()
         
-        # Añadir estadísticas del extractor modular
-        if hasattr(self, 'modular_extractor'):
-            extraction_summary = self.modular_extractor.get_extraction_summary()
-            base_stats.update({
-                'modular_extractor_stats': extraction_summary.dict(),
-                'modular_extraction_quality': extraction_summary.extraction_quality,
-                'modular_chunks_processed': extraction_summary.chunk_count,
-                'modular_ai_calls': extraction_summary.ai_calls_made,
-                'modular_retries': extraction_summary.retries_attempted
-            })
+        # ✅ CAMBIO #3: ELIMINADO - Ya no usamos modular_extractor
+        # if hasattr(self, 'modular_extractor'):
+        #     extraction_summary = self.modular_extractor.get_extraction_summary()
+        #     base_stats.update({
+        #         'modular_extractor_stats': extraction_summary.dict(),
+        #         'modular_extraction_quality': extraction_summary.extraction_quality,
+        #         'modular_chunks_processed': extraction_summary.chunk_count,
+        #         'modular_ai_calls': extraction_summary.ai_calls_made,
+        #         'modular_retries': extraction_summary.retries_attempted
+        #     })
         
         # Calcular ratios y métricas derivadas
         if base_stats['total_documents_processed'] > 0:
@@ -2366,29 +2497,644 @@ DEFINICIONES CRÍTICAS:
             'fallback_usage_count': 0
         }
         
-        if hasattr(self, 'modular_extractor'):
-            # Resetear estadísticas del extractor modular
-            self.modular_extractor.extraction_stats = {
-                'chunks_processed': 0,
-                'ai_calls_made': 0,
-                'retries_attempted': 0,
-                'total_processing_time': 0.0
-            }
+        # ✅ CAMBIO #3: ELIMINADO - Ya no usamos modular_extractor
+        # if hasattr(self, 'modular_extractor'):
+        #     self.modular_extractor.extraction_stats = {
+        #         'chunks_processed': 0,
+        #         'ai_calls_made': 0,
+        #         'retries_attempted': 0,
+        #         'total_processing_time': 0.0
+        #     }
         
         logger.info("📊 Processing statistics reset")
     
     def get_debug_mode_status(self) -> Dict[str, Any]:
         """🆕 Retorna estado del modo debug y configuración actual"""
         return {
-            'debug_mode_enabled': getattr(self.modular_extractor, 'debug_mode', False),
-            'extraction_strategy': getattr(self.modular_extractor, 'strategy', ExtractionStrategy.BALANCED).value,
+            'debug_mode_enabled': self.debug_mode,  # ✅ CAMBIO #3: Usar self.debug_mode
+            'extraction_strategy': 'intelligent',  # ✅ Siempre inteligente
             'feature_flags': {
                 'evals_enabled': FeatureFlags.evals_enabled(),
                 'eval_debug_enabled': FeatureFlags.eval_debug_enabled(),
                 'meta_prompting_enabled': FeatureFlags.meta_prompting_enabled() if hasattr(FeatureFlags, 'meta_prompting_enabled') else False,
                 'vertical_agent_enabled': FeatureFlags.vertical_agent_enabled() if hasattr(FeatureFlags, 'vertical_agent_enabled') else False
             },
-            'processing_version': '2.1_modular',
-            'available_extractors': ['ProductExtractor', 'ClientExtractor', 'EventExtractor'],
-            'template_manager_initialized': hasattr(self.modular_extractor, 'template_manager')
+            'processing_version': '3.0_simplified',  # ✅ CAMBIO #3: Nueva versión sin extractores
+            'available_extractors': [],  # ✅ CAMBIO #3: Ya no hay extractores especializados
+            'single_call_extraction': True  # ✅ CAMBIO #3: Todo en una llamada
         }
+
+    # NEW: Multi-file processing
+    def process_rfx_case(self, rfx_input: RFXInput, blobs: List[Dict[str, Any]], user_id: str = None) -> RFXProcessed:
+        """Multi-file processing pipeline with OCR and spreadsheet support"""
+        logger.info(f"📦 process_rfx_case start: {rfx_input.id} with {len(blobs)} file(s)")
+        if user_id:
+            logger.info(f"✅ user_id provided for RFX: {user_id}")
+        else:
+            logger.warning(f"⚠️ No user_id provided for RFX: {rfx_input.id}")
+        
+        # 🔍 DEBUG: Detailed file logging
+        for i, b in enumerate(blobs):
+            fname = b.get("filename", f"file_{i}")
+            content_size = len(b.get("content", b.get("bytes", b"")))
+            logger.info(f"🔍 INPUT FILE {i+1}: '{fname}' ({content_size} bytes)")
+        
+        # 1) Expand ZIPs
+        expanded: List[Dict[str, Any]] = []
+        for i, b in enumerate(blobs):
+            fname = (b.get("filename") or f"file_{i}").lower()
+            content = b.get("content") or b.get("bytes")
+            if not content: 
+                logger.warning(f"⚠️ EMPTY FILE {i+1}: '{fname}' - skipping")
+                continue
+            if USE_ZIP and (fname.endswith(".zip") or (content[:2] == b"PK" and not fname.endswith(".docx") and not fname.endswith(".xlsx"))):
+                try:
+                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                        for name in zf.namelist():
+                            if name.endswith("/"): continue
+                            expanded.append({"filename": name, "content": zf.read(name)})
+                    logger.info(f"🗜️ ZIP expanded: {fname} → {len(expanded)} internal files")
+                except Exception as e:
+                    logger.warning(f"⚠️ ZIP expand failed {fname}: {e}")
+            else:
+                expanded.append({"filename": fname, "content": content})
+
+        text_parts: List[str] = []
+        canonical_items: List[Dict[str, Any]] = []
+        
+        # 2) Per-file routing with DETAILED DEBUG LOGGING
+        for file_index, b in enumerate(expanded):
+            fname = b["filename"].lower()
+            content: bytes = b["content"]
+            kind = self._detect_content_type(content, fname)
+            logger.info(f"🔎 PROCESSING FILE {file_index+1}: '{fname}' kind={kind} size={len(content)} bytes")
+            
+            try:
+                if kind in ("pdf", "docx", "text"):
+                    logger.info(f"📄 Extracting text from {kind.upper()}: {fname}")
+                    txt = self._extract_text_from_document(content)
+                    logger.info(f"📄 TEXT EXTRACTED from {fname}: {len(txt)} characters")
+                    
+                    # Fallback OCR if PDF nearly empty
+                    if kind == "pdf" and (not txt.strip() or len(re.sub(r"\s+", "", txt)) < 50):
+                        logger.info(f"🧠 PDF text too short ({len(txt)} chars), trying OCR for: {fname}")
+                        ocr_txt = self._extract_text_with_ocr(content, kind="pdf", filename=fname)
+                        if ocr_txt.strip():
+                            logger.info(f"🧠 OCR SUCCESS: {fname} → {len(ocr_txt)} characters")
+                            txt = ocr_txt
+                        else:
+                            logger.warning(f"🧠 OCR FAILED for: {fname}")
+                    
+                    if txt.strip():
+                        text_parts.append(f"\n\n### SOURCE: {fname}\n{txt}")
+                        logger.info(f"✅ ADDED TO AI CONTEXT: {fname} ({len(txt)} chars)")
+                        # Show preview of text to verify content
+                        preview = txt[:300].replace('\n', ' ')
+                        logger.info(f"📝 CONTENT PREVIEW: {fname} → {preview}...")
+                    else:
+                        logger.error(f"❌ NO TEXT EXTRACTED from {fname} - file will be ignored!")
+                        
+                elif kind in ("xlsx", "csv"):
+                    logger.info(f"📊 Parsing spreadsheet: {fname}")
+                    parsed = self._parse_spreadsheet_items(fname, content)
+                    items_count = len(parsed.get('items', []))
+                    text_length = len(parsed.get('text', ''))
+                    logger.info(f"📊 SPREADSHEET PARSED: {fname} → {items_count} items, {text_length} chars of text")
+                    
+                    if parsed["items"]: 
+                        canonical_items.extend(parsed["items"])
+                        logger.info(f"📋 PRODUCTS FOUND in {fname}: {items_count} items")
+                        # Log first 3 items for verification
+                        for i, item in enumerate(parsed['items'][:3]):
+                            logger.info(f"📋 PRODUCT {i+1}: {item}")
+                    else:
+                        logger.warning(f"⚠️ NO PRODUCTS found in spreadsheet: {fname}")
+                    
+                    # Always add text for AI metadata extraction
+                    if parsed["text"]:  
+                        text_parts.append(f"\n\n### SOURCE: {fname}\n{parsed['text']}")
+                        preview = parsed['text'][:300].replace('\n', ' ')
+                        logger.info(f"📄 SPREADSHEET TEXT ADDED: {fname} → {preview}...")
+                    else:
+                        # Create summary for AI if we have items but no text
+                        if parsed["items"]:
+                            summary = f"EXCEL: {len(parsed['items'])} productos encontrados:\n"
+                            for item in parsed["items"][:5]:  # First 5 products
+                                summary += f"- {item['nombre']}: {item['cantidad']} {item['unidad']}\n"
+                            text_parts.append(f"\n\n### SOURCE: {fname}\n{summary}")
+                            logger.info(f"📄 SUMMARY CREATED for {fname}: {len(summary)} chars")
+                        
+                elif kind == "image":
+                    logger.info(f"🖼️ Applying OCR to image: {fname}")
+                    ocr_txt = self._extract_text_with_ocr(content, kind="image", filename=fname)
+                    if ocr_txt.strip():
+                        text_parts.append(f"\n\n### SOURCE: {fname} (OCR)\n{ocr_txt}")
+                        logger.info(f"✅ IMAGE OCR SUCCESS: {fname} → {len(ocr_txt)} chars")
+                        preview = ocr_txt[:300].replace('\n', ' ')
+                        logger.info(f"📝 OCR PREVIEW: {fname} → {preview}...")
+                    else:
+                        logger.error(f"❌ IMAGE OCR FAILED: {fname}")
+                else:
+                    logger.error(f"❌ UNSUPPORTED FILE TYPE: {fname} (kind={kind})")
+                    
+            except Exception as e:
+                logger.error(f"❌ PROCESSING ERROR for {fname}: {e}")
+                import traceback
+                logger.error(f"❌ FULL ERROR TRACE: {traceback.format_exc()}")
+
+        combined_text = "\n\n".join(tp for tp in text_parts if tp.strip()) or ""
+        
+        # 🔍 CRITICAL DEBUG: Show what's being sent to AI
+        logger.info(f"📊 FINAL PROCESSING SUMMARY:")
+        logger.info(f"📊   - Files processed: {len(expanded)}")
+        logger.info(f"📊   - Text parts created: {len(text_parts)}")
+        logger.info(f"📊   - Canonical items found: {len(canonical_items)}")
+        logger.info(f"📊   - Combined text length: {len(combined_text)} characters")
+        
+        if combined_text.strip():
+            # Show preview of combined text
+            preview = combined_text[:500].replace('\n', ' ')
+            logger.info(f"📝 COMBINED TEXT PREVIEW (first 500 chars): {preview}...")
+            
+            # Show text structure
+            sources = [part.split('\n')[0] for part in combined_text.split("### SOURCE:") if part.strip()]
+            logger.info(f"📄 TEXT SOURCES DETECTED: {sources}")
+        else:
+            logger.warning(f"⚠️ NO COMBINED TEXT - only canonical items: {len(canonical_items)}")
+        
+        if not combined_text.strip() and not canonical_items:
+            logger.error(f"❌ FATAL: No content extracted from ANY file!")
+            raise ValueError("No se pudo extraer texto ni ítems de los archivos proporcionados")
+
+        # 3) AI pipeline
+        rfx_input.extracted_content = combined_text
+        logger.info(f"🤖 SENDING TO AI: {len(combined_text)} characters of combined text")
+        raw_data = self._process_with_ai(combined_text)
+        
+        # 🛡️ SAFETY CHECK: Handle None raw_data before accessing
+        if raw_data is None:
+            logger.warning(f"⚠️ raw_data is None, creating minimal structure")
+            raw_data = {
+                "productos": [],
+                "email": None,
+                "fecha_entrega": None,
+                "hora_entrega": None,
+                "lugar": None,
+                "nombre_solicitante": None,
+                "currency": None
+            }
+        
+        # Log AI results
+        ai_products_count = len(raw_data.get("productos", []))
+        logger.info(f"🤖 AI EXTRACTION RESULTS: {ai_products_count} products found")
+        
+        if canonical_items:
+            logger.info(f"📊 OVERRIDING AI products with canonical spreadsheet products: {len(canonical_items)} items (AI found {ai_products_count})")
+            raw_data["productos"] = canonical_items  # Spreadsheet is canonical
+        else:
+            logger.info(f"📊 USING AI extracted products: {ai_products_count} items")
+
+        validated_data = self._validate_and_clean_data(raw_data, rfx_input.id)
+        
+        evaluation_metadata = self._evaluate_rfx_intelligently(validated_data, rfx_input.id)
+        rfx_processed = self._create_rfx_processed(validated_data, rfx_input, evaluation_metadata)
+        self._save_rfx_to_database(rfx_processed, user_id=user_id)
+        logger.info(f"✅ process_rfx_case done: {rfx_input.id}")
+        return rfx_processed
+
+    def _detect_content_type(self, content: bytes, filename: str) -> str:
+        """Detect file content type from bytes and filename with improved detection"""
+        fn = (filename or "").lower()
+        
+        # Robust PDF detection
+        if content.startswith(b"%PDF") or fn.endswith(".pdf"):
+            return "pdf"
+        
+        # DOCX detection (ZIP with specific structure)
+        if content[:2] == b"PK":
+            if fn.endswith(".docx"):
+                return "docx"
+            elif fn.endswith(".xlsx"):
+                return "xlsx" 
+            elif not fn.endswith((".docx", ".xlsx")) and not fn.endswith(".zip"):
+                # This could be a DOCX without proper extension
+                try:
+                    import zipfile
+                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                        # Check for DOCX structure
+                        if any("word/" in name for name in zf.namelist()):
+                            logger.info(f"🔍 Detected DOCX structure in file without .docx extension: {filename}")
+                            return "docx"
+                        # Check for XLSX structure
+                        elif any("xl/" in name for name in zf.namelist()):
+                            logger.info(f"🔍 Detected XLSX structure in file without .xlsx extension: {filename}")
+                            return "xlsx"
+                except:
+                    pass
+        
+        # Excel and CSV files
+        if fn.endswith(".xlsx") or fn.endswith(".xls"):
+            return "xlsx"
+        if fn.endswith(".csv"):
+            return "csv"
+        
+        # Image files
+        image_extensions = [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif", ".webp"]
+        if any(fn.endswith(ext) for ext in image_extensions):
+            return "image"
+        
+        # Image magic bytes detection
+        if (content.startswith(b"\x89PNG") or 
+            content.startswith(b"\xFF\xD8") or  # JPEG
+            content.startswith(b"GIF87a") or content.startswith(b"GIF89a") or
+            content.startswith(b"RIFF") and b"WEBP" in content[:12]):
+            return "image"
+        
+        # Text files
+        if any(fn.endswith(ext) for ext in [".txt", ".md", ".text", ".rtf"]):
+            return "text"
+        
+        # Legacy Word documents
+        if fn.endswith(".doc") or content.startswith(b"\xD0\xCF\x11\xE0"):
+            return "doc"
+        
+        # ZIP files
+        if fn.endswith(".zip"):
+            return "zip"
+        
+        # Try to detect by content if text-like
+        try:
+            content.decode('utf-8')
+            # If we can decode as UTF-8, probably text
+            if len(content) < 50000:  # Small files likely to be text
+                return "text"
+        except UnicodeDecodeError:
+            pass
+        
+        # Fallback to MIME type guessing
+        guessed, _ = mimetypes.guess_type(fn)
+        if guessed:
+            if "image" in guessed:
+                return "image"
+            elif "text" in guessed:
+                return "text"
+            elif "pdf" in guessed:
+                return "pdf"
+        
+        # Final fallback
+        logger.warning(f"⚠️ Could not detect content type for {filename}, treating as text")
+        return "text"
+
+    def _extract_text_with_ocr(self, file_bytes: bytes, kind: str = "image", filename: Optional[str] = None) -> str:
+        """Optional OCR via pytesseract; for PDF, uses pdf2image if available."""
+        if not USE_OCR:
+            return ""
+        try:
+            import pytesseract  # type: ignore
+            from PIL import Image  # type: ignore
+        except Exception as e:
+            logger.warning(f"⚠️ OCR unavailable (install pytesseract & pillow): {e}")
+            return ""
+
+        if kind == "image":
+            try:
+                img = Image.open(io.BytesIO(file_bytes))
+                return pytesseract.image_to_string(img) or ""
+            except Exception as e:
+                logger.warning(f"⚠️ OCR image failed: {filename} → {e}")
+                return ""
+
+        if kind == "pdf":
+            try:
+                try:
+                    from pdf2image import convert_from_bytes  # type: ignore
+                except Exception as e:
+                    logger.warning(f"⚠️ pdf2image unavailable for PDF OCR: {e}")
+                    return ""
+                pages = convert_from_bytes(file_bytes, dpi=200, fmt="png")
+                out = []
+                for img in pages[:10]:  # safety limit
+                    out.append(pytesseract.image_to_string(img) or "")
+                return "\n".join(out)
+            except Exception as e:
+                logger.warning(f"⚠️ OCR PDF failed: {filename} → {e}")
+                return ""
+        return ""
+
+    def _normalize_date_format(self, date_str: str) -> str:
+        """Normalize date formats to YYYY-MM-DD for Pydantic validation"""
+        if not date_str:
+            return datetime.now().strftime('%Y-%m-%d')
+        
+        date_str = date_str.strip()
+        logger.info(f"🔍 PARSING DATE: '{date_str}'")
+        
+        # Handle ISO 8601 formats (e.g., "2025-09-06T00:00:00Z", "2025-09-06T00:00:00")
+        iso_match = re.match(r'^(\d{4}-\d{1,2}-\d{1,2})T.*$', date_str)
+        if iso_match:
+            iso_date = iso_match.group(1)
+            logger.info(f"📅 EXTRACTED ISO DATE: '{iso_date}' from '{date_str}'")
+            try:
+                parts = iso_date.split('-')
+                year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ ISO DATE NORMALIZED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse ISO date '{iso_date}': {e}")
+        
+        # Handle natural language dates in Spanish
+        date_natural = self._parse_natural_language_date(date_str)
+        if date_natural:
+            logger.info(f"✅ NATURAL LANGUAGE DATE: '{date_str}' → '{date_natural}'")
+            return date_natural
+        
+        # Handle DD/MM/YYYY format
+        if re.match(r'^\d{1,2}/\d{1,2}/\d{4}$', date_str):
+            try:
+                parts = date_str.split('/')
+                day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+                if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ DD/MM/YYYY NORMALIZED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse DD/MM/YYYY date '{date_str}': {e}")
+        
+        # Handle DD-MM-YYYY format
+        if re.match(r'^\d{1,2}-\d{1,2}-\d{4}$', date_str):
+            try:
+                parts = date_str.split('-')
+                day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+                if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ DD-MM-YYYY NORMALIZED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse DD-MM-YYYY date '{date_str}': {e}")
+        
+        # Handle YYYY/MM/DD format
+        if re.match(r'^\d{4}/\d{1,2}/\d{1,2}$', date_str):
+            try:
+                parts = date_str.split('/')
+                year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ YYYY/MM/DD NORMALIZED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to parse YYYY/MM/DD date '{date_str}': {e}")
+        
+        # If already in YYYY-MM-DD format, validate and return
+        if re.match(r'^\d{4}-\d{1,2}-\d{1,2}$', date_str):
+            try:
+                parts = date_str.split('-')
+                year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                if 1 <= day <= 31 and 1 <= month <= 12 and year > 1900:
+                    normalized = f"{year:04d}-{month:02d}-{day:02d}"
+                    logger.info(f"✅ YYYY-MM-DD VALIDATED: '{date_str}' → '{normalized}'")
+                    return normalized
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to validate YYYY-MM-DD date '{date_str}': {e}")
+        
+        # Handle relative dates like "mañana", "today", etc.
+        date_str_lower = date_str.lower()
+        if date_str_lower in ["hoy", "today"]:
+            normalized = datetime.now().strftime('%Y-%m-%d')
+            logger.info(f"✅ RELATIVE DATE: '{date_str}' → '{normalized}' (today)")
+            return normalized
+        elif date_str_lower in ["mañana", "tomorrow"]:
+            from datetime import timedelta
+            normalized = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+            logger.info(f"✅ RELATIVE DATE: '{date_str}' → '{normalized}' (tomorrow)")
+            return normalized
+        
+        # Fallback to current date
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        logger.error(f"❌ COULD NOT PARSE DATE: '{date_str}' - Using current date: {current_date}")
+        return current_date
+
+    def _parse_natural_language_date(self, date_str: str) -> str:
+        """Parse natural language dates in Spanish like 'octubre 6', '6 de octubre', etc."""
+        date_str_lower = date_str.lower().strip()
+        
+        # Spanish month mapping
+        spanish_months = {
+            'enero': 1, 'ene': 1,
+            'febrero': 2, 'feb': 2,
+            'marzo': 3, 'mar': 3,
+            'abril': 4, 'abr': 4,
+            'mayo': 5, 'may': 5,
+            'junio': 6, 'jun': 6,
+            'julio': 7, 'jul': 7,
+            'agosto': 8, 'ago': 8,
+            'septiembre': 9, 'sep': 9, 'sept': 9,
+            'octubre': 10, 'oct': 10,
+            'noviembre': 11, 'nov': 11,
+            'diciembre': 12, 'dic': 12
+        }
+        
+        # English month mapping
+        english_months = {
+            'january': 1, 'jan': 1,
+            'february': 2, 'feb': 2,
+            'march': 3, 'mar': 3,
+            'april': 4, 'apr': 4,
+            'may': 5,
+            'june': 6, 'jun': 6,
+            'july': 7, 'jul': 7,
+            'august': 8, 'aug': 8,
+            'september': 9, 'sep': 9, 'sept': 9,
+            'october': 10, 'oct': 10,
+            'november': 11, 'nov': 11,
+            'december': 12, 'dec': 12
+        }
+        
+        # Combine both mappings
+        month_mapping = {**spanish_months, **english_months}
+        
+        current_year = datetime.now().year
+        
+        # Pattern: "octubre 6", "6 octubre", "octubre 6, 2025", "6 de octubre"
+        for month_name, month_num in month_mapping.items():
+            if month_name in date_str_lower:
+                # Look for day numbers near the month
+                words = date_str_lower.replace(',', ' ').replace('de', ' ').split()
+                day = None
+                year = current_year
+                
+                # Find day number
+                for word in words:
+                    if word.isdigit():
+                        num = int(word)
+                        if 1 <= num <= 31:  # Could be a day
+                            day = num
+                        elif num > 1900:  # Could be a year
+                            year = num
+                
+                if day:
+                    try:
+                        # Validate the date
+                        import calendar
+                        if day <= calendar.monthrange(year, month_num)[1]:
+                            result = f"{year:04d}-{month_num:02d}-{day:02d}"
+                            logger.info(f"🗓️ PARSED NATURAL DATE: '{date_str}' → month='{month_name}'({month_num}), day={day}, year={year} → '{result}'")
+                            return result
+                        else:
+                            logger.warning(f"⚠️ Invalid day {day} for month {month_num} year {year}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error validating natural date: {e}")
+                break
+        
+        return None
+
+    def _normalize_time_format(self, time_str: str) -> str:
+        """Normalize time formats for Pydantic validation"""
+        if not time_str:
+            return "12:00"
+        
+        time_str = time_str.strip().lower()
+        
+        # Handle AM/PM formats
+        if 'a.m' in time_str or 'am' in time_str:
+            # Extract hour and minute
+            time_part = time_str.replace('a.m', '').replace('am', '').strip()
+            if ':' in time_part:
+                try:
+                    hour, minute = time_part.split(':')
+                    hour = int(hour)
+                    minute = int(minute)
+                    # Convert to 24h format
+                    if hour == 12:
+                        hour = 0  # 12 AM = 00:00
+                    return f"{hour:02d}:{minute:02d}"
+                except:
+                    pass
+        elif 'p.m' in time_str or 'pm' in time_str:
+            # Extract hour and minute
+            time_part = time_str.replace('p.m', '').replace('pm', '').strip()
+            if ':' in time_part:
+                try:
+                    hour, minute = time_part.split(':')
+                    hour = int(hour)
+                    minute = int(minute)
+                    # Convert to 24h format
+                    if hour != 12:
+                        hour += 12
+                    return f"{hour:02d}:{minute:02d}"
+                except:
+                    pass
+        
+        # If already in HH:MM format, validate and return
+        if ':' in time_str:
+            try:
+                parts = time_str.split(':')
+                if len(parts) == 2:
+                    hour, minute = int(parts[0]), int(parts[1])
+                    if 0 <= hour <= 23 and 0 <= minute <= 59:
+                        return f"{hour:02d}:{minute:02d}"
+            except:
+                pass
+        
+        # Fallback
+        return "12:00"
+
+    def _parse_spreadsheet_items(self, filename: str, content: bytes) -> Dict[str, Any]:
+        """Lee XLSX/CSV y devuelve {'items': [...], 'text': 'csv-like'} con mapeo:
+        nombre <- Item, cantidad <- Quantity, unidad <- UOM, notes <- Item # (+Description)."""
+        try:
+            import pandas as pd  # type: ignore
+            from io import BytesIO
+        except Exception as e:
+            logger.warning(f"⚠️ pandas no disponible, saltando parseo de {filename}: {e}")
+            return {"items": [], "text": ""}
+        try:
+            if filename.endswith(".csv"):
+                df = pd.read_csv(BytesIO(content))
+            else:
+                df = pd.read_excel(BytesIO(content))
+            if df is None or df.empty:
+                logger.warning(f"⚠️ Hoja vacía en {filename}")
+                return {"items": [], "text": ""}
+
+            # Normalizar cabeceras
+            def _norm(s: str) -> str:
+                return str(s).strip().lower()
+            cols = {_norm(c): c for c in df.columns}
+            def pick(cands: List[str]) -> Optional[str]:
+                for c in cands:
+                    k = _norm(c)
+                    if k in cols: return cols[k]
+                    k2 = k.replace(" ", "")
+                    if k2 in cols: return cols[k2]
+                return None
+
+            itemnum_col = pick(["item #","item#","item no","item nro","item number","numero de item","número de item","id","code","codigo","código"])
+            name_col    = pick(["item","producto","product","nombre"])  # ← nombre <- Item
+            desc_col    = pick(["description","descripcion","descripción","detalle","item description"])
+            qty_col     = pick(["quantity","qty","cantidad","cant","q"])
+            unit_col    = pick(["uom","unidad","unidad_medida","unit","units","unidad de medida"])
+
+            logger.info(f"📑 [{filename}] Cols detectadas -> Item#:{itemnum_col} Item:{name_col} Desc:{desc_col} Qty:{qty_col} UOM:{unit_col}")
+
+            def to_int(val) -> int:
+                try:
+                    if val is None: return 1
+                    if isinstance(val, (int, float)): return max(1, int(round(float(val))))
+                    s = str(val).strip()
+                    if s == "" or s.lower() in {"nan","none","null"}: return 1
+                    s = s.replace(" ", "")
+                    if "," in s and "." in s:
+                        # 1,000.50 -> 1000.50
+                        s = s.replace(",", "")
+                    else:
+                        # 1.000,50 or 25 -> 1 000.50 or 25.0
+                        s = s.replace(",", ".")
+                    return max(1, int(round(float(s))))
+                except Exception:
+                    return 1
+
+            def norm_uom(u: Optional[str]) -> str:
+                if not u: return "unidades"
+                s = str(u).strip().lower().replace(".", "").replace(",", "")
+                aliases = {
+                    "und":"unidades","un":"unidades","unidad":"unidades","unid":"unidades",
+                    "pcs":"unidades","pc":"unidades","pz":"unidades","pza":"unidades",
+                    "ea":"unidades","each":"unidades","units":"unidades","unit":"unidades",
+                    "set":"set","sets":"set","kg":"kg","kilogram":"kg","kilogramos":"kg",
+                    "g":"g","gr":"g","l":"l","lt":"l","liter":"l","litro":"l","litros":"l",
+                    "m":"m","mt":"m","caja":"caja","box":"caja","pack":"pack"
+                }
+                return aliases.get(s, s or "unidades")
+
+            items: List[Dict[str, Any]] = []
+            for _, row in df.iterrows():
+                nombre = (str(row.get(name_col, "")).strip() if name_col else "")
+                if not nombre or nombre.lower() in {"nan","none","null",""}:
+                    continue
+                cantidad = to_int(row.get(qty_col)) if qty_col else 1
+                unidad = norm_uom(str(row.get(unit_col)) if unit_col else None)
+                prod: Dict[str, Any] = {"nombre": nombre, "cantidad": cantidad, "unidad": unidad}
+                # notes: Item # + Description (si existe y no hay campo dedicated)
+                notes_parts = []
+                if itemnum_col:
+                    v = str(row.get(itemnum_col, "")).strip()
+                    if v and v.lower() not in {"nan","none","null",""}:
+                        notes_parts.append(f"item_number:{v}")
+                if desc_col:
+                    d = str(row.get(desc_col, "")).strip()
+                    if d and d.lower() not in {"nan","none","null",""}:
+                        notes_parts.append(f"desc:{d}")
+                if notes_parts:
+                    prod["notes"] = " | ".join(notes_parts)
+                items.append(prod)
+
+            lines = ["ITEMS_FROM_SPREADSHEET (CANONICAL):", "nombre,cantidad,unidad"]
+            for it in items:
+                lines.append(f"{it['nombre']},{it['cantidad']},{it['unidad']}")
+            logger.info(f"📊 [{filename}] Ítems parseados: {len(items)}")
+            return {"items": items, "text": "\n".join(lines)}
+        except Exception as e:
+            logger.warning(f"⚠️ Falló parseo de hoja {filename}: {e}")
+            return {"items": [], "text": ""}

@@ -157,6 +157,7 @@ class RFXProductRequest(BaseModel):
     quantity: int = Field(..., ge=1)
     unit: str = Field(..., min_length=1, max_length=50)
     estimated_unit_price: Optional[float] = Field(None, ge=0)
+    precio_unitario: Optional[float] = Field(None, ge=0)  # Alias para compatibilidad con extracción
     total_estimated_cost: Optional[float] = Field(None, ge=0)
     supplier_id: Optional[UUID] = None
     catalog_product_id: Optional[UUID] = None

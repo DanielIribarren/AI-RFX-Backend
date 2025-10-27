@@ -229,6 +229,43 @@ septiembre = 09 octubre = 10    noviembre = 11  diciembre = 12
   - unit: unidades, personas, pax, kg, litros, horas, días, etc.
   - specifications: Especificaciones adicionales
   - category: comida, bebida, servicio, equipo, personal, decoración, transporte, otro
+  - precio_unitario: 💰 **EXTRACCIÓN AUTOMÁTICA DE PRECIOS**
+
+🔍 **IDENTIFICACIÓN AUTOMÁTICA DE DOCUMENTOS:**
+Tienes múltiples documentos. Identifica automáticamente:
+- Documento(s) de licitación/RFX/solicitud → Extrae productos de aquí
+- Documento(s) de lista de precios/catálogo → Busca precios aquí
+- Otros documentos → Ignora o usa como contexto
+
+💰 **EXTRACCIÓN DE PRECIOS UNITARIOS:**
+Para cada producto que extraigas:
+
+1. **Busca el producto en la lista de precios** (si existe en los documentos)
+2. **Matching flexible:**
+   - "Tequeños" = "Tequeño Premium" = "Mini Tequeños"
+   - Ignora mayúsculas, acentos, plurales
+   - Busca por nombre, categoría, descripción similar
+
+3. **Asignación de precio:**
+   - Si encuentras match claro → usa ese precio
+   - Si hay duda entre varios → usa el más cercano
+   - Si NO encuentras el producto → precio_unitario = 0.0
+   - **NUNCA inventes precios**
+
+4. **Unidades:**
+   - Verifica que las unidades coincidan
+   - Si la lista dice "por kg" y piden "100 unidades", precio = 0.0
+
+**EJEMPLO:**
+```
+DOCUMENTO 1: "Solicitud de 200 Tequeños variados"
+DOCUMENTO 2: "Lista de precios: Tequeño Premium Mixto - $2.50"
+→ precio_unitario: 2.50
+
+DOCUMENTO 1: "100 piezas de Sushi"
+DOCUMENTO 2: "Lista de precios: Tequeño Premium - $2.50"
+→ precio_unitario: 0.0 (no encontrado)
+```
 
 **PASO 7: CRITERIOS DE EVALUACIÓN**
 - **EVALUATION_CRITERIA**: Array de criterios mencionados:
@@ -400,19 +437,53 @@ Copy code
     
     def _get_user_prompt(self, document_text: str) -> str:
         """User prompt con el documento a analizar"""
-        return f"""Analiza el siguiente documento RFX y extrae toda la información utilizando la función extract_rfx_data.
+        # Detectar si hay múltiples documentos
+        has_multiple_docs = "### SOURCE:" in document_text
+        doc_count = document_text.count("### SOURCE:")
+        
+        intro = f"""Analiza el siguiente documento RFX y extrae toda la información utilizando la función extract_rfx_data.
 
-DOCUMENTO A ANALIZAR:
+{'⚠️ ATENCIÓN: Tienes ' + str(doc_count) + ' DOCUMENTOS DIFERENTES separados por "### SOURCE:". Analiza TODOS antes de extraer.' if has_multiple_docs else ''}
+
+DOCUMENTO(S) A ANALIZAR:
 {document_text}
 
-Instrucciones específicas para este documento:
-- Busca TODOS los productos mencionados (comida, bebida, servicios, equipos)
-- Identifica claramente la empresa solicitante y la persona de contacto
+🔍 INSTRUCCIONES CRÍTICAS PARA ESTE DOCUMENTO:
+
+**1. IDENTIFICACIÓN DE DOCUMENTOS:**
+- Lee TODOS los documentos cuidadosamente
+- Identifica cuál es la SOLICITUD/RFX (contiene productos solicitados)
+- Identifica cuál es la LISTA DE PRECIOS/CATÁLOGO (contiene precios por producto)
+- Si hay múltiples documentos, analiza TODOS antes de extraer
+
+**2. EXTRACCIÓN DE PRODUCTOS:**
+- Extrae TODOS los productos mencionados en la solicitud
+- Para CADA producto, busca su precio en la lista de precios
+- Usa matching flexible: ignora mayúsculas, acentos, plurales, palabras similares
+- Ejemplo: "Tequeños" puede coincidir con "Tequeño Premium", "Mini Tequeños", etc.
+
+**3. ASIGNACIÓN DE PRECIOS (CRÍTICO):**
+- Si encuentras el producto en la lista → usa ese precio_unitario
+- Si el producto es similar pero no exacto → usa el precio más cercano
+- Si NO encuentras el producto en la lista → precio_unitario = 0.0
+- NUNCA inventes precios, NUNCA dejes precio_unitario vacío (usa 0.0)
+
+**4. INFORMACIÓN ADICIONAL:**
+- Identifica empresa solicitante y persona de contacto
 - Extrae fechas, ubicación y requerimientos especiales
 - Asigna categorías apropiadas a cada producto
-- Calcula cantidades exactas basándote en el número de personas y especificaciones
+- Calcula cantidades exactas
+
+**EJEMPLO DE ANÁLISIS:**
+```
+DOCUMENTO 1: "Solicitud de 200 Tequeños variados para evento"
+DOCUMENTO 2: "Lista de precios: Tequeño Premium Mixto - $2.50/unidad"
+→ Resultado: product_name="Tequeños variados", quantity=200, precio_unitario=2.50
+```
 
 Usa la función extract_rfx_data para proporcionar la respuesta estructurada."""
+        
+        return intro
     
     def _call_openai_with_function_calling(self, system_prompt: str, user_prompt: str, max_retries: int) -> Dict[str, Any]:
         """
