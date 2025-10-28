@@ -152,3 +152,15 @@ healthcheck==1.3.3
 # Environment Detection
 # ========================
 python-multipart==0.0.6
+
+# ========================
+# OCR & Image Processing (Optional)
+# ========================
+# tesseract: Instalado vía Homebrew (brew install tesseract) - NO es paquete Python
+pytesseract==0.3.10  # Python wrapper para tesseract
+Pillow==10.1.0  # También usado para branding (extracción de colores)
+pdf2image==1.16.3  # También usado para branding (análisis de templates PDF)
+cairosvg==2.7.1  # Conversión de SVG a PNG para análisis de logos
+svglib==1.5.1  # Alternativa para conversión de SVG
+reportlab==4.0.7  # Requerido por svglib
+

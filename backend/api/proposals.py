@@ -104,7 +104,8 @@ def generate_proposal():
         product_costs = []
         rfx_products = db_client.get_rfx_products(proposal_request.rfx_id)
         if rfx_products:
-            product_costs = [p.get("estimated_unit_price", 0) for p in rfx_products]
+            # ✅ Manejar valores None: convertir a 0 si el costo es None
+            product_costs = [p.get("estimated_unit_price") or 0 for p in rfx_products]
             logger.info(f"🔍 Using user-provided costs from database: {product_costs}")
         else:
             # Fallback si no hay productos con costos, usar los del request

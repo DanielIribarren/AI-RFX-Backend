@@ -206,7 +206,7 @@ class ProposalGenerationService:
         products_info = []
         
         for producto in productos:
-            precio_unitario = producto.get("estimated_unit_price", 0.0)
+            precio_unitario = producto.get("estimated_unit_price") or 0.0
             cantidad = producto.get("quantity", producto.get("cantidad", 1))
             total_producto = precio_unitario * cantidad
             
