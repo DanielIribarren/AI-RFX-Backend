@@ -529,18 +529,48 @@ def get_rfx_products(rfx_id: str):
         products = db_client.get_rfx_products(rfx_id)
         rfx_currency = rfx_record.get("currency", "USD")
         
-        # Formatear productos con información de moneda
+        # Formatear productos con información de moneda Y GANANCIAS
         products_response = []
+        total_cost = 0.0
+        total_sales = 0.0
+        total_profit = 0.0
+
         for product in products:
+            unit_cost = product.get("unit_cost", 0.0) or 0.0
+            unit_price = product.get("estimated_unit_price", 0.0) or 0.0
+            quantity = product.get("quantity", 0)
+
+            # 📊 LOG UNIT COST SOLO PARA DEBUGGING - MENOS VERBOSO
+            if unit_cost > 0:  # Solo log productos con costo definido
+                logger.debug(f"📊 Product {product.get('id')[:8]}...: unit_cost=${unit_cost}, unit_price=${unit_price}")
+
+            # 🧮 CÁLCULOS DE GANANCIAS
+            unit_profit = unit_price - unit_cost
+            unit_margin = (unit_profit / unit_cost * 100) if unit_cost > 0 else 0
+            total_cost_product = unit_cost * quantity
+            total_sales_product = unit_price * quantity
+            total_profit_product = unit_profit * quantity
+            profit_margin_product = (total_profit_product / total_sales_product * 100) if total_sales_product > 0 else 0
+
             product_data = {
                 "id": product.get("id"),
                 "product_name": product.get("product_name"),
                 "description": product.get("description"),
                 "category": product.get("category"),
-                "quantity": product.get("quantity"),
+                "quantity": quantity,
                 "unit_of_measure": product.get("unit_of_measure"),
-                "estimated_unit_price": product.get("estimated_unit_price"),
+                "estimated_unit_price": unit_price,
                 "total_estimated_cost": product.get("total_estimated_cost"),
+
+                # 💰 NUEVOS CAMPOS DE COSTOS Y GANANCIAS
+                "unit_cost": unit_cost,
+                "unit_profit": round(unit_profit, 2),
+                "unit_margin": round(unit_margin, 2),
+                "total_cost": round(total_cost_product, 2),
+                "total_sales": round(total_sales_product, 2),
+                "total_profit": round(total_profit_product, 2),
+                "profit_margin": round(profit_margin_product, 2),
+
                 "specifications": product.get("specifications"),
                 "is_mandatory": product.get("is_mandatory"),
                 "notes": product.get("notes"),
@@ -548,6 +578,11 @@ def get_rfx_products(rfx_id: str):
                 "updated_at": product.get("updated_at")
             }
             products_response.append(product_data)
+
+            # 🔄 ACUMULAR TOTALES PARA RESUMEN
+            total_cost += total_cost_product
+            total_sales += total_sales_product
+            total_profit += total_profit_product
         
         response = {
             "status": "success",
@@ -557,9 +592,25 @@ def get_rfx_products(rfx_id: str):
                 "currency": rfx_currency,  # ✅ Moneda del RFX
                 "products": products_response,
                 "total_items": len(products),
-                "subtotal": sum(p.get("total_estimated_cost", 0) or 0 for p in products)
+                "subtotal": round(sum(p.get("total_estimated_cost", 0) or 0 for p in products), 2),
+
+                # 📊 RESUMEN COMPLETO DE GANANCIAS
+                "profit_summary": {
+                    "total_cost": round(total_cost, 2),
+                    "total_sales": round(total_sales, 2),
+                    "total_profit": round(total_profit, 2),
+                    "average_margin": round((total_profit / total_sales * 100) if total_sales > 0 else 0, 2),
+                    "products_with_profit": sum(1 for p in products_response if p["unit_profit"] > 0),
+                    "products_without_cost": sum(1 for p in products_response if p["unit_cost"] == 0),
+                    "currency": rfx_currency
+                }
             }
         }
+        
+        # 📊 LOG RESUMEN DE GANANCIAS PARA DEBUGGING - SOLO SI HAY PRODUCTOS CON GANANCIA
+        products_with_profit = sum(1 for p in products_response if p["unit_profit"] > 0)
+        if products_with_profit > 0:
+            logger.debug(f"📊 RFX {rfx_id[:8]}... profit summary: {products_with_profit}/{len(products_response)} profitable products, total_profit=${total_profit:.2f}")
         
         return jsonify(response), 200
         
@@ -1406,6 +1457,54 @@ def update_rfx_product(rfx_id: str, product_id: str):
                 "message": "RFX not found"
             }), 404
         
+        # 🔄 CONVERTIR ID FALSO A ID REAL SI ES NECESARIO
+        # El frontend puede enviar "product-0", "product-1", etc. en lugar de UUIDs
+        real_product_id = product_id
+        
+        # Verificar si es un ID falso (product-X)
+        import re
+        if re.match(r'^product-\d+$', product_id):
+            # Es un ID falso, convertirlo al ID real
+            logger.info(f"🔄 Converting fake product ID '{product_id}' to real UUID")
+            
+            # Obtener todos los productos del RFX para encontrar el mapeo
+            real_products = db_client.get_rfx_products(rfx_id)
+            
+            # Buscar el producto por índice
+            try:
+                product_index = int(product_id.split('-')[1])  # Extraer número de "product-0"
+                if 0 <= product_index < len(real_products):
+                    real_product_id = real_products[product_index]["id"]
+                    logger.info(f"✅ Converted '{product_id}' → '{real_product_id}'")
+                else:
+                    logger.error(f"❌ Product index {product_index} out of range (0-{len(real_products)-1})")
+                    return jsonify({
+                        "status": "error",
+                        "message": "Product not found",
+                        "error": f"Invalid product index: {product_index}"
+                    }), 404
+            except (ValueError, IndexError) as e:
+                logger.error(f"❌ Error parsing fake product ID '{product_id}': {e}")
+                return jsonify({
+                    "status": "error",
+                    "message": "Invalid product ID format",
+                    "error": f"Could not parse product ID: {product_id}"
+                }), 400
+        else:
+            # Es un UUID real, verificar que existe
+            try:
+                # Validar formato UUID
+                import uuid
+                uuid.UUID(product_id)  # Esto lanzará excepción si no es válido UUID
+                real_product_id = product_id
+            except ValueError:
+                logger.error(f"❌ Invalid UUID format: '{product_id}'")
+                return jsonify({
+                    "status": "error",
+                    "message": "Invalid product ID format",
+                    "error": f"Product ID must be a valid UUID or product-X format: {product_id}"
+                }), 400
+        
         # Mapear campos de productos (frontend → backend)
         product_field_mapping = {
             # Nombres en español (frontend) → Nombres en inglés (BD)
@@ -1413,6 +1512,7 @@ def update_rfx_product(rfx_id: str, product_id: str):
             "cantidad": "quantity",                      # Cantidad
             "unidad": "unit",                           # Unidad de medida
             "precio_unitario": "estimated_unit_price",   # Precio unitario
+            "costo_unitario": "unit_cost",               # Costo unitario ⭐ NUEVO
             "subtotal": "total_estimated_cost",         # Costo total
             "descripcion": "description",               # Descripción
             "notas": "notes",                          # Notas
@@ -1422,6 +1522,7 @@ def update_rfx_product(rfx_id: str, product_id: str):
             "quantity": "quantity", 
             "unit": "unit",
             "estimated_unit_price": "estimated_unit_price",
+            "unit_cost": "unit_cost",                   # ⭐ NUEVO
             "total_estimated_cost": "total_estimated_cost",
             "description": "description",
             "notes": "notes"
@@ -1440,8 +1541,8 @@ def update_rfx_product(rfx_id: str, product_id: str):
             if db_field in ["quantity"]:
                 # Campos numéricos enteros
                 processed_value = int(field_value) if field_value is not None else 0
-            elif db_field in ["estimated_unit_price", "total_estimated_cost"]:
-                # Campos numéricos decimales
+            elif db_field in ["estimated_unit_price", "total_estimated_cost", "unit_cost"]:
+                # Campos numéricos decimales (incluyendo unit_cost ⭐ NUEVO)
                 processed_value = float(field_value) if field_value is not None else None
             # Los demás campos (text) no necesitan conversión
         except (ValueError, TypeError) as e:
@@ -1454,27 +1555,90 @@ def update_rfx_product(rfx_id: str, product_id: str):
         
         # Actualizar el producto usando método estructurado
         try:
+            # 📊 LOG UNIT COST ORIGINAL ANTES DE ACTUALIZACIÓN - SOLO DEBUG
+            original_products = db_client.get_rfx_products(rfx_id)
+            original_product = next((p for p in original_products if p["id"] == real_product_id), None)
+            if original_product:
+                orig_unit_cost = original_product.get("unit_cost", 0.0) or 0.0
+                orig_unit_price = original_product.get("estimated_unit_price", 0.0) or 0.0
+                orig_quantity = original_product.get("quantity", 0)
+                # Solo log si hay costo definido
+                if orig_unit_cost > 0:
+                    logger.debug(f"📊 Pre-update {real_product_id[:8]}...: unit_cost=${orig_unit_cost}, unit_price=${orig_unit_price}")
+            
             update_data = {db_field: processed_value}
-            success = db_client.update_rfx_product(product_id, rfx_id, update_data)
+            success = db_client.update_rfx_product(real_product_id, rfx_id, update_data)
             
             if success:
-                logger.info(f"✅ Product updated: {product_id} field '{field_name}' = '{processed_value}'")
+                logger.info(f"✅ Product updated: {real_product_id} field '{field_name}' = '{processed_value}'")
+                
+                # 🔄 RECALCULAR GANANCIAS SI SE ACTUALIZÓ PRECIO O COSTO
+                if db_field in ["estimated_unit_price", "unit_cost"]:
+                    logger.info(f"💰 Price/cost updated - recalculating profit metrics for product {real_product_id}")
+                    
+                    # Obtener producto actualizado para calcular ganancias
+                    updated_products = db_client.get_rfx_products(rfx_id)
+                    updated_product = next((p for p in updated_products if p["id"] == real_product_id), None)
+                    
+                    if updated_product:
+                        # 📊 LOG UNIT COST ACTUALIZADO PARA DEBUGGING - SOLO DEBUG
+                        current_unit_cost = updated_product.get("unit_cost", 0.0) or 0.0
+                        current_unit_price = updated_product.get("estimated_unit_price", 0.0) or 0.0
+                        current_quantity = updated_product.get("quantity", 0)
+                        # Solo log si hay costo definido y es diferente al original
+                        if current_unit_cost > 0 and current_unit_cost != orig_unit_cost:
+                            logger.debug(f"📊 Post-update {real_product_id[:8]}...: unit_cost=${current_unit_cost}, unit_price=${current_unit_price}")
+                        
+                        # Recalcular ganancias para este producto
+                        unit_cost = current_unit_cost
+                        unit_price = current_unit_price
+                        quantity = current_quantity
+                        
+                        unit_profit = unit_price - unit_cost
+                        unit_margin = (unit_profit / unit_cost * 100) if unit_cost > 0 else 0
+                        total_profit = unit_profit * quantity
+                        
+                        profit_data = {
+                            "unit_profit": round(unit_profit, 2),
+                            "unit_margin": round(unit_margin, 2),
+                            "total_profit": round(total_profit, 2)
+                        }
+                        
+                        logger.info(f"💰 Profit metrics recalculated: {profit_data}")
+                        
+                        return jsonify({
+                            "status": "success",
+                            "message": f"Product field '{field_name}' updated successfully with profit recalculation",
+                            "data": {
+                                "rfx_id": rfx_id,
+                                "product_id": real_product_id,  # ✅ Usar ID real en respuesta
+                                "original_id": product_id,      # ✅ Incluir ID original para frontend
+                                "field": field_name,
+                                "value": processed_value,
+                                "profit_metrics": profit_data  # ✅ INCLUIR GANANCIAS RECALCULADAS
+                            }
+                        }), 200
+                    else:
+                        logger.warning(f"⚠️ Could not retrieve updated product {real_product_id} for profit calculation")
+                
+                # Respuesta estándar para otros campos
                 return jsonify({
                     "status": "success",
                     "message": f"Product field '{field_name}' updated successfully",
                     "data": {
                         "rfx_id": rfx_id,
-                        "product_id": product_id,
+                        "product_id": real_product_id,  # ✅ Usar ID real en respuesta
+                        "original_id": product_id,      # ✅ Incluir ID original para frontend
                         "field": field_name,
                         "value": processed_value
                     }
                 }), 200
             else:
-                logger.error(f"❌ Product update failed: {product_id}")
+                logger.error(f"❌ Product update failed: {real_product_id}")
                 return jsonify({
                     "status": "error",
                     "message": "Product not found or update failed",
-                    "details": f"Product {product_id} not found in RFX {rfx_id}"
+                    "details": f"Product {product_id} (real: {real_product_id}) not found in RFX {rfx_id}"
                 }), 404
                 
         except Exception as db_e:

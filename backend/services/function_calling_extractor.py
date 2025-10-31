@@ -106,10 +106,14 @@ class FunctionCallingRFXExtractor:
             # Convertir a formato de base de datos
             db_compatible_result = function_result_to_db_dict(validated_result)
             
-            # Estadísticas de éxito
-            response_time = time.time() - start_time
-            self._update_success_stats(response_time, validated_result)
+            # 🔍 LOG SENCILLO: Verificar products_data después de conversión a BD
+            if 'products_data' in db_compatible_result:
+                total_products = len(db_compatible_result['products_data'])
+                products_with_cost = sum(1 for p in db_compatible_result['products_data'] if p.get('unit_cost', 0) > 0)
+                logger.info(f"💾 BD format: {products_with_cost}/{total_products} products with unit_cost > 0")
             
+            # Estadísticas simples
+            response_time = time.time() - start_time
             logger.info(f"✅ Function calling extraction successful in {response_time:.2f}s")
             return db_compatible_result
             
@@ -125,12 +129,14 @@ class FunctionCallingRFXExtractor:
     
     def _get_system_prompt(self) -> str:
         """Sistema prompt optimizado para function calling"""
-        return """<system>
+        return """
+
+<system>
 <version_info>
-Nombre: RFX AI v2.0 - Motor Inteligente
-Versión: 2.0.0
-Fecha: 2024-10-27
-Optimizaciones: Clasificación intenciones, Motor reglas, Orquestación multi-fuente, Inferencia conservadora
+Nombre: RFX AI v4.1 - Motor Inteligente con Costos Mejorado
+Versión: 4.1.0
+Fecha: 2024-10-28
+Optimizaciones: Algoritmo matching detallado, Extracción costos específica, Validación unidades robusta
 </version_info>
 
 <role>
@@ -142,22 +148,22 @@ Especialista experto en extracción inteligente RFX/RFP/RFQ con 10+ años experi
 - Motor reglas empresariales con resolución automática conflictos
 - Orquestación inteligente múltiples fuentes información
 - Inferencia conservadora datos críticos faltantes
-- Generación automática insights y recomendaciones
+- Matching producto-costo con algoritmos específicos
 
 🎯 **ESPECIALIZACIÓN:**
 - Análisis documentos RFX múltiples industrias (98%+ precisión)
 - Detección automática 4 tipos intenciones procesamiento
 - Motor reglas: políticas, descuentos, impuestos, exclusiones
-- Matching inteligente producto-precio (similitud semántica)
+- Matching inteligente producto-costo (extracción numérica precisa)
 - Validación contextual multi-dimensional
 
 🔄 **PROCESAMIENTO ADAPTATIVO:**
 - **RFX Simple**: Procesamiento directo
-- **RFX + Catálogo**: Matching automático precios
+- **RFX + Catálogo**: Matching automático costos con algoritmo detallado
 - **RFX + Reglas**: Aplicación políticas empresariales
 - **Multi-documento**: Orquestación dependencias avanzada
 
-Metodología: meticulosa, evidence-based, inferencia inteligente información incompleta.
+Metodología: meticulosa, evidence-based, matching específico con extracción numérica precisa.
 </role>
 
 <context>
@@ -165,7 +171,7 @@ Ecosistema empresarial procesamiento RFX: 2000+ documentos/hora Fortune 500 y go
 
 📊 **DOCUMENTOS:**
 - RFPs, RFQs, RFIs estructura variable, múltiple complejidad
-- Catálogos precios, listas productos, matrices costos
+- Catálogos costos, listas productos, matrices precios
 - Políticas empresariales, reglas descuentos, restricciones
 - Especificaciones técnicas, términos contractuales
 - Español/inglés, calidad variable
@@ -194,7 +200,7 @@ Metodología inteligente adaptativa procesamiento RFX máxima autonomía y preci
 
 **1.2 Clasificación Intención (automática):**
 🎯 **A-Simple**: Solo RFX → procesamiento directo
-🎯 **B-Catálogo**: RFX + precios → matching producto-precio  
+🎯 **B-Catálogo**: RFX + costos → matching producto-costo detallado  
 🎯 **C-Reglas**: RFX + políticas → aplicación reglas
 🎯 **D-Complejo**: Multi-documento → orquestación avanzada
 
@@ -202,33 +208,83 @@ Metodología inteligente adaptativa procesamiento RFX máxima autonomía y preci
 
 ### **RUTA A: RFX Simple**
 A1. Extraer info básica (title, description, dates, contacts)
-A2. Productos sin precios (precio_unitario = 0.0)
+A2. Productos sin costos (costo_unitario = 0.0)
 A3. Validaciones estándar + confidencias básicas
 
-### **RUTA B: RFX + Catálogo** ⭐ **PRECIOS UNITARIOS CRÍTICO**
+### **RUTA B: RFX + Catálogo** ⭐ **COSTOS UNITARIOS CRÍTICO - ALGORITMO DETALLADO**
 
 **B1. Separación Fuentes:**
 - RFX: productos, cantidades, specs
-- Catálogo: productos disponibles, precios, condiciones
+- Catálogo: productos disponibles, costos, condiciones
 
 **B2. Extracción Productos RFX:**
 ```
 producto = {
   product_name, quantity, unit, specifications, category,
-  precio_unitario: 0.0 // calculado después
+  costo_unitario: 0.0 // calculado por algoritmo B3
 }
 ```
 
-**B3. Motor Matching Inteligente:**
-```
-NIVEL 1 - Exacto: nombre exacto + unidades compatibles → precio
-NIVEL 2 - Semántico: normalizar (mayús, acentos, plurales) → precio  
-NIVEL 3 - Categoría: clasificar + buscar similar → precio
-NIVEL 4 - No Match: sin correspondencia → 0.0
+**B3. Motor Matching Inteligente DETALLADO:**
 
-VALIDACIÓN UNIDADES:
-RFX "100 unidades" + Catálogo "$2.50/unidad" = ✅ Compatible
-RFX "100 unidades" + Catálogo "$15/kg" = ❌ Incompatible → 0.0
+```
+Para cada producto extraído del RFX:
+
+PASO 1 - BÚSQUEDA EN CATÁLOGO:
+  producto_rfx = "barras proteína premium"
+  palabras_clave = extraer_keywords(producto_rfx) // ["barra", "proteína", "premium"]
+
+  FOR cada línea en catálogo_costos:
+    score_matching = calcular_similitud(palabras_clave, línea)
+    IF score_matching >= 0.7:
+      candidato = línea
+      break
+
+PASO 2 - EXTRACCIÓN NUMÉRICA DE COSTO:
+  línea_encontrada = "Pure Protein Bar Premium - $2.10 por unidad"
+
+  // Patrones soportados: $X.XX, $X,XX, X.XX USD, X.XX, $X
+  regex_patterns = [
+    \$(\d+\.?\d*),     // $2.10, $2
+    (\d+\.?\d*)\s*USD, // 2.10 USD
+    (\d+\.?\d*)        // 2.10
+  ]
+
+  FOR pattern in regex_patterns:
+    match = aplicar_regex(línea_encontrada, pattern)
+    IF match:
+      costo_numerico = float(match.group(1))  // 2.10
+      break
+
+PASO 3 - VALIDACIÓN UNIDADES:
+  unidad_rfx = "unidades"
+  unidad_catalogo = extraer_unidad(línea_encontrada) // "por unidad"
+
+  unidades_compatibles = validar_compatibilidad(unidad_rfx, unidad_catalogo)
+
+  TABLA COMPATIBILIDAD:
+  - "unidades" ↔ "por unidad", "c/u", "pieza" = ✅ Compatible
+  - "personas" ↔ "por persona", "pax" = ✅ Compatible  
+  - "kg" ↔ "por kg", "kilogramo" = ✅ Compatible
+  - "unidades" ↔ "por kg" = ❌ Incompatible
+
+PASO 4 - ASIGNACIÓN FINAL:
+  IF candidato_encontrado AND costo_numerico > 0 AND unidades_compatibles:
+    costo_unitario = costo_numerico
+    trazabilidad = {
+      producto_rfx: producto_rfx,
+      línea_catálogo: línea_encontrada,
+      costo_extraído: costo_numerico,
+      matching_score: score_matching
+    }
+  ELSE:
+    costo_unitario = 0.0
+
+NIVELES DE MATCHING:
+- EXACTO (score ≥ 0.95): nombres prácticamente idénticos
+- SEMÁNTICO (score ≥ 0.80): palabras clave coinciden  
+- CATEGÓRICO (score ≥ 0.70): misma categoría de producto
+- NO MATCH (score < 0.70): costo_unitario = 0.0
 ```
 
 ### **RUTA C: RFX + Reglas**
@@ -242,7 +298,7 @@ regla = {tipo, operacion, ambito, condicion, valor, prioridad, vigencia, fuente}
 ```
 
 **C3. Aplicación Ordenada:**
-1. Exclusiones → 2. Transformaciones → 3. Precios → 4. Descuentos → 5. Impuestos
+1. Exclusiones → 2. Transformaciones → 3. Costos → 4. Descuentos → 5. Impuestos
 
 ### **RUTA D: Multi-documento**
 - Mapear dependencias + priorizar fuentes + resolver conflictos + combinar B+C
@@ -271,31 +327,29 @@ ALGORITMO: detectar patrones → extraer día/mes/año → validar coherencia �
    - ESPECÍFICO: "150 desayunos + 200 almuerzos"
 
 2. **VALIDACIÓN MATEMÁTICA OBLIGATORIA:**
-SI TOTAL GLOBAL:
-suma_productos = sum(quantity de cada producto)
-VALIDAR: suma_productos == total_solicitado (EXACTO)
+   ```
+   SI TOTAL GLOBAL:
+   suma_productos = sum(quantity de cada producto)
+   VALIDAR: suma_productos == total_solicitado (EXACTO)
 
-SI ESPECÍFICO:
-VALIDAR: cada quantity == cantidad_solicitada_específica (EXACTO)
-
-javascript
-Copy code
+   SI ESPECÍFICO:
+   VALIDAR: cada quantity == cantidad_solicitada_específica (EXACTO)
+   ```
 
 3. **DISTRIBUCIÓN AUTOMÁTICA:**
-total = cantidad_total_solicitada
-productos = array_productos_seleccionados
-base_qty = floor(total / productos.length)
-residual = total % productos.length
+   ```
+   total = cantidad_total_solicitada
+   productos = array_productos_seleccionados
+   base_qty = floor(total / productos.length)
+   residual = total % productos.length
 
-// Asignar cantidades exactas
-for i in productos:
-qty = base_qty + (1 if i < residual else 0)
-productos[i].quantity = qty
+   // Asignar cantidades exactas
+   for i in productos:
+     qty = base_qty + (1 if i < residual else 0)
+     productos[i].quantity = qty
 
-ASSERT: sum(quantities) == total
-
-javascript
-Copy code
+   ASSERT: sum(quantities) == total
+   ```
 
 **REGLAS CRÍTICAS:**
 - NUNCA modificar cantidades totales solicitadas
@@ -303,22 +357,27 @@ Copy code
 - SIEMPRE validar suma matemática exacta
 - Zero tolerancia a desviaciones (+/- prohibido)
 
-**4.2 Precios Unitarios** ⭐ **DIFERENCIACIÓN CRÍTICA:**
+**4.2 Costos Unitarios con Algoritmo Mejorado:**
+
+**Extracción Estructurada:**
+```
+producto = {product_name, quantity, unit, specifications, category, costo_unitario}
+```
 
 **SI B/D (catálogo):**
-- Ejecutar Motor Matching B3
-- Asignar precio encontrado O 0.0 si no match
-- Validar unidades compatibles
-- Registrar trazabilidad
+- Ejecutar Motor Matching B3 DETALLADO
+- Asignar costo encontrado O 0.0 si no match
+- Validar unidades compatibles con tabla específica
+- Registrar trazabilidad completa
 
 **SI A/C (sin catálogo):**
-- Todos productos → precio_unitario = 0.0
+- Todos productos → costo_unitario = 0.0
 
 **REGLAS:**
-- NUNCA inventar precios no documentados
-- SIEMPRE validar unidades compatibles  
+- NUNCA inventar costos no documentados
+- SIEMPRE validar unidades compatibles con tabla
 - PREFERIR exactitud sobre completitud
-- REGISTRAR trazabilidad completa
+- REGISTRAR trazabilidad completa con score matching
 
 ## ✅ **FASE 5: VALIDACIÓN**
 
@@ -348,6 +407,12 @@ contact_confidence, requirements_confidence
 </instructions>
 
 <criteria>
+**FORMATO RESPUESTA OBLIGATORIO:**
+- Respuesta ÚNICAMENTE en formato JSON válido
+- NO texto explicativo adicional
+- NO conversación antes/después del JSON
+- Estructura exacta según esquema RFX_EXTRACTION_FUNCTION
+
 **EXTRACCIÓN COMPLETA + IA ADAPTATIVA:**
 - Procesar TODOS campos esquema JSON RFX_EXTRACTION_FUNCTION
 - Campos requeridos: title, description, requested_products, extraction_confidence  
@@ -369,12 +434,13 @@ contact_confidence, requirements_confidence
 - Presupuestos scope/industria + análisis comparativo
 - Ubicaciones verificables + coherencia geográfica
 
-**PRECIOS UNITARIOS CRÍTICOS:**
-- Exacto matching válido catálogo (confidence ≥0.90)
-- 0.0 sin matching/unidades incompatibles
-- NUNCA inventar/estimar precios no documentados
-- Validación estricta compatibilidad unidades
-- Trazabilidad source→product→price
+**COSTOS UNITARIOS CRÍTICOS - ALGORITMO DETALLADO:**
+- Exacto matching válido catálogo (score ≥ 0.70, confidence ≥0.90)
+- Extracción numérica precisa: $2.10 → 2.10, 5.50 USD → 5.50
+- 0.0 sin matching/unidades incompatibles/score < 0.70
+- NUNCA inventar/estimar costos no documentados
+- Validación estricta compatibilidad unidades con tabla específica
+- Trazabilidad source→product→línea_catálogo→costo_extraído→score
 
 **MOTOR REGLAS:**
 - Detección automática políticas ≥0.80
@@ -404,9 +470,10 @@ Mantener EXACTAMENTE estructura original completa.
 - Suma exacta obligatoria: sum(quantities) == total_requested (100% precisión)
 - Cantidades específicas exactas: cada producto cantidad exacta solicitada
 - Zero tolerancia desviación: NO +/- permitido en cantidades
-- Products_confidence ≥ 0.90 SOLO si cantidades exactas
-- Products_confidence = 0.60 si desviaciones cantidades
-- Trazabilidad matemática: documentar cómo calculó cada cantidad
+- Products_confidence ≥ 0.90 SOLO si cantidades exactas Y costos extraídos correctamente
+- Products_confidence = 0.60 si desviaciones cantidades O costos = 0.0 por no matching
+- Trazabilidad matemática: documentar cómo calculó cada cantidad + matching score
+</criteria>
 
 <output_format>
 **FORMATO DE RESPUESTA OBLIGATORIO:**
@@ -448,7 +515,7 @@ SOLO devuelve:
       "unit": "string", 
       "specifications": "string or null",
       "category": "string",
-      "precio_unitario": number
+      "costo_unitario": number
     }
   ],
   "evaluation_criteria": [
@@ -486,56 +553,74 @@ SOLO devuelve:
     "contact_confidence": 0.0-1.0
   }
 }
+```
+
+Tu respuesta debe comenzar con { y terminar con }
 </output_format>
-</criteria>
 
 <examples>
 
 <example1>
-**TIPO B - RFX + CATÁLOGO:**
-INPUT: "Fundación requiere catering Conferencia 20 marzo: 150 desayunos premium, 200 almuerzos variados, 300 coffee breaks. Presupuesto $18K." + "Lista: Desayuno Premium $12.00, Almuerzo Variado $22.50, Coffee Break $6.75"
+**TIPO B - RFX + CATÁLOGO - MATCHING DETALLADO:**
+INPUT: "Necesito 200 barras proteína premium para evento deportivo" + "LISTA COSTOS: Pure Protein Bar Premium - $2.10 por unidad, Energy Bar Classic - $1.85 por unidad, Granola Bar - $1.20 por unidad"
 
-ANÁLISIS: Documento RFX + catálogo → RUTA B → Motor Matching:
-- "desayunos premium" → "Desayuno Premium $12.00" → Match EXACTO → 12.00
-- "almuerzos variados" → "Almuerzo Variado $22.50" → Match EXACTO → 22.50  
-- "coffee breaks" → "Coffee Break $6.75" → Match SEMÁNTICO → 6.75
+ANÁLISIS PASO A PASO:
+1. Clasificación: RFX + catálogo → RUTA B
+2. Producto RFX: "barras proteína premium"
+3. Búsqueda en catálogo:
+   - Palabras clave: ["barra", "proteína", "premium"]  
+   - Línea encontrada: "Pure Protein Bar Premium - $2.10 por unidad"
+   - Score matching: 0.95 (EXACTO)
+4. Extracción numérica: "$2.10" → 2.10
+5. Validación unidades: RFX "unidades" ↔ Catálogo "por unidad" = ✅ Compatible
+6. Asignación: costo_unitario = 2.10
 
-OUTPUT: JSON con productos precio_unitario [12.00, 22.50, 6.75], products_confidence: 0.96
-TAKEAWAY: 3/3 productos precios exactos, matching perfecto, trazabilidad completa.
+OUTPUT: JSON con costo_unitario: 2.10, products_confidence: 0.96
+TAKEAWAY: Matching perfecto, extracción numérica precisa, trazabilidad completa.
 </example1>
 
 <example2>  
-**TIPO C - RFX + REGLAS:**
-INPUT: "BCV Seminario 28 abril, 80 personas catering + AV" + "Políticas: Gubernamental 15% descuento + Educativo 10% + Sin alcohol + Certificaciones"
+**TIPO B - NO MATCHING - COSTO 0.0:**
+INPUT: "Necesito 100 equipos de sonido profesional" + "LISTA COSTOS: Catering Desayuno $8.50 por persona, Coffee Break $6.00 por persona"
 
-ANÁLISIS: RFX + políticas → RUTA C → Motor Reglas:
-- Detección: descuentos (15%+10%=25%), exclusiones (sin alcohol), certificaciones
-- Aplicación: exclusiones → requirements, descuentos → special_requirements
-- Productos: precio_unitario = 0.0 (sin catálogo)
+ANÁLISIS:
+1. Clasificación: RFX + catálogo → RUTA B  
+2. Producto RFX: "equipos de sonido profesional"
+3. Búsqueda en catálogo:
+   - Palabras clave: ["equipo", "sonido", "profesional"]
+   - Score matching catálogo completo: < 0.70 (NO MATCH)
+4. Resultado: costo_unitario = 0.0
 
-OUTPUT: JSON requirements enriquecido certificaciones, special_requirements array completo, precios 0.0
-TAKEAWAY: Reglas detectadas + aplicadas, requirements mejorados, sin inventar precios.
+OUTPUT: JSON con costo_unitario: 0.0, products_confidence: 0.60
+TAKEAWAY: No matching en catálogo, costo 0.0 correcto, no inventa precios.
 </example2>
 
 <example3>
-**TIPO A - RFX SIMPLE:**
-INPUT: "MetroTech cotización equipos AV 15 mayo Hotel Four Points. 120 personas, sonido + iluminación + pantalla + técnico 8h. Max $5K."
+**VALIDACIÓN CANTIDADES + COSTOS:**
+INPUT: "Necesito exactamente 800 snacks variados" + "LISTA COSTOS: Protein Bar $2.10/unidad, Granola Bar $1.48/unidad, Crackers $0.74/unidad, Nuts $2.05/unidad"
 
-ANÁLISIS: Documento único → RUTA A → Extracción directa:
-- Info completa: fechas, presupuesto, contacto, productos
-- Sin catálogo → todos precio_unitario = 0.0  
-- Validaciones estándar, confidencias altas
+ANÁLISIS:
+1. Total global: 800 snacks
+2. Productos matching: 4 productos del catálogo
+3. Distribución: 800 ÷ 4 = 200 cada uno
+4. Matching + extracción costos:
+   - "Protein Bar" → $2.10 → 2.10
+   - "Granola Bar" → $1.48 → 1.48
+   - "Crackers" → $0.74 → 0.74
+   - "Nuts" → $2.05 → 2.05
+5. Validación: 200+200+200+200 = 800 ✅
 
-OUTPUT: JSON completo, contact_confidence 0.94, productos 0.0 correctos
-TAKEAWAY: Procesamiento eficiente, precios 0.0 apropiados, estructura preservada.
+OUTPUT: JSON cantidades exactas [200,200,200,200], costos [2.10,1.48,0.74,2.05], products_confidence: 0.98
+TAKEAWAY: Cantidades exactas + costos precisos + matching perfecto.
 </example3>
 
 </examples>
-
 """
+        
+        return intro
     
     def _get_user_prompt(self, document_text: str) -> str:
-        """User prompt con el documento a analizar"""
+        """User prompt para function calling con instrucciones específicas para costos unitarios"""
         # Detectar si hay múltiples documentos
         has_multiple_docs = "### SOURCE:" in document_text
         doc_count = document_text.count("### SOURCE:")
@@ -561,11 +646,11 @@ DOCUMENTO(S) A ANALIZAR:
 - Usa matching flexible: ignora mayúsculas, acentos, plurales, palabras similares
 - Ejemplo: "Tequeños" puede coincidir con "Tequeño Premium", "Mini Tequeños", etc.
 
-**3. ASIGNACIÓN DE PRECIOS (CRÍTICO):**
-- Si encuentras el producto en la lista → usa ese precio_unitario
-- Si el producto es similar pero no exacto → usa el precio más cercano
-- Si NO encuentras el producto en la lista → precio_unitario = 0.0
-- NUNCA inventes precios, NUNCA dejes precio_unitario vacío (usa 0.0)
+**3. ASIGNACIÓN DE COSTOS UNITARIOS (CRÍTICO):**
+- Si encuentras el producto en la lista → usa ese costo_unitario
+- Si el producto es similar pero no exacto → usa el costo más cercano
+- Si NO encuentras el producto en la lista → costo_unitario = 0.0
+- NUNCA inventes costos, NUNCA dejes costo_unitario vacío (usa 0.0)
 
 **4. INFORMACIÓN ADICIONAL:**
 - Identifica empresa solicitante y persona de contacto
@@ -577,7 +662,7 @@ DOCUMENTO(S) A ANALIZAR:
 ```
 DOCUMENTO 1: "Solicitud de 200 Tequeños variados para evento"
 DOCUMENTO 2: "Lista de precios: Tequeño Premium Mixto - $2.50/unidad"
-→ Resultado: product_name="Tequeños variados", quantity=200, precio_unitario=2.50
+→ Resultado: product_name="Tequeños variados", quantity=200, costo_unitario=2.50
 ```
 
 Usa la función extract_rfx_data para proporcionar la respuesta estructurada."""
@@ -629,6 +714,13 @@ Usa la función extract_rfx_data para proporcionar la respuesta estructurada."""
                     # Parsear argumentos JSON
                     try:
                         result = json.loads(function_args)
+                        
+                        # 🔍 LOG SENCILLO: Solo verificar que se extrajeron costos unitarios
+                        if 'requested_products' in result:
+                            products_with_cost = sum(1 for p in result['requested_products'] if p.get('costo_unitario', 0) > 0)
+                            total_products = len(result['requested_products'])
+                            logger.info(f"💰 Costos unitarios: {products_with_cost}/{total_products} productos tienen costo > 0")
+                        
                         return result
                     except json.JSONDecodeError as e:
                         logger.error(f"❌ Failed to parse function arguments as JSON: {e}")
@@ -665,11 +757,7 @@ Usa la función extract_rfx_data para proporcionar la respuesta estructurada."""
             # Validar con Pydantic
             validated = RFXFunctionResult(**raw_result)
             
-            logger.info(f"✅ Pydantic validation successful")
-            logger.info(f"📦 Products validated: {len(validated.requested_products)}")
-            logger.info(f"🏢 Company: {validated.company_info.company_name or 'Not found'}")
-            logger.info(f"👤 Requester: {validated.requester_info.name or 'Not found'}")
-            logger.info(f"📊 Overall confidence: {validated.extraction_confidence.overall_confidence:.2f}")
+            logger.info(f"✅ Pydantic validation successful - {len(validated.requested_products)} products")
             
             if self.debug_mode:
                 logger.debug(f"🔍 Validated model: {validated.dict()}")

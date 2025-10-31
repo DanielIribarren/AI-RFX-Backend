@@ -346,7 +346,7 @@ class DatabaseClient:
                 
                 # Clean any None values that might cause issues
                 for key, value in list(product_data.items()):
-                    if value is None and key not in ['estimated_unit_price', 'total_estimated_cost', 'supplier_id', 'catalog_product_id', 'description', 'notes']:
+                    if value is None and key not in ['estimated_unit_price', 'unit_cost', 'total_estimated_cost', 'supplier_id', 'catalog_product_id', 'description', 'notes']:
                         del product_data[key]
                 
                 products_data.append(product_data)
@@ -406,6 +406,25 @@ class DatabaseClient:
                 return False
         except Exception as e:
             logger.error(f"❌ Failed to update product cost: {e}")
+            return False
+    
+    def update_rfx_product_unit_cost(self, rfx_id: Union[str, UUID], product_id: str, unit_cost: float) -> bool:
+        """Update unit cost for a specific RFX product"""
+        try:
+            response = self.client.table("rfx_products")\
+                .update({"unit_cost": unit_cost})\
+                .eq("rfx_id", str(rfx_id))\
+                .eq("id", product_id)\
+                .execute()
+            
+            if response.data:
+                logger.info(f"✅ Updated product {product_id} unit_cost to ${unit_cost:.2f}")
+                return True
+            else:
+                logger.warning(f"⚠️ No product found to update: RFX {rfx_id}, Product {product_id}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to update product unit_cost: {e}")
             return False
     
     def delete_rfx_product(self, rfx_id: Union[str, UUID], product_id: str) -> bool:

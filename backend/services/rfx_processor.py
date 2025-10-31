@@ -64,7 +64,7 @@ class ProductExtraction(BaseModel):
     cantidad: int = Field(..., ge=1, le=10000, description="Cantidad del producto")
     unidad: str = Field(..., min_length=1, max_length=50, description="Unidad de medida")
     confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="Confidence score")
-    precio_unitario: Optional[float] = Field(default=0.0, ge=0, description="Precio unitario del producto")
+    costo_unitario: Optional[float] = Field(default=0.0, ge=0, description="Costo unitario del producto")
     
     @validator('nombre')
     def validate_nombre(cls, v):
@@ -170,7 +170,7 @@ class ProductExtractor(BaseExtractor):
                     nombre = self._extract_product_name(producto_raw)
                     cantidad = self._extract_product_quantity(producto_raw)
                     unidad = self._extract_product_unit(producto_raw)
-                    precio_unitario = self._extract_product_price(producto_raw)
+                    costo_unitario = self._extract_product_price(producto_raw)
                     
                     if nombre:  # Solo proceder si tenemos nombre válido
                         confidence = self.calculate_confidence(nombre, raw_text)
@@ -180,7 +180,7 @@ class ProductExtractor(BaseExtractor):
                             cantidad=cantidad,
                             unidad=unidad,
                             confidence=confidence,
-                            precio_unitario=precio_unitario
+                            costo_unitario=costo_unitario
                         )
                         productos_validated.append(producto)
                         
@@ -198,7 +198,7 @@ class ProductExtractor(BaseExtractor):
                         cantidad=1,
                         unidad="unidades",
                         confidence=confidence,
-                        precio_unitario=0.0
+                        costo_unitario=0.0
                     )
                     productos_validated.append(producto)
                     
@@ -239,8 +239,8 @@ class ProductExtractor(BaseExtractor):
         return "unidades"
     
     def _extract_product_price(self, producto_dict: Dict[str, Any]) -> float:
-        """Extrae precio unitario del producto con fallback a 0.0"""
-        price_keys = ["precio_unitario", "price", "unit_price", "precio", "cost"]
+        """Extrae costo unitario del producto con fallback a 0.0"""
+        price_keys = ["costo_unitario", "costo", "cost", "precio_unitario", "price", "unit_price", "precio"]
         for key in price_keys:
             if key in producto_dict and producto_dict[key] is not None:
                 try:
@@ -385,30 +385,20 @@ class RFXProcessorService:
         self.openai_client = OpenAI(api_key=self.openai_config.api_key)
         self.db_client = get_database_client()
         
-        # ✅ ELIMINADO: Validadores externos - El LLM valida automáticamente
-        # self.email_validator = EmailValidator()
-        # self.date_validator = DateValidator()
-        # self.time_validator = TimeValidator()
+        self.debug_mode = False  # Simplificado - sin feature flags
         
-        # ✅ CAMBIO #3: ELIMINADO ModularRFXExtractor - El LLM hace todo en una llamada
-        # self.modular_extractor = ModularRFXExtractor(debug_mode=debug_mode)
-        # Ya no necesitamos extractores especializados (ProductExtractor, SolicitanteExtractor, etc.)
-        self.debug_mode = FeatureFlags.eval_debug_enabled()
-        
-        # 🚀 FUNCTION CALLING EXTRACTOR (Fase 2B)
-        # Inicializar solo si está habilitado por feature flag
+        # 🚀 FUNCTION CALLING EXTRACTOR (siempre habilitado)
         self.function_calling_extractor = None
-        if FeatureFlags.function_calling_enabled():
-            try:
-                self.function_calling_extractor = FunctionCallingRFXExtractor(
-                    openai_client=self.openai_client,
-                    model=self.openai_config.model,
-                    debug_mode=self.debug_mode
-                )
-                logger.info("🚀 Function Calling Extractor initialized successfully")
-            except Exception as e:
-                logger.warning(f"⚠️ Function Calling Extractor initialization failed: {e}")
-                logger.info("📋 Falling back to JSON mode extraction")
+        try:
+            self.function_calling_extractor = FunctionCallingRFXExtractor(
+                openai_client=self.openai_client,
+                model=self.openai_config.model,
+                debug_mode=self.debug_mode
+            )
+            logger.info("🚀 Function Calling Extractor initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Function Calling Extractor initialization failed: {e}")
+            raise
         
         # Estadísticas de procesamiento para debugging
         self.processing_stats = {
@@ -596,24 +586,39 @@ class RFXProcessorService:
             # 🎯 ESTRATEGIA DE EXTRACCIÓN CON FALLBACKS
             extracted_data = None
             
-            # 1️⃣ PRIMERA OPCIÓN: Function Calling (más robusto)
-            if self.function_calling_extractor and FeatureFlags.function_calling_enabled():
+            # 🎯 SIMPLIFICADO: Siempre usar function calling (sin feature flags)
+            if self.function_calling_extractor:
+                logger.info("🚀 Function Calling extraction")
                 try:
+                    # Obtener resultado directo de function calling (formato BD)
                     db_result = self.function_calling_extractor.extract_rfx_data(text)
-                    extracted_data = self._convert_function_calling_to_legacy_format(db_result)
+                    
+                    # 🔄 Convertir formato BD a formato legacy esperado
+                    extracted_data = self._convert_db_result_to_legacy_format(db_result)
                     
                 except Exception as e:
-                    logger.warning(f"⚠️ Function Calling extraction failed: {e}")
-                    if not FeatureFlags.json_mode_fallback_enabled():
-                        raise  # Si no hay fallback habilitado, propagar error
-            
-            # 2️⃣ SEGUNDA OPCIÓN: JSON Mode (sistema actual)
-            if not extracted_data and FeatureFlags.json_mode_fallback_enabled():
-                try:
-                    extracted_data = self._extract_complete_with_ai(text)
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ JSON Mode extraction failed: {e}")
+                    logger.error(f"❌ Function calling failed: {e}")
+                    # Sin fallbacks - si falla, devolver estructura vacía
+                    extracted_data = {
+                        "productos": [],
+                        "email": "",
+                        "fecha_entrega": "",
+                        "hora_entrega": "",
+                        "lugar": "",
+                        "nombre_solicitante": "",
+                        "currency": "USD"
+                    }
+            else:
+                logger.error("❌ No function calling extractor available")
+                extracted_data = {
+                    "productos": [],
+                    "email": "",
+                    "fecha_entrega": "",
+                    "hora_entrega": "",
+                    "lugar": "",
+                    "nombre_solicitante": "",
+                    "currency": "USD"
+                }
             
             # ✅ CAMBIO #2: Sin fallback a chunking - si falla, retornar estructura vacía
             if not extracted_data:
@@ -637,16 +642,14 @@ class RFXProcessorService:
             
             # ✅ Logging simple y útil
             products_found = len(extracted_data.get('productos', []))
-            logger.info(f"✅ Extraction completed in {processing_time:.2f}s")
-            logger.info(f"📊 Extracted: {products_found} products")
+            logger.info(f"✅ Extraction completed in {processing_time:.2f}s - {products_found} products")
                 
             # Add completeness validation results
             extracted_data['completeness_validation'] = completeness_result
             extracted_data['processing_metrics'] = {
                 'processing_time': processing_time,
                 'estimated_tokens': estimated_tokens,
-                'single_call': True,
-                'cost_optimized': True
+                'extraction_method': 'function_calling'
             }
             
             return extracted_data
@@ -670,241 +673,106 @@ class RFXProcessorService:
                 "processing_error": True,
                 "error_message": str(e)
             }
-    
-    def _extract_complete_with_ai(self, text: str) -> Dict[str, Any]:
-        """🎯 NUEVA FUNCIÓN: Extrae datos con una sola llamada a IA - SIN CHUNKING"""
-        try:
-            # 🎨 SYSTEM PROMPT PROFESIONAL (del sistema legacy optimizado)
-            system_prompt = """<rfx_analysis_system>
-  <identity>
-    <role>Especialista experto en análisis inteligente de documentos RFX con capacidades avanzadas de evaluación automática</role>
-    <version>4.0</version>
-    <capabilities>
-      <capability priority="critical">Evaluación automática de calidad con 95%+ precisión</capability>
-      <capability priority="critical">Detección automática de dominio multi-industria</capability>
-      <capability priority="high">Extracción de datos estructurados con validación contextual</capability>
-      <capability priority="high">Generación de insights específicos por industria</capability>
-      <capability priority="medium">Análisis de consistencia con reasoning avanzado</capability>
-      <capability priority="medium">Manejo robusto de errores y casos edge</capability>
-    </capabilities>
-    <specializations>
-      <domain confidence_threshold="0.7">catering</domain>
-      <domain confidence_threshold="0.7">construccion</domain>
-      <domain confidence_threshold="0.7">it_services</domain>
-      <domain confidence_threshold="0.7">eventos</domain>
-      <domain confidence_threshold="0.7">logistica</domain>
-      <domain confidence_threshold="0.7">marketing</domain>
-      <domain confidence_threshold="0.5">otro</domain>
-    </specializations>
-  </identity>
-
-  <core_principles>
-    <principle name="precision_absoluta">
-      <rule>Solo extraigo información explícitamente presente en el texto</rule>
-      <fallback>Uso null cuando no hay información clara</fallback>
-      <validation>Nunca inventar o asumir información no presente</validation>
-    </principle>
-    <principle name="validacion_contextual">
-      <rule>Cada dato debe tener coherencia interna y externa</rule>
-      <cross_validation>Verificar consistencia entre campos relacionados</cross_validation>
-      <error_detection>Identificar y reportar inconsistencias</error_detection>
-    </principle>
-    <principle name="diferenciacion_critica">
-      <rule>Distinguir claramente entre información empresarial vs personal</rule>
-      <separation_logic>Aplicar lógica específica para cada tipo de información</separation_logic>
-      <validation>Verificar correcta categorización de datos</validation>
-    </principle>
-    <principle name="completitud_total">
-      <rule>ENCONTRAR Y EXTRAER **TODOS** los productos/servicios mencionados sin excepción</rule>
-      <pattern_recognition>Si ves listas numeradas (1., 2., 3...) o con viñetas (-, •), extrae TODOS los ítems</pattern_recognition>
-      <validation>NO te detengas en los primeros productos encontrados</validation>
-      <completeness_check>Incluye comida, bebidas, equipos, servicios, personal, extras</completeness_check>
-      <verification>Verifica completitud antes de responder - si hay 15 productos, debes encontrar los 15</verification>
-    </principle>
-  </core_principles>
-
-  <output_requirements>
-    <format>JSON estructurado válido únicamente - SIN markdown fences</format>
-    <json_mode>Responder ÚNICAMENTE con objeto JSON válido, sin ```json ni texto adicional</json_mode>
-    <null_handling>Campos null cuando no hay información explícita</null_handling>
-    <evidence_based>Incluir fragmento de texto original como evidencia</evidence_based>
-    <confidence_required>Score de confianza obligatorio para cada extracción</confidence_required>
-    <error_transparency>Reportar problemas y limitaciones encontradas</error_transparency>
-  </output_requirements>
-
-  <data_extraction_rules>
-    <information_hierarchy>
-      <level_1 priority="critical">
-        <field>nombre_empresa</field>
-        <field>productos_servicios</field>
-        <field>moneda</field>
-        <field>fecha_requerida</field>
-        <field>ubicacion_servicio</field>
-      </level_1>
-      <level_2 priority="high">
-        <field>nombre_solicitante</field>
-        <field>email_solicitante</field>
-        <field>telefono_solicitante</field>
-        <field>tipo_solicitud</field>
-      </level_2>
-      <level_3 priority="medium">
-        <field>requisitos_especiales</field>
-        <field>especificaciones</field>
-        <field>presupuesto</field>
-      </level_3>
-    </information_hierarchy>
-
-    <validation_protocols>
-      <email_validation>
-        <pattern>RFC 5322 compliant</pattern>
-        <business_logic>Distinguir emails corporativos vs personales</business_logic>
-        <domain_extraction>Extraer empresa del dominio si aplicable</domain_extraction>
-      </email_validation>
-      <date_validation>
-        <formats>ISO 8601, DD/MM/YYYY, DD-MM-YYYY, natural language</formats>
-        <future_check>Validar que fechas sean futuras</future_check>
-        <reasonability>Verificar lead time apropiado por industria</reasonability>
-      </date_validation>
-      <quantity_validation>
-        <numeric_extraction>Identificar números y unidades</numeric_extraction>
-        <context_validation>Verificar coherencia con tipo de producto</context_validation>
-        <range_checking>Aplicar rangos razonables por dominio</range_checking>
-      </quantity_validation>
-    </validation_protocols>
-  </data_extraction_rules>
-</rfx_analysis_system>"""
+            
+    def _convert_db_result_to_legacy_format(self, db_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        🔄 Convierte resultado de function calling en formato BD al formato legacy esperado
         
-            # 🎯 USER PROMPT con el documento a analizar
-            user_prompt = f"""Analiza cuidadosamente este texto de un documento de catering/evento y extrae la siguiente información en formato JSON:
-
-        {{
-        "nombre_empresa": "EMPRESA: nombre de la compañía/organización (ej: Chevron, Microsoft). Si solo hay email como juan@chevron.com, extrae 'Chevron' del dominio (null si no se encuentra)",
-        "email_empresa": "EMPRESA: email corporativo general de la empresa. NO el email personal del solicitante (null si no se encuentra)",
-        "nombre_solicitante": "PERSONA: nombre y apellido de la persona individual que hace la solicitud (null si no se encuentra)",
-        "email_solicitante": "PERSONA: email personal/de trabajo de la persona específica que solicita (null si no se encuentra)",
-        "telefono_solicitante": "PERSONA: número telefónico personal de la persona que solicita (null si no se encuentra)",
-        "telefono_empresa": "EMPRESA: número telefónico principal/general de la empresa (null si no se encuentra)",
-        "cargo_solicitante": "PERSONA: puesto/cargo que ocupa la persona en la empresa (null si no se encuentra)",
-        "tipo_solicitud": "tipo de solicitud de catering/evento (null si no se encuentra)",
-        "productos": [
-            {{
-            "nombre": "nombre exacto del producto/servicio",
-            "cantidad": número_entero,
-            "unidad": "unidades/personas/kg/litros/etc"
-            }}
-        ],
-        "fecha": "fecha de entrega en formato YYYY-MM-DD (null si no se encuentra)",
-        "hora_entrega": "hora de entrega en formato HH:MM (null si no se encuentra)",
-        "lugar": "dirección completa o ubicación del evento (null si no se encuentra)",
-        "currency": "MONEDA: código de moneda ISO 4217 de 3 letras mencionada en el documento (ej: USD, EUR, MXN, CAD). Buscar símbolos como $, €, £, CAD$, USD$, menciones de 'dólares', 'euros', 'pesos', etc. Si no se encuentra específicamente, usar 'USD' como predeterminado",
-        "requirements": "INSTRUCCIONES ESPECÍFICAS, preferencias o restricciones mencionadas por el cliente. NO incluir descripción general del servicio (null si no se encuentra)",
-        "texto_original_relevante": "fragmento del texto donde encontraste la información principal",
-        "confidence_score": número_decimal_entre_0_y_1_indicando_confianza_en_extracción
-        }}
-
-        ═══════════════════════════════════════════════════════════════════════════════════
-🎯 INSTRUCCIONES CRÍTICAS PARA COMPLETITUD DE PRODUCTOS
-        ═══════════════════════════════════════════════════════════════════════════════════
-
-**REGLAS ABSOLUTAS PARA PRODUCTOS:**
-✅ BUSCA Y EXTRAE **TODOS** LOS PRODUCTOS/SERVICIOS MENCIONADOS SIN EXCEPCIÓN
-✅ Si ves secciones con emojis (🥗, 🍽️, 🍰, ☕, 🥂), extrae TODO lo que aparece bajo cada sección
-✅ Si ves listas numeradas o con viñetas, extrae TODOS los ítems de la lista completa
-✅ Incluye TODAS las entradas, platos principales, postres, bebidas, servicios, extras
-✅ NO te detengas en los primeros productos - busca por TODO el documento
-✅ Cada línea con comida/bebida/servicio = un producto en la lista
-
-**EJEMPLOS DE PRODUCTOS A BUSCAR:**
-- Comida: tequeños, empanadas, canapés, brochetas, ceviche, pollo, res, lasaña
-- Bebidas: jugos, agua, café, té, refrescos 
-- Servicios: meseros, montaje, coordinación, transporte
-- Extras: mantelería, copas, vajilla, decoración
-
-        REGLAS CRÍTICAS PARA EMPRESA vs SOLICITANTE:
-        - EMPRESA = compañía/organización que solicita el servicio
-        - SOLICITANTE = persona individual dentro de la empresa
-        - Si ves "sofia.elena@chevron.com" → nombre_empresa="Chevron", email_solicitante="sofia.elena@chevron.com"
-
-        INSTRUCCIONES ESPECÍFICAS PARA PRODUCTOS:
-        - Busca CUALQUIER tipo de comida, bebida o servicio de catering
-        - Incluye cantidades: números seguidos de "personas", "pax", "unidades", "kg", "litros"
-        - Si solo encuentras "para X personas" sin productos específicos, usa "Catering para X personas"
-        - SIEMPRE incluye al menos un producto si el texto menciona comida o catering
-
-        CONFIDENCE SCORE (0.0 - 1.0):
-        - 0.9-1.0: Información muy clara y explícita
-        - 0.7-0.8: Información clara con interpretación mínima
-        - 0.5-0.6: Información implícita o requiere interpretación
-        - 0.3-0.4: Información ambigua o parcial
-        - 0.0-0.2: Información muy incierta o extrapolada
-
-        TEXTO A ANALIZAR:
-{text}
-
-Responde SOLO con el JSON solicitado - asegúrate de haber encontrado TODOS los productos mencionados:"""
-
-            # 🚀 Llamada única a OpenAI con JSON MODE (elimina markdown fences)
-            logger.info(f"🤖 Sending to OpenAI: System prompt ({len(system_prompt)} chars), User prompt ({len(user_prompt)} chars)")
-            logger.info(f"🔧 Using JSON mode to prevent markdown fences")
+        Args:
+            db_result: Resultado de function calling en formato BD
             
-            response = self.openai_client.chat.completions.create(
-                model=self.openai_config.model,  # GPT-4o
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=self.openai_config.temperature,
-                max_tokens=self.openai_config.max_tokens,
-                response_format={"type": "json_object"},  # 🆕 JSON MODE: Elimina ```json fences
-                timeout=45  # Increased timeout for single call
-            )
+        Returns:
+            Dict en formato legacy compatible con el resto del sistema
+        """
+        try:
+            # Extraer datos de las diferentes secciones
+            rfx_data = db_result.get('rfx_data', {})
+            products_data = db_result.get('products_data', [])
+            company_data = db_result.get('company_data', {})
+            requester_data = db_result.get('requester_data', {})
             
-            output = response.choices[0].message.content.strip()
-            logger.info(f"🤖 OpenAI raw response length: {len(output)} characters")
+            # Convertir productos del formato BD al formato legacy
+            productos_legacy = []
+            for product in products_data:
+                producto_legacy = {
+                    "nombre": product.get('product_name', ''),
+                    "descripcion": product.get('description', ''),
+                    "categoria": product.get('category', 'otro'),
+                    "cantidad": product.get('quantity', 1),
+                    "unidad": product.get('unit_of_measure', 'unidades'),
+                    "costo_unitario": product.get('unit_cost', 0.0),  # ✅ COSTOS UNITARIOS
+                    "especificaciones": product.get('specifications', ''),
+                    "es_obligatorio": product.get('is_mandatory', True),
+                    "orden_prioridad": product.get('priority_order', len(productos_legacy) + 1),
+                    "notas": product.get('notes', '')
+                }
+                productos_legacy.append(producto_legacy)
             
-            # Log first 500 chars of response for debugging
-            response_preview = output[:500].replace('\n', ' ')
-            logger.info(f"📝 OpenAI response preview: {response_preview}...")
+            # Construir resultado en formato legacy
+            legacy_result = {
+                # Información básica del RFX
+                "titulo": rfx_data.get('title', ''),
+                "descripcion": rfx_data.get('description', ''),
+                "requirements": rfx_data.get('requirements', ''),
+                
+                # Fechas
+                "fecha": rfx_data.get('delivery_date', ''),
+                "fecha_entrega": rfx_data.get('delivery_date', ''),
+                "hora_entrega": rfx_data.get('delivery_time', ''),
+                
+                # Ubicación
+                "lugar": rfx_data.get('event_location', ''),
+                "ciudad": rfx_data.get('event_city', ''),
+                "pais": rfx_data.get('event_country', 'Mexico'),
+                
+                # Moneda y presupuesto
+                "currency": rfx_data.get('currency', 'USD'),
+                "presupuesto_min": rfx_data.get('budget_range_min'),
+                "presupuesto_max": rfx_data.get('budget_range_max'),
+                
+                # Información de empresa
+                "nombre_empresa": company_data.get('company_name', ''),
+                "email_empresa": company_data.get('company_email', ''),
+                "telefono_empresa": company_data.get('phone', ''),
+                "direccion_empresa": company_data.get('address', ''),
+                
+                # Información de solicitante (persona)
+                "nombre_solicitante": requester_data.get('name', ''),
+                "email_solicitante": requester_data.get('email', ''),
+                "telefono_solicitante": requester_data.get('phone', ''),
+                "cargo_solicitante": requester_data.get('position', ''),
+                "departamento_solicitante": requester_data.get('department', ''),
+                
+                # Productos (CRÍTICO - en formato legacy)
+                "productos": productos_legacy,
+                
+                # Metadatos
+                "extraction_method": "function_calling",
+                "confidence_scores": rfx_data.get('metadata_json', {}).get('extraction_confidence', {}),
+                "texto_original_relevante": rfx_data.get('metadata_json', {}).get('additional_metadata', {}).get('original_text_sample', ''),
+                
+                # Alias para compatibilidad
+                "email": requester_data.get('email', ''),  # Alias para email_solicitante
+            }
             
-            # Check if response is empty
-            if not output:
-                logger.error(f"❌ OpenAI returned empty response!")
-                return self._get_empty_extraction_result()
+            logger.info(f"🔄 DB format converted to legacy: {len(productos_legacy)} products")
+            logger.info(f"💰 Costos unitarios preserved: {sum(1 for p in productos_legacy if p.get('costo_unitario', 0) > 0)} products with costs")
             
-            # Parse JSON response with robust handling (backup for JSON mode)
-            try:
-                # JSON mode should return clean JSON, but apply robust cleaning as backup
-                json_str = self._robust_json_clean(output)
-                logger.info(f"🧹 Cleaned JSON string length: {len(json_str)} characters")
-                
-                if not json_str.strip():
-                    logger.error(f"❌ Cleaned JSON string is empty!")
-                    logger.error(f"🔍 Original output: {output[:1000]}")
-                    return self._get_empty_extraction_result()
-                
-                result = json.loads(json_str)
-                logger.info(f"✅ JSON parsing successful with JSON mode")
-                logger.info(f"📦 Products found: {len(result.get('productos', []))}")
-                
-                # Log key extracted fields for debugging
-                logger.info(f"🏢 Company: {result.get('nombre_empresa', 'Not found')}")
-                logger.info(f"👤 Requester: {result.get('nombre_solicitante', 'Not found')}")
-                logger.info(f"📧 Email: {result.get('email_solicitante', 'Not found')}")
-                logger.info(f"📍 Location: {result.get('lugar', 'Not found')}")
-                logger.info(f"📅 Date: {result.get('fecha', 'Not found')}")
-                
-                return result
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ JSON parsing failed even with JSON mode and robust cleaning: {e}")
-                logger.error(f"🔍 Raw output (first 1000 chars): {output[:1000]}")
-                logger.error(f"🔍 Cleaned JSON (first 1000 chars): {json_str[:1000]}")
-            return self._get_empty_extraction_result()
+            return legacy_result
             
         except Exception as e:
-            logger.error(f"❌ Complete AI extraction failed: {e}")
-            # Return empty result for fallback
-            return self._get_empty_extraction_result()
+            logger.error(f"❌ Error converting DB result to legacy format: {e}")
+            # Retornar formato básico en caso de error
+            return {
+                "productos": [],
+                "email": "",
+                "fecha_entrega": "",
+                "hora_entrega": "",
+                "lugar": "",
+                "nombre_solicitante": "",
+                "currency": "USD",
+                "conversion_error": str(e)
+            }
     
     def _robust_json_clean(self, raw_output: str) -> str:
         """🔧 Limpieza robusta de JSON que maneja markdown fences correctamente"""
@@ -954,92 +822,6 @@ Responde SOLO con el JSON solicitado - asegúrate de haber encontrado TODOS los 
         logger.debug(f"🧹 JSON cleaning: {len(raw_output)} chars → {len(json_str)} chars")
         return json_str
     
-    def _convert_function_calling_to_legacy_format(self, db_result: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        🔄 Convierte resultado de function calling a formato legacy esperado por el sistema
-        
-        Args:
-            db_result: Resultado estructurado de function calling con formato BD v2.2
-            
-        Returns:
-            Dict en formato legacy compatible con el resto del sistema
-        """
-        try:
-            rfx_data = db_result.get('rfx_data', {})
-            products_data = db_result.get('products_data', [])
-            company_data = db_result.get('company_data', {})
-            requester_data = db_result.get('requester_data', {})
-            
-            # Mapear a formato legacy
-            legacy_result = {
-                # Información básica
-                "titulo": rfx_data.get('title', ''),
-                "descripcion": rfx_data.get('description', ''),
-                "requirements": rfx_data.get('requirements', ''),
-                
-                # Fechas
-                "fecha": rfx_data.get('delivery_date', ''),
-                "fecha_entrega": rfx_data.get('delivery_date', ''),
-                "hora_entrega": rfx_data.get('delivery_time', ''),
-                
-                # Ubicación
-                "lugar": rfx_data.get('event_location', ''),
-                "ciudad": rfx_data.get('event_city', ''),
-                "pais": rfx_data.get('event_country', 'Mexico'),
-                
-                # Moneda y presupuesto
-                "currency": rfx_data.get('currency', 'USD'),
-                "presupuesto_min": rfx_data.get('budget_range_min'),
-                "presupuesto_max": rfx_data.get('budget_range_max'),
-                
-                # Información de empresa
-                "nombre_empresa": company_data.get('company_name', ''),
-                "email_empresa": company_data.get('company_email', ''),
-                "telefono_empresa": company_data.get('phone', ''),
-                "direccion_empresa": company_data.get('address', ''),
-                
-                # Información de solicitante
-                "nombre_solicitante": requester_data.get('name', ''),
-                "email_solicitante": requester_data.get('email', ''),
-                "telefono_solicitante": requester_data.get('phone', ''),
-                "cargo_solicitante": requester_data.get('position', ''),
-                "departamento_solicitante": requester_data.get('department', ''),
-                
-                # Productos (conversión crítica)
-            "productos": [],
-                
-                # Metadatos
-                "extraction_method": "function_calling",
-                "confidence_scores": rfx_data.get('metadata_json', {}).get('extraction_confidence', {}),
-                "texto_original_relevante": rfx_data.get('metadata_json', {}).get('additional_metadata', {}).get('original_text_sample', '')
-            }
-            
-            # Convertir productos a formato legacy
-            for i, product in enumerate(products_data, 1):
-                legacy_product = {
-                    "nombre": product.get('product_name', ''),
-                    "descripcion": product.get('description', ''),
-                    "categoria": product.get('category', 'otro'),
-                    "cantidad": product.get('quantity', 1),
-                    "unidad": product.get('unit_of_measure', 'unidades'),
-                    "precio_unitario": product.get('estimated_unit_price', 0.0),  # ← CRÍTICO: Mapear precio
-                    "especificaciones": product.get('specifications', ''),
-                    "es_obligatorio": product.get('is_mandatory', True),
-                    "orden_prioridad": product.get('priority_order', i),
-                    "notas": product.get('notes', '')
-                }
-                legacy_result["productos"].append(legacy_product)
-            
-            logger.info(f"🔄 Function calling result converted to legacy format")
-            logger.info(f"📦 Products converted: {len(legacy_result['productos'])}")
-            logger.info(f"🏢 Company: {legacy_result['nombre_empresa']}")
-            logger.info(f"👤 Requester: {legacy_result['nombre_solicitante']}")
-            
-            return legacy_result
-            
-        except Exception as e:
-            logger.error(f"❌ Error converting function calling result to legacy format: {e}")
-            raise
     
     def _is_input_incomplete(self, extracted_data: Dict[str, Any], original_text: str, completeness_result: Dict[str, Any]) -> bool:
         """🚨 NUEVA FUNCIÓN: Determina si el input es incompleto y requiere más información del usuario"""
@@ -1487,7 +1269,7 @@ TEXTO: {text[:5000]}"""
                     product_name=p["nombre"],
                     quantity=p["cantidad"],
                     unit=p["unidad"],
-                    precio_unitario=p.get("precio_unitario", 0.0)  # ← CRÍTICO: Incluir precio
+                    costo_unitario=p.get("costo_unitario", 0.0)  # ← CRÍTICO: Incluir costo
                 )
                 for p in validated_data["productos"]
             ]
@@ -1670,20 +1452,27 @@ TEXTO: {text[:5000]}"""
             if rfx_processed.products:
                 structured_products = []
                 for product in rfx_processed.products:
-                    # Map precio_unitario from extraction to estimated_unit_price for DB
-                    precio = getattr(product, 'precio_unitario', None) or getattr(product, 'estimated_unit_price', None)
+                    # Map costo_unitario from extraction to unit_cost for DB
+                    costo = getattr(product, 'costo_unitario', None) or getattr(product, 'unit_cost', None)
                     
                     product_data = {
                         "product_name": product.product_name if hasattr(product, 'product_name') else product.nombre,
                         "quantity": product.quantity if hasattr(product, 'quantity') else product.cantidad,
                         "unit": product.unit if hasattr(product, 'unit') else product.unidad,
-                        "estimated_unit_price": precio if precio and precio > 0 else None,
+                        "unit_cost": costo if costo is not None and costo > 0 else 0.0,  # ← CRÍTICO: Guardar 0.0 en lugar de None
                         "notes": f"Extracted from RFX processing"
                     }
                     structured_products.append(product_data)
+                    
+                    # 🔍 DEBUG: Log each product's unit_cost
+                    logger.debug(f"   💰 Saving product: {product_data['product_name']} - unit_cost: ${product_data['unit_cost']:.2f}")
                 
                 self.db_client.insert_rfx_products(rfx_record["id"], structured_products)
                 logger.info(f"✅ {len(structured_products)} structured products saved")
+                
+                # 🔍 DEBUG: Log summary of unit costs
+                total_with_cost = sum(1 for p in structured_products if p['unit_cost'] > 0)
+                logger.info(f"   💰 Products with unit_cost > 0: {total_with_cost}/{len(structured_products)}")
             
             # 6. Create history event
             history_event = {

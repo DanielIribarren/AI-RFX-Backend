@@ -48,8 +48,8 @@ def map_rfx_data_for_proposal(rfx_data_raw: Dict[str, Any], rfx_products: List[D
                         "quantity": prod.get("quantity", 1),
                         "unit": prod.get("unit", "units"),
                         "description": prod.get("description", ""),
-                        "estimated_unit_price": prod.get("estimated_unit_price") or 0.0,  # ✅ Include real prices
-                        "total_estimated_cost": prod.get("total_estimated_cost", 0.0)   # ✅ Include totals
+                        "estimated_unit_price": prod.get("estimated_unit_price") or 0.0,  # Precio de venta
+                        "unit_cost": prod.get("unit_cost") or 0.0,  # Costo del proveedor ⭐ NUEVO
                     })
         else:
             # Fallback: Mapear productos desde requested_products (JSONB) sin precios

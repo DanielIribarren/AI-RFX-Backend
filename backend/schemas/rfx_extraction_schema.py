@@ -237,10 +237,10 @@ RFX_EXTRACTION_FUNCTION = {
                                 "minimum": 1,
                                 "description": "Orden de prioridad basado en posición en el documento (1=más importante)"
                             },
-                            "precio_unitario": {
+                            "costo_unitario": {
                                 "type": "number",
                                 "minimum": 0,
-                                "description": "💰 PRECIO UNITARIO: Si hay lista de precios en los documentos, busca el precio de este producto. Matching flexible (ignora mayúsculas, acentos, plurales). Si NO encuentras el producto en la lista → 0.0. NUNCA inventes precios."
+                                "description": "💰 COSTO UNITARIO DEL PROVEEDOR: Si hay lista de precios en los documentos, busca el costo de este producto. Matching flexible (ignora mayúsculas, acentos, plurales). Si NO encuentras el producto en la lista → 0.0. NUNCA inventes costos."
                             }
                         },
                         "required": ["product_name", "category", "quantity", "unit_of_measure"]
@@ -457,7 +457,7 @@ class ProductItem(BaseModel):
     category: ProductCategory
     quantity: float = Field(ge=1)
     unit_of_measure: UnitOfMeasure
-    precio_unitario: Optional[float] = Field(default=0.0, ge=0)
+    costo_unitario: Optional[float] = Field(default=0.0, ge=0)
     specifications: Optional[str] = None
     is_mandatory: bool = True
     priority_order: int = Field(ge=1, default=1)
@@ -651,7 +651,7 @@ def function_result_to_db_dict(result: RFXFunctionResult) -> Dict[str, Any]:
             "description": product.description,
             "category": product.category.value,  # 🔧 FIX: Convertir enum a string
             "quantity": int(product.quantity),
-            "estimated_unit_price": product.precio_unitario if product.precio_unitario and product.precio_unitario > 0 else None,
+            "unit_cost": product.costo_unitario if product.costo_unitario and product.costo_unitario > 0 else 0.0,  # ✅ Mapear costo_unitario a unit_cost
             "unit_of_measure": product.unit_of_measure.value,  # 🔧 FIX: Convertir enum a string
             "specifications": {"details": product.specifications} if product.specifications else None,
             "is_mandatory": product.is_mandatory,

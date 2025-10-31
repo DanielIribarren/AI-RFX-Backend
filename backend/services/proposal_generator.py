@@ -207,15 +207,25 @@ class ProposalGenerationService:
         
         for producto in productos:
             precio_unitario = producto.get("estimated_unit_price") or 0.0
+            costo_unitario = producto.get("unit_cost") or 0.0  # Costo del proveedor ⭐ NUEVO
             cantidad = producto.get("quantity", producto.get("cantidad", 1))
-            total_producto = precio_unitario * cantidad
+            total_venta = precio_unitario * cantidad
+            total_costo = costo_unitario * cantidad
+            ganancia_unitaria = precio_unitario - costo_unitario
+            ganancia_total = ganancia_unitaria * cantidad
+            margen_ganancia = (ganancia_unitaria / costo_unitario * 100) if costo_unitario > 0 else 0
             
             products_info.append({
                 "nombre": producto.get("name", producto.get("nombre", "product")),
                 "cantidad": cantidad,
                 "unidad": producto.get("unit", producto.get("unidad", "units")),
                 "precio_unitario": precio_unitario,
-                "total": total_producto
+                "costo_unitario": costo_unitario,  # ⭐ NUEVO
+                "total_venta": total_venta,
+                "total_costo": total_costo,  # ⭐ NUEVO
+                "ganancia_unitaria": ganancia_unitaria,  # ⭐ NUEVO
+                "ganancia_total": ganancia_total,  # ⭐ NUEVO
+                "margen_ganancia": margen_ganancia,  # ⭐ NUEVO
             })
         
         return products_info
