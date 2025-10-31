@@ -12,7 +12,7 @@ class ProposalPrompts:
     
     @staticmethod
     def _format_products(products: List[Dict]) -> str:
-        """Helper para formatear productos en texto"""
+        """Helper para formatear productos en texto - SOLO PRECIOS DE VENTA"""
         import logging
         logger = logging.getLogger(__name__)
         
@@ -30,19 +30,11 @@ class ProposalPrompts:
             price = product.get('precio_unitario', product.get('unit_price', 0))
             total = product.get('total', 0)
             
-            # ⭐ NUEVOS CAMPOS DE GANANCIAS
-            costo_unitario = product.get('costo_unitario', 0)
-            total_costo = product.get('total_costo', 0)
-            ganancia_unitaria = product.get('ganancia_unitaria', 0)
-            ganancia_total = product.get('ganancia_total', 0)
-            margen_ganancia = product.get('margen_ganancia', 0)
-            
-            logger.info(f"   Product {i}: {name} | Qty: {qty} | Price: ${price:.2f} | Cost: ${costo_unitario:.2f} | Profit: ${ganancia_unitaria:.2f}")
+            # ✅ SOLO LOG PRECIOS DE VENTA (sin costos/ganancias)
+            logger.info(f"   Product {i}: {name} | Qty: {qty} | Price: ${price:.2f} | Total: ${total:.2f}")
             
             formatted.append(
-                f"{i}. {name} - {desc} | "
-                f"Qty: {qty} | Selling Price: ${price:.2f} | Cost: ${costo_unitario:.2f} | "
-                f"Profit: ${ganancia_unitaria:.2f} ({margen_ganancia:.1f}%) | Total Profit: ${ganancia_total:.2f}"
+                f"{i}. {name} - {desc} | Qty: {qty} | Selling Price: ${price:.2f} | Total: ${total:.2f}"
             )
         
         result = "\n".join(formatted)
@@ -310,22 +302,7 @@ Debes incluir TODOS Y CADA UNO de los productos listados abajo.
 ⚠️ **VERIFICACIÓN OBLIGATORIA:**
 - ¿Incluiste TODOS los productos de arriba en la tabla HTML?
 - ¿La tabla tiene filas con datos reales (NO está vacía)?
-- ¿Cada producto tiene: nombre, descripción, cantidad, precio de venta, costo, ganancia?
-
----
-
-## 💰 INFORMACIÓN DE GANANCIAS - PARA ANÁLISIS INTERNO
-
-**IMPORTANTE:** Esta información es PARA TU CONOCIMIENTO y no debe aparecer en el HTML del cliente.
-Cada producto incluye datos de costo y ganancia para análisis interno:
-
-- **Costo Unitario:** Lo que pagas al proveedor
-- **Precio de Venta:** Lo que cobras al cliente  
-- **Ganancia Unitaria:** Precio de venta - Costo unitario
-- **Margen de Ganancia:** (Ganancia / Costo) × 100
-- **Ganancia Total:** Ganancia unitaria × Cantidad
-
-Esta información te ayudará a optimizar precios y proveedores en el futuro.
+- ¿Cada producto tiene: nombre, descripción, cantidad, precio de venta, total?
 
 ---
 
