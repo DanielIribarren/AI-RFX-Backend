@@ -67,6 +67,7 @@ def convert_html_to_pdf():
 def convert_with_playwright(html_content: str, client_name: str, document_id: str):
     """
     Conversión usando Playwright - Máxima fidelidad visual
+    Soporta imágenes base64 embebidas
     """
     from playwright.sync_api import sync_playwright
     
@@ -84,10 +85,27 @@ def convert_with_playwright(html_content: str, client_name: str, document_id: st
             page.set_viewport_size({"width": 1200, "height": 1600})
             
             # Cargar HTML y esperar renderizado completo
-            page.set_content(optimized_html, wait_until='networkidle')
+            # 'load' espera a que todas las imágenes (incluidas base64) estén cargadas
+            page.set_content(optimized_html, wait_until='load')
             
-            # Esperar un momento adicional para asegurar renderizado
-            page.wait_for_timeout(1000)
+            # Esperar a que todas las imágenes estén completamente cargadas
+            # Esto es crítico para imágenes base64
+            page.evaluate("""
+                () => {
+                    return Promise.all(
+                        Array.from(document.images)
+                            .filter(img => !img.complete)
+                            .map(img => new Promise(resolve => {
+                                img.onload = img.onerror = resolve;
+                            }))
+                    );
+                }
+            """)
+            
+            # Esperar un momento adicional para asegurar renderizado completo
+            page.wait_for_timeout(1500)
+            
+            logger.info("✅ All images loaded (including base64), generating PDF...")
             
             # Generar PDF con configuración optimizada
             pdf_bytes = page.pdf(
@@ -102,6 +120,8 @@ def convert_with_playwright(html_content: str, client_name: str, document_id: st
                 prefer_css_page_size=True,
                 display_header_footer=False
             )
+            
+            logger.info(f"✅ PDF generated - Size: {len(pdf_bytes)} bytes")
             
             return create_pdf_response(pdf_bytes, client_name, document_id)
             
@@ -121,6 +141,21 @@ def optimize_html_for_pdf(html_content: str) -> str:
             -webkit-print-color-adjust: exact !important;
             color-adjust: exact !important;
             print-color-adjust: exact !important;
+        }
+        
+        /* OPTIMIZACIÓN PARA IMÁGENES BASE64 EN PDF */
+        img {
+            max-width: 100% !important;
+            height: auto !important;
+            display: block !important;
+            page-break-inside: avoid !important;
+            -webkit-print-color-adjust: exact !important;
+        }
+        
+        /* ASEGURAR LOGOS SE RENDERICEN CORRECTAMENTE */
+        img[alt*="Logo"], img[alt*="logo"], .logo {
+            image-rendering: -webkit-optimize-contrast !important;
+            image-rendering: crisp-edges !important;
         }
         
         /* ASEGURAR COLORES SABRA CORPORATION */

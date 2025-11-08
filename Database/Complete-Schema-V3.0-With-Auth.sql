@@ -572,6 +572,9 @@ CREATE TABLE company_branding_assets (
     -- Análisis de template (JSONB cacheado)
     template_analysis JSONB DEFAULT '{}',
     
+    -- Template HTML generado (NUEVO V3.1 - Sistema de 3 Agentes AI)
+    html_template TEXT,
+    
     -- Estado del análisis
     analysis_status TEXT DEFAULT 'pending' CHECK (analysis_status IN ('pending', 'analyzing', 'completed', 'failed')),
     analysis_error TEXT,
@@ -598,6 +601,7 @@ COMMENT ON COLUMN company_branding_assets.user_id IS 'Usuario dueño - CRÍTICO 
 COMMENT ON COLUMN company_branding_assets.team_id IS 'Preparado para teams';
 COMMENT ON COLUMN company_branding_assets.logo_analysis IS 'Análisis cacheado del logo con Pillow';
 COMMENT ON COLUMN company_branding_assets.template_analysis IS 'Análisis cacheado del template con GPT-4 Vision';
+COMMENT ON COLUMN company_branding_assets.html_template IS 'Template HTML generado automáticamente basado en análisis de branding. Usado por sistema de 3 agentes AI (ProposalGenerator, TemplateValidator, PDFOptimizer). Contiene variables {{VAR}} para reemplazo con datos del RFX.';
 
 -- ========================
 -- SECCIÓN 8: ÍNDICES PARA PERFORMANCE

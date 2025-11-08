@@ -29,11 +29,11 @@ def format_datetime(dt: Any) -> Optional[str]:
 @branding_bp.route("/upload", methods=["POST"])
 def upload_branding():
     """
-    Sube logo y/o template para una empresa
-    Lanza análisis asíncrono con GPT-4 Vision
+    Sube logo y/o template para un usuario
+    Lanza análisis asíncrono con GPT-4 Vision (UN SOLO PASO)
     
     Form Data:
-        company_id: UUID de la empresa (requerido)
+        user_id: UUID del usuario (requerido)
         logo: Archivo de logo (opcional)
         template: Archivo de template (opcional)
         analyze_now: Boolean, default true (opcional)
@@ -42,19 +42,24 @@ def upload_branding():
         JSON con URLs de archivos y estado de análisis
     """
     try:
-        # Validar company_id
-        company_id = request.form.get('company_id')
-        if not company_id:
+        # Validar user_id (acepta también company_id para compatibilidad)
+        user_id = request.form.get('user_id') or request.form.get('company_id')
+        if not user_id:
             return jsonify({
                 "status": "error",
-                "message": "company_id is required"
+                "message": "user_id or company_id is required"
             }), 400
+        
+        logger.info(f"📤 Upload request for user: {user_id}")
         
         # Obtener archivos
         logo_file = request.files.get('logo')
         template_file = request.files.get('template')
         
+        logger.info(f"📁 Files received - Logo: {bool(logo_file)}, Template: {bool(template_file)}")
+        
         if not logo_file and not template_file:
+            logger.warning(f"❌ No files provided. Form keys: {list(request.form.keys())}, File keys: {list(request.files.keys())}")
             return jsonify({
                 "status": "error",
                 "message": "At least one file (logo or template) is required"
@@ -63,9 +68,9 @@ def upload_branding():
         # Opción de análisis
         analyze_now = request.form.get('analyze_now', 'true').lower() == 'true'
         
-        # Procesar upload
-        from backend.services.optimized_branding_service import OptimizedUserBrandingService
-        service = OptimizedUserBrandingService()
+        # Procesar upload con servicio refactorizado
+        from backend.services.user_branding_service import UserBrandingService
+        service = UserBrandingService()
         
         # Ejecutar upload asíncrono
         loop = asyncio.new_event_loop()
@@ -74,7 +79,7 @@ def upload_branding():
         try:
             result = loop.run_until_complete(
                 service.upload_and_analyze(
-                    company_id=company_id,
+                    user_id=user_id,
                     logo_file=logo_file,
                     template_file=template_file,
                     analyze_now=analyze_now
@@ -143,48 +148,56 @@ def get_branding(user_id: str):
 @branding_bp.route("/<user_id>/template", methods=["GET"])
 def get_html_template(user_id: str):
     """
-    🆕 V3.2: Obtiene template HTML generado (si existe)
+    🆕 V3.2: Obtiene template HTML generado con logo en base64
     
     Args:
         user_id: ID del usuario
         
     Returns:
-        JSON con template HTML y placeholders o status not_generated
+        JSON con template HTML completo (con logo en base64)
     """
     try:
-        from backend.services.user_branding_service import user_branding_service
+        from backend.core.database import get_database_client
         
-        branding = user_branding_service.get_branding_with_analysis(user_id)
+        db = get_database_client()
         
-        if not branding:
+        # Obtener branding del usuario directamente desde BD
+        result = db.client.table("company_branding_assets")\
+            .select("html_template, analysis_status, template_analysis, updated_at")\
+            .eq("user_id", user_id)\
+            .eq("is_active", True)\
+            .execute()
+        
+        if not result.data:
             return jsonify({
                 "status": "no_branding",
                 "message": f"No branding found for user: {user_id}",
                 "has_template": False
             }), 404
         
-        # Verificar si existe template HTML en template_analysis
-        template_analysis = branding.get('template_analysis', {})
-        html_template = template_analysis.get('html_template')
-        placeholders = template_analysis.get('placeholders', [])
-        template_version = template_analysis.get('template_version', 'unknown')
+        branding = result.data[0]
+        
+        # Obtener HTML template del campo correcto
+        html_template = branding.get('html_template')
+        analysis_status = branding.get('analysis_status')
         
         if html_template:
+            logger.info(f"✅ HTML template retrieved for user: {user_id} - Length: {len(html_template)} chars")
+            
             return jsonify({
                 "status": "ready",
                 "has_template": True,
                 "html_template": html_template,
-                "placeholders": placeholders,
-                "template_version": template_version,
-                "analysis_status": branding.get('analysis_status'),
-                "message": f"Template ready with {len(placeholders)} placeholders"
+                "analysis_status": analysis_status,
+                "generated_at": branding.get('updated_at'),
+                "message": "Template ready with logo in base64"
             }), 200
         else:
             return jsonify({
                 "status": "not_generated",
                 "has_template": False,
-                "analysis_status": branding.get('analysis_status'),
-                "message": "Template analysis completed but no HTML template generated. Re-analyze template to generate HTML."
+                "analysis_status": analysis_status,
+                "message": "No HTML template generated yet. Please upload a template first."
             }), 200
             
     except Exception as e:
@@ -195,28 +208,28 @@ def get_html_template(user_id: str):
         }), 500
 
 
-@branding_bp.route("/analysis-status/<company_id>", methods=["GET"])
-def get_analysis_status(company_id: str):
+@branding_bp.route("/analysis-status/<user_id>", methods=["GET"])
+def get_analysis_status(user_id: str):
     """
     Obtiene solo el estado del análisis
     Útil para polling desde frontend
     
     Args:
-        company_id: UUID de la empresa
+        user_id: UUID del usuario
     
     Returns:
         JSON con estado del análisis
     """
     try:
-        from backend.services.optimized_branding_service import OptimizedUserBrandingService
-        service = OptimizedUserBrandingService()
+        from backend.services.user_branding_service import UserBrandingService
+        service = UserBrandingService()
         
-        status = service.get_analysis_status(company_id)
+        status = service.get_analysis_status(user_id)
         
         if not status:
             return jsonify({
                 "status": "not_found",
-                "message": "No branding found for this company"
+                "message": "No branding found for this user"
             }), 404
         
         # Calcular progreso estimado
@@ -241,7 +254,7 @@ def get_analysis_status(company_id: str):
         }), 200
         
     except Exception as e:
-        logger.error(f"Error getting analysis status for {company_id}: {e}")
+        logger.error(f"Error getting analysis status for {user_id}: {e}")
         return jsonify({
             "status": "error",
             "message": "Failed to retrieve analysis status",
@@ -249,79 +262,35 @@ def get_analysis_status(company_id: str):
         }), 500
 
 
-@branding_bp.route("/reanalyze/<company_id>", methods=["POST"])
-def reanalyze_branding(company_id: str):
-    """
-    Re-analiza branding existente
-    Útil si el usuario no está satisfecho con el análisis
-    
-    Args:
-        company_id: UUID de la empresa
-    
-    Returns:
-        JSON con confirmación de re-análisis
-    """
-    try:
-        from backend.services.optimized_branding_service import OptimizedUserBrandingService
-        service = OptimizedUserBrandingService()
-        
-        # Ejecutar re-análisis asíncrono
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            result = loop.run_until_complete(
-                service.reanalyze(company_id)
-            )
-        finally:
-            loop.close()
-        
-        return jsonify({
-            "status": "success",
-            **result
-        }), 200
-        
-    except ValueError as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 404
-        
-    except Exception as e:
-        logger.error(f"Error re-analyzing branding for {company_id}: {e}")
-        return jsonify({
-            "status": "error",
-            "message": "Failed to re-analyze branding",
-            "error": str(e)
-        }), 500
+# NOTA: Endpoint reanalyze eliminado - funcionalidad no necesaria en flujo simplificado
 
 
-@branding_bp.route("/<company_id>", methods=["DELETE"])
-def delete_branding(company_id: str):
+@branding_bp.route("/<user_id>", methods=["DELETE"])
+def delete_branding(user_id: str):
     """
     Desactiva configuración de branding
     No elimina archivos físicos
     
     Args:
-        company_id: UUID de la empresa
+        user_id: UUID del usuario
     
     Returns:
         JSON con confirmación
     """
     try:
-        from backend.services.optimized_branding_service import OptimizedUserBrandingService
-        service = OptimizedUserBrandingService()
+        from backend.services.user_branding_service import UserBrandingService
+        service = UserBrandingService()
         
-        service.delete_branding(company_id)
+        service.delete_branding(user_id)
         
         return jsonify({
             "status": "success",
             "message": "Branding deactivated successfully",
-            "company_id": company_id
+            "user_id": user_id
         }), 200
         
     except Exception as e:
-        logger.error(f"Error deleting branding for {company_id}: {e}")
+        logger.error(f"Error deleting branding for {user_id}: {e}")
         return jsonify({
             "status": "error",
             "message": "Failed to delete branding",
@@ -442,6 +411,157 @@ def serve_default_logo():
         }), 500
 
 
+@branding_bp.route("/<user_id>/update", methods=["PUT"])
+def update_branding(user_id: str):
+    """
+    🔄 Actualizar branding existente
+    Solo actualiza archivos y re-análisis si se proporcionan
+    
+    Form Data:
+        logo: Archivo de logo (opcional)
+        template: Archivo de template (opcional)
+        reanalyze: Boolean, default false (opcional)
+    
+    Returns:
+        JSON con URLs actualizadas y estado de análisis
+    """
+    try:
+        logger.info(f"🔄 Updating branding for user: {user_id}")
+        
+        # Verificar que existe branding para este usuario
+        from backend.services.user_branding_service import UserBrandingService
+        service = UserBrandingService()
+        
+        # Obtener archivos
+        logo_file = request.files.get('logo')
+        template_file = request.files.get('template')
+        
+        if not logo_file and not template_file:
+            return jsonify({
+                "status": "error",
+                "message": "At least one file (logo or template) is required for update"
+            }), 400
+        
+        # Opción de re-análisis
+        reanalyze = request.form.get('reanalyze', 'false').lower() == 'true'
+        
+        # Ejecutar update asíncrono
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            result = loop.run_until_complete(
+                service.update_branding(
+                    user_id=user_id,
+                    logo_file=logo_file,
+                    template_file=template_file,
+                    reanalyze=reanalyze
+                )
+            )
+        finally:
+            loop.close()
+        
+        return jsonify({
+            "status": "success",
+            **result
+        }), 200
+        
+    except ValueError as e:
+        logger.error(f"Validation error: {e}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 404
+        
+    except Exception as e:
+        logger.error(f"Error updating branding: {e}", exc_info=True)
+        return jsonify({
+            "status": "error",
+            "message": "Internal server error",
+            "error": str(e)
+        }), 500
+
+
+@branding_bp.route("/create", methods=["POST"])
+def create_branding():
+    """
+    🆕 Crear nuevo branding para usuario sin branding existente
+    
+    Form Data:
+        user_id: UUID del usuario (requerido)
+        logo: Archivo de logo (opcional)
+        template: Archivo de template (opcional)
+        analyze_now: Boolean, default true (opcional)
+    
+    Returns:
+        JSON con URLs de archivos y estado de análisis
+    """
+    try:
+        # Validar user_id
+        user_id = request.form.get('user_id')
+        if not user_id:
+            return jsonify({
+                "status": "error",
+                "message": "user_id is required"
+            }), 400
+        
+        logger.info(f"🆕 Creating new branding for user: {user_id}")
+        
+        # Verificar que NO existe branding para este usuario
+        from backend.services.user_branding_service import UserBrandingService
+        service = UserBrandingService()
+        
+        # Verificar existencia
+        existing = service.get_branding(user_id)
+        if existing and existing.get('user_id'):
+            return jsonify({
+                "status": "error",
+                "message": "Branding already exists for this user. Use PUT /api/branding/<user_id>/update instead"
+            }), 409
+        
+        # Obtener archivos
+        logo_file = request.files.get('logo')
+        template_file = request.files.get('template')
+        
+        if not logo_file and not template_file:
+            return jsonify({
+                "status": "error",
+                "message": "At least one file (logo or template) is required"
+            }), 400
+        
+        # Opción de análisis
+        analyze_now = request.form.get('analyze_now', 'true').lower() == 'true'
+        
+        # Ejecutar create asíncrono
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            result = loop.run_until_complete(
+                service.upload_and_analyze(
+                    user_id=user_id,
+                    logo_file=logo_file,
+                    template_file=template_file,
+                    analyze_now=analyze_now
+                )
+            )
+        finally:
+            loop.close()
+        
+        return jsonify({
+            "status": "success",
+            **result
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Error creating branding: {e}", exc_info=True)
+        return jsonify({
+            "status": "error",
+            "message": "Internal server error",
+            "error": str(e)
+        }), 500
+
+
 @branding_bp.route("/test", methods=["GET"])
 def test_branding_api():
     """
@@ -449,14 +569,17 @@ def test_branding_api():
     """
     return jsonify({
         "status": "success",
-        "message": "Branding API is working",
+        "message": "Branding API is working - Refactored (UN SOLO PASO)",
         "endpoints": {
-            "upload": "POST /api/branding/upload",
-            "get": "GET /api/branding/<company_id>",
-            "status": "GET /api/branding/analysis-status/<company_id>",
-            "reanalyze": "POST /api/branding/reanalyze/<company_id>",
-            "delete": "DELETE /api/branding/<company_id>",
+            "create": "POST /api/branding/create (user_id) - Crear nuevo branding",
+            "update": "PUT /api/branding/<user_id>/update - Actualizar branding existente",
+            "upload": "POST /api/branding/upload (user_id o company_id) - Upload genérico",
+            "get": "GET /api/branding/<user_id>",
+            "status": "GET /api/branding/analysis-status/<user_id>",
+            "html": "GET /api/branding/<user_id>/html",
+            "delete": "DELETE /api/branding/<user_id>",
             "files": "GET /api/branding/files/<user_id>/<file_type>",
             "default_logo": "GET /api/branding/default/logo"
-        }
+        },
+        "note": "Sistema usa Supabase client para guardar (como productos)"
     }), 200

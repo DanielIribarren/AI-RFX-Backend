@@ -11,37 +11,6 @@ class ProposalPrompts:
     """Gestiona los diferentes prompts para generación de presupuestos"""
     
     @staticmethod
-    def _format_products(products: List[Dict]) -> str:
-        """Helper para formatear productos en texto - SOLO PRECIOS DE VENTA"""
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        logger.info(f"📦 _format_products called with {len(products)} products")
-        
-        if not products:
-            logger.warning("⚠️ NO PRODUCTS TO FORMAT - returning empty message")
-            return "No hay productos especificados"
-        
-        formatted = []
-        for i, product in enumerate(products, 1):
-            name = product.get('nombre', product.get('name', 'N/A'))
-            desc = product.get('description', '')
-            qty = product.get('cantidad', product.get('quantity', 0))
-            price = product.get('precio_unitario', product.get('unit_price', 0))
-            total = product.get('total', 0)
-            
-            # ✅ SOLO LOG PRECIOS DE VENTA (sin costos/ganancias)
-            logger.info(f"   Product {i}: {name} | Qty: {qty} | Price: ${price:.2f} | Total: ${total:.2f}")
-            
-            formatted.append(
-                f"{i}. {name} - {desc} | Qty: {qty} | Selling Price: ${price:.2f} | Total: ${total:.2f}"
-            )
-        
-        result = "\n".join(formatted)
-        logger.info(f"✅ Formatted {len(formatted)} products into text")
-        return result
-    
-    @staticmethod
     def get_prompt_with_branding(
         user_id: str,
         logo_endpoint: str,
@@ -55,7 +24,8 @@ class ProposalPrompts:
         Genera presupuesto con estilo Sabra Corporation según imagen de referencia
         """
         
-        products_formatted = ProposalPrompts._format_products(rfx_data.get('products', []))
+        # Usar productos preparados directamente (ya formateados desde el servicio)
+        products_formatted = rfx_data.get('products', [])
         
         # ✅ Usar flags inteligentes de pricing (activo Y valor > 0)
         coord_val = pricing_data.get('coordination_formatted', '$0.00')
@@ -162,14 +132,29 @@ Eres un experto en generación de presupuestos profesionales en HTML con el esti
   table {{ 
     width: calc(100% - 20mm); 
     margin: 5mm 10mm; 
-    border-collapse: collapse; 
+    border-collapse: collapse;
+    page-break-inside: auto;  /* Permitir saltos de página dentro de la tabla */
   }}
+  
+  /* Evitar que el header de la tabla se corte */
+  thead {{
+    display: table-header-group;  /* Repetir header en cada página */
+  }}
+  
+  /* Evitar que las filas se corten entre páginas */
+  tr {{
+    page-break-inside: avoid;  /* Evitar cortar filas */
+    page-break-after: auto;
+  }}
+  
   th {{ 
     background-color: {table_header_bg};  /* Color EXACTO del branding */
     color: {table_header_text};  /* Color EXACTO del branding */
     padding: 2mm; 
     border: 1pt solid {table_border}; 
     font-weight: bold;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }}
   td {{ 
     padding: 2mm; 
@@ -436,6 +421,12 @@ IMPORTANTE sobre las fechas:
 ✅ **Bordes tabla:** 1pt solid #000
 ✅ **Comentarios HTML:** Incluir comentarios explicando cada sección
 
+🚨 **REGLAS CRÍTICAS DE PAGINACIÓN (EVITAR TABLAS CORTADAS):**
+✅ **Tabla:** page-break-inside: auto; (permitir saltos de página)
+✅ **Header tabla:** display: table-header-group; (repetir header en cada página)
+✅ **Filas:** page-break-inside: avoid; (NO cortar filas entre páginas)
+✅ **Header colores:** -webkit-print-color-adjust: exact; (mantener colores en todas las páginas)
+
 ---
 
 # REGLAS DE CONTENIDO
@@ -546,7 +537,8 @@ RESPONDE SOLO CON EL HTML COMPLETO (sin ```html, sin markdown, sin texto adicion
         Usa logo por defecto de Sabra Corporation
         """
         
-        products_formatted = ProposalPrompts._format_products(rfx_data.get('products', []))
+        # Usar productos preparados directamente (ya formateados desde el servicio)
+        products_formatted = rfx_data.get('products', [])
         
         # Logo por defecto de Sabra Corporation - usar ruta relativa
         default_logo_endpoint = "/api/branding/default/logo"
@@ -633,6 +625,12 @@ Usa el mismo estilo que el prompt con branding personalizado, CON el logo por de
 ✅ Solo mostrar Impuestos si > $0: {'Sí' if show_tax else 'No'}
 ✅ Solo mostrar Costo/persona si > $0: {'Sí' if show_cost_per_person else 'No'}
 🚫 NO incluir Términos y Condiciones
+
+🚨 **REGLAS DE PAGINACIÓN (EVITAR TABLAS CORTADAS):**
+✅ **Tabla:** page-break-inside: auto; (permitir saltos de página)
+✅ **Header tabla:** display: table-header-group; (repetir header en cada página)
+✅ **Filas:** page-break-inside: avoid; (NO cortar filas entre páginas)
+✅ Aplicar estos estilos en el CSS del <style> tag
 
 ---
 

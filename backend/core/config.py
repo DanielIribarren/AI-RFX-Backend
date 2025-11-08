@@ -203,6 +203,9 @@ ENABLE_EVALS = os.getenv('ENABLE_EVALS', 'false').lower() == 'true'
 ENABLE_META_PROMPTING = os.getenv('ENABLE_META_PROMPTING', 'false').lower() == 'true'
 ENABLE_VERTICAL_AGENT = os.getenv('ENABLE_VERTICAL_AGENT', 'false').lower() == 'true'
 
+# Feature Flag para Sistema de 3 Agentes AI (Proposal Generation)
+USE_AI_AGENTS = os.getenv('USE_AI_AGENTS', 'true').lower() == 'true'  # ✅ NUEVO: Activado por defecto
+
 # Debug flags
 EVAL_DEBUG_MODE = os.getenv('EVAL_DEBUG_MODE', 'false').lower() == 'true'
 

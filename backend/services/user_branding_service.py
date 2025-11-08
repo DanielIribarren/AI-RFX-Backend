@@ -102,20 +102,91 @@ class UserBrandingService:
             template_info = await self._save_template(user_id, template_file, user_dir)
             result.update(template_info)
         
-        # 3. Guardar en BD (sin análisis aún)
+        # 3. Guardar archivos en BD
         await self._save_to_database(user_id, result, analyze_now)
         
-        # 4. Lanzar análisis asíncrono si se requiere
-        if analyze_now:
-            # Crear tarea asíncrona que no bloquea
-            asyncio.create_task(self._analyze_async(user_id, result))
+        # 4. Llamar a analyze_template que genera HTML y guarda en BD
+        if analyze_now and result.get("template_path"):
+            asyncio.create_task(
+                self.vision_service.analyze_template(
+                    result["template_path"],
+                    user_id
+                )
+            )
             result["analysis_status"] = "analyzing"
-            result["message"] = "Files uploaded successfully. Analysis in progress."
+            result["message"] = "Files uploaded. Analysis in progress."
         else:
             result["analysis_status"] = "pending"
-            result["message"] = "Files uploaded successfully. Analysis pending."
+            result["message"] = "Files uploaded successfully."
         
         logger.info(f"✅ Branding uploaded for user: {user_id}")
+        return result
+    
+    async def update_branding(
+        self,
+        user_id: str,
+        logo_file: Optional[FileStorage] = None,
+        template_file: Optional[FileStorage] = None,
+        reanalyze: bool = False
+    ) -> Dict:
+        """
+        Actualiza branding existente
+        
+        Args:
+            user_id: ID del usuario
+            logo_file: Nuevo archivo de logo (opcional)
+            template_file: Nuevo archivo de template (opcional)
+            reanalyze: Si debe re-analizar el template
+            
+        Returns:
+            Dict con resultado de actualización
+        """
+        logger.info(f"🔄 Updating branding for user: {user_id}")
+        
+        # Verificar que existe branding
+        existing = self.get_branding(user_id)
+        if not existing or not existing.get('user_id'):
+            raise ValueError(f"No branding found for user: {user_id}")
+        
+        # Crear directorio si no existe
+        user_dir = Path("backend/static/branding") / user_id
+        user_dir.mkdir(parents=True, exist_ok=True)
+        
+        result = {}
+        
+        # Actualizar logo si se proporciona
+        if logo_file:
+            logo_data = await self._save_logo(user_id, logo_file, user_dir)
+            result.update(logo_data)
+        
+        # Actualizar template si se proporciona
+        if template_file:
+            template_data = await self._save_template(user_id, template_file, user_dir)
+            result.update(template_data)
+        
+        # Actualizar en BD
+        await self._update_in_database(user_id, result)
+        
+        # Re-analizar si se solicita y hay template
+        if reanalyze and (template_file or existing.get('template_path')):
+            template_path = result.get('template_path') or existing.get('template_path')
+            if template_path:
+                asyncio.create_task(
+                    self.vision_service.analyze_template(
+                        template_path,
+                        user_id
+                    )
+                )
+                result["analysis_status"] = "analyzing"
+                result["message"] = "Branding updated. Re-analysis in progress."
+            else:
+                result["analysis_status"] = "pending"
+                result["message"] = "Branding updated successfully."
+        else:
+            result["analysis_status"] = existing.get('analysis_status', 'pending')
+            result["message"] = "Branding updated successfully."
+        
+        logger.info(f"✅ Branding updated for user: {user_id}")
         return result
     
     async def _save_logo(
@@ -124,21 +195,11 @@ class UserBrandingService:
         logo_file: FileStorage, 
         user_dir: Path
     ) -> Dict:
-        """Valida y guarda archivo de logo"""
-        # Validar archivo
-        self._validate_file(
-            logo_file, 
-            self.ALLOWED_LOGO_EXTENSIONS, 
-            self.MAX_LOGO_SIZE,
-            "Logo"
-        )
-        
-        # Generar nombre seguro
+        """Guarda archivo de logo"""
         extension = logo_file.filename.rsplit('.', 1)[1].lower()
         filename = f"logo.{extension}"
         file_path = user_dir / filename
         
-        # Guardar archivo
         logo_file.save(str(file_path))
         
         logger.info(f"💾 Logo saved: {file_path}")
@@ -155,21 +216,11 @@ class UserBrandingService:
         template_file: FileStorage, 
         user_dir: Path
     ) -> Dict:
-        """Valida y guarda archivo de template"""
-        # Validar archivo
-        self._validate_file(
-            template_file,
-            self.ALLOWED_TEMPLATE_EXTENSIONS, 
-            self.MAX_TEMPLATE_SIZE,
-            "Template"
-        )
-        
-        # Generar nombre seguro
+        """Guarda archivo de template"""
         extension = template_file.filename.rsplit('.', 1)[1].lower()
         filename = f"template.{extension}"
         file_path = user_dir / filename
         
-        # Guardar archivo
         template_file.save(str(file_path))
         
         logger.info(f"💾 Template saved: {file_path}")
@@ -180,35 +231,37 @@ class UserBrandingService:
             "template_url": f"/static/branding/{user_id}/{filename}"
         }
     
-    def _validate_file(
-        self, 
-        file: FileStorage, 
-        allowed_extensions: set, 
-        max_size: int, 
-        file_type: str
-    ):
-        """Valida extensión y tamaño de archivo"""
-        if not file or not file.filename:
-            raise ValueError(f"{file_type} file is required")
-        
-        # Validar extensión
-        if '.' not in file.filename:
-            raise ValueError(f"{file_type} file must have an extension")
-        
-        extension = file.filename.rsplit('.', 1)[1].lower()
-        if extension not in allowed_extensions:
-            raise ValueError(
-                f"{file_type} must be one of: {', '.join(allowed_extensions)}"
-            )
-        
-        # Validar tamaño (seek to end, get position, seek back to start)
-        file.seek(0, 2)  # Seek to end
-        size = file.tell()
-        file.seek(0)  # Seek back to start
-        
-        if size > max_size:
-            max_mb = max_size / (1024 * 1024)
-            raise ValueError(f"{file_type} file size exceeds {max_mb:.1f}MB limit")
+    async def _update_in_database(self, user_id: str, update_data: Dict):
+        """Actualiza branding existente en BD usando Supabase client"""
+        try:
+            # Preparar datos para actualización
+            db_update = {}
+            
+            if 'logo_filename' in update_data:
+                db_update['logo_filename'] = update_data['logo_filename']
+                db_update['logo_path'] = update_data['logo_path']
+                db_update['logo_url'] = update_data['logo_url']
+                db_update['logo_uploaded_at'] = datetime.now().isoformat()
+            
+            if 'template_filename' in update_data:
+                db_update['template_filename'] = update_data['template_filename']
+                db_update['template_path'] = update_data['template_path']
+                db_update['template_url'] = update_data['template_url']
+                db_update['template_uploaded_at'] = datetime.now().isoformat()
+            
+            db_update['updated_at'] = datetime.now().isoformat()
+            
+            # Usar Supabase client directamente (como guardas productos)
+            result = self.db.client.table("company_branding_assets")\
+                .update(db_update)\
+                .eq("user_id", user_id)\
+                .execute()
+            
+            logger.info(f"💾 Branding updated in database for user: {user_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error updating branding in database: {e}")
+            raise
     
     async def _save_to_database(
         self, 
@@ -271,68 +324,6 @@ class UserBrandingService:
         
         logger.info(f"💾 Branding info saved to database for user: {user_id}")
     
-    async def _analyze_async(self, user_id: str, file_info: Dict):
-        """
-        Análisis asíncrono (no bloquea la respuesta)
-        Ejecuta análisis de IA y guarda resultados en BD
-        """
-        try:
-            logger.info(f"🔍 Starting async analysis for user: {user_id}")
-            
-            logo_analysis = None
-            template_analysis = None
-            
-            # Análisis de logo (si existe)
-            if file_info.get("logo_path"):
-                try:
-                    logo_analysis = await self.vision_service.analyze_logo(file_info["logo_path"])
-                    logger.info(f"✅ Logo analysis completed for {user_id}")
-                except Exception as e:
-                    logger.error(f"❌ Error analyzing logo: {e}")
-            
-            # Análisis de template (si existe)
-            if file_info.get("template_path"):
-                try:
-                    template_analysis = await self.vision_service.analyze_template(file_info["template_path"])
-                    logger.info(f"✅ Template analysis completed for {user_id}")
-                except Exception as e:
-                    logger.error(f"❌ Error analyzing template: {e}")
-            
-            # Guardar resultados en BD
-            # NOTA: Usa company_branding_assets con user_id (migrado en V3.0 MVP)
-            self.db.execute("""
-                UPDATE company_branding_assets
-                SET 
-                    logo_analysis = COALESCE(%s, logo_analysis),
-                    template_analysis = COALESCE(%s, template_analysis),
-                    analysis_status = 'completed',
-                    analysis_completed_at = NOW(),
-                    updated_at = NOW()
-                WHERE user_id = %s
-            """, (
-                json.dumps(logo_analysis) if logo_analysis else None,
-                json.dumps(template_analysis) if template_analysis else None,
-                user_id
-            ))
-            
-            logger.info(f"✅ Analysis completed and saved for user: {user_id}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error in async analysis for {user_id}: {e}")
-            
-            # Marcar como fallido en BD
-            try:
-                self.db.execute("""
-                    UPDATE company_branding_assets
-                    SET 
-                        analysis_status = 'failed',
-                        analysis_error = %s,
-                        updated_at = NOW()
-                    WHERE user_id = %s
-                """, (str(e), user_id))
-            except:
-                pass
-    
     # ========================
     # LECTURA Y CONSULTAS
     # ========================
@@ -361,6 +352,7 @@ class UserBrandingService:
                 logo_filename, logo_path, logo_url, logo_uploaded_at,
                 template_filename, template_path, template_url, template_uploaded_at,
                 logo_analysis, template_analysis,
+                html_template,
                 analysis_status, analysis_error,
                 analysis_started_at,
                 is_active,
@@ -420,52 +412,6 @@ class UserBrandingService:
         
         result = self.db.query_one(query, (user_id,))
         return dict(result) if result else None
-    
-    async def reanalyze(self, user_id: str) -> Dict:
-        """
-        Re-ejecuta el análisis de branding existente
-        Útil si el usuario no está satisfecho con el resultado
-        
-        Args:
-            user_id: ID del usuario
-            
-        Returns:
-            Dict con estado de la nueva solicitud de análisis
-        """
-        try:
-            UUID(user_id)  # Validar formato
-        except ValueError:
-            raise ValueError(f"Invalid user_id format: {user_id}")
-        
-        # Obtener configuración actual
-        current_config = self.get_branding_with_analysis(user_id)
-        
-        if not current_config:
-            raise ValueError(f"No branding configuration found for user: {user_id}")
-        
-        # Marcar como analyzing en BD
-        # NOTA: Usa company_branding_assets con user_id (migrado en V3.0 MVP)
-        self.db.execute("""
-            UPDATE company_branding_assets
-            SET 
-                analysis_status = 'analyzing',
-                analysis_error = NULL,
-                analysis_started_at = NOW(),
-                analysis_completed_at = NULL,
-                updated_at = NOW()
-            WHERE user_id = %s
-        """, (user_id,))
-        
-        # Lanzar análisis asíncrono
-        asyncio.create_task(self._analyze_async(user_id, current_config))
-        
-        logger.info(f"🔄 Re-analysis started for user: {user_id}")
-        
-        return {
-            "user_id": user_id,
-            "analysis_status": "analyzing",
-            "message": "Re-analysis started successfully"
-        }
     
     def delete_branding(self, user_id: str) -> bool:
         """

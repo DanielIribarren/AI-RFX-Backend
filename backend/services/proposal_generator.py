@@ -12,12 +12,16 @@ from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 
 from backend.models.proposal_models import ProposalRequest, GeneratedProposal, ProposalStatus
-from backend.core.config import get_openai_config
+from backend.core.config import get_openai_config, USE_AI_AGENTS
 from backend.core.database import get_database_client
 from backend.services.unified_budget_configuration_service import unified_budget_service
 from backend.services.prompts.proposal_prompts import ProposalPrompts
 from backend.utils.html_validator import HTMLValidator
 from backend.utils.branding_validator import BrandingValidator  # ✅ MEJORA #5
+
+# ✅ NUEVO: Sistema de 3 Agentes AI
+from backend.services.ai_agents.agent_orchestrator import agent_orchestrator
+from backend.services.user_branding_service import user_branding_service
 
 import logging
 
@@ -44,13 +48,22 @@ Tu output será validado automáticamente. Si no cumple EXACTAMENTE con el brand
 Generar HTML limpio que respete al 100% el branding configurado, con máxima precisión y cero improvisación."""
 
 
+# Información de empresa por defecto (constante)
+DEFAULT_COMPANY_INFO = {
+    'name': 'Sabra Corporation',
+    'address': 'Dirección de la empresa',
+    'phone': '+1 (555) 123-4567',
+    'email': 'contacto@sabracorp.com'
+}
+    
 class ProposalGenerationService:
-    """Servicio refactorizado para generar propuestas comerciales con validación robusta"""
+    """Servicio de generación de propuestas comerciales"""
     
     def __init__(self):
+        """Inicializa el servicio con las dependencias necesarias"""
         self.openai_config = get_openai_config()
-        self.openai_client = None  # Lazy initialization
         self.db_client = get_database_client()
+        self.openai_client = None  # Lazy initialization
     
     def _get_openai_client(self):
         """Lazy initialization of OpenAI client"""
@@ -96,7 +109,14 @@ class ProposalGenerationService:
             # 5. Detectar si tiene branding completo
             has_branding = self._has_complete_branding(user_id)
             
-            # 6. Generar HTML usando el prompt apropiado
+            # ✅ NUEVO: Usar sistema de 3 agentes AI si está activado
+            if USE_AI_AGENTS and has_branding:
+                logger.info("🤖 Using AI Agents System (3-Agent Architecture)")
+                return await self._generate_with_ai_agents(
+                    rfx_data, products_info, pricing_calculation, currency, user_id, proposal_request
+                )
+            
+            # 6. Generar HTML usando el prompt apropiado (SISTEMA ANTIGUO)
             if has_branding:
                 logger.info(f"🎨 Branding check - Logo: True, Active: True, Completed: True → {has_branding}")
                 logger.info(f"✅ Using BRANDING PROMPT (with logo)")
@@ -140,10 +160,13 @@ class ProposalGenerationService:
                 if branding_issues:
                     all_issues.extend(branding_issues)
                 
-                html_content = await self._retry_generation_with_branding(
-                    html_content, all_issues, rfx_data, 
-                    products_info, pricing_calculation, currency,
-                    user_id, has_branding, branding_config if has_branding else None
+                # Preparar datos para retry
+                branding_config = self._get_branding_config(user_id) if has_branding else None
+                
+                html_content = await self._retry_generation(
+                    issues=all_issues, rfx_data=rfx_data, products_info=products_info,
+                    pricing_calculation=pricing_calculation, currency=currency,
+                    user_id=user_id, has_branding=has_branding, branding_config=branding_config
                 )
                 
                 # Validar nuevamente (HTML + Branding)
@@ -272,26 +295,6 @@ class ProposalGenerationService:
         
         return mapped_data
     
-    def _get_company_info(self, user_id: str) -> Dict[str, str]:
-        """Obtiene información de la empresa del usuario"""
-        try:
-            # Aquí deberías obtener la info real de la BD
-            # Por ahora retornamos un placeholder
-            return {
-                'name': 'Sabra Corporation',
-                'address': 'Dirección de la empresa',
-                'phone': '+1 (555) 123-4567',
-                'email': 'contacto@sabracorp.com'
-            }
-        except Exception as e:
-            logger.error(f"Error getting company info: {e}")
-            return {
-                'name': 'Empresa',
-                'address': 'N/A',
-                'phone': 'N/A',
-                'email': 'N/A'
-            }
-    
     def _format_pricing_data(self, pricing_calculation: Any, currency: str, rfx_id: str = None) -> Dict[str, str]:
         """Formatea datos de pricing para los prompts CON flags de configuración activa"""
         try:
@@ -400,12 +403,7 @@ class ProposalGenerationService:
             return False
     
     def _get_branding_config(self, user_id: str) -> Dict[str, Any]:
-        """
-        ✅ MEJORA #6: Obtiene configuración de branding con análisis específico mejorado
-        
-        Extrae TODOS los campos del análisis mejorado (vision_analysis_service.py)
-        para máxima consistencia entre análisis y generación
-        """
+        """Obtiene configuración de branding simplificada"""
         try:
             from backend.services.user_branding_service import user_branding_service
             
@@ -415,56 +413,15 @@ class ProposalGenerationService:
                 return {}
             
             template_analysis = branding.get('template_analysis', {})
-            logo_analysis = branding.get('logo_analysis', {})
-            
-            # ✅ MEJORA #6: Extraer campos específicos del análisis mejorado
             color_scheme = template_analysis.get('color_scheme', {})
-            color_usage = template_analysis.get('color_usage', {})  # NUEVO
-            table_style = template_analysis.get('table_style', {})
-            table_css = template_analysis.get('table_css', {})  # NUEVO
-            spacing_rules = template_analysis.get('spacing_rules', {})  # NUEVO
-            contrast_rules = template_analysis.get('contrast_rules', {})  # NUEVO
-            quality_checks = template_analysis.get('quality_checks', {})  # NUEVO
             
-            # Colores principales (con fallback a color_usage si existe)
-            primary_color = color_usage.get('accent') or color_scheme.get('primary', '#2c5f7c')
-            secondary_color = color_scheme.get('secondary', '#ffffff')
-            
-            # Colores específicos de tabla (priorizar table_css si existe)
-            table_header_bg = table_css.get('header_bg') or table_style.get('header_background', '#f0f0f0')
-            table_header_text = table_css.get('header_text') or table_style.get('header_text_color', '#000000')
-            table_border = color_usage.get('table_border') or color_scheme.get('borders', '#000000')
-            
-            logger.info(f"🎨 Branding colors - Primary: {primary_color}, Secondary: {secondary_color}")
-            logger.info(f"🎨 Table colors - Header BG: {table_header_bg}, Header Text: {table_header_text}")
-            logger.info(f"📐 Spacing rules: {spacing_rules}")
-            logger.info(f"✅ Quality checks: {quality_checks}")
-            
-            # ✅ MEJORA #6: Retornar configuración completa con TODOS los campos
             return {
-                # Básicos
                 'logo_url': branding.get('logo_url'),
-                'logo_analysis': logo_analysis,
-                'template_analysis': template_analysis,
-                
-                # Colores (compatibilidad con código existente)
-                'primary_color': primary_color,
-                'secondary_color': secondary_color,
-                'table_header_bg': table_header_bg,
-                'table_header_text': table_header_text,
-                'table_border': table_border,
-                
-                # ✅ NUEVOS: Campos específicos del análisis mejorado
-                'color_scheme': color_scheme,
-                'color_usage': color_usage,
-                'table_style': table_style,
-                'table_css': table_css,
-                'typography': template_analysis.get('typography', {}),
-                'spacing_rules': spacing_rules,
-                'contrast_rules': contrast_rules,
-                'quality_checks': quality_checks,
-                'layout_structure': template_analysis.get('layout_structure', ''),
-                'html_structure': template_analysis.get('html_structure', {})
+                'primary_color': color_scheme.get('primary', '#0e2541'),
+                'secondary_color': color_scheme.get('secondary', '#ffffff'),
+                'table_header_bg': template_analysis.get('table_style', {}).get('header_background', '#0e2541'),
+                'table_header_text': template_analysis.get('table_style', {}).get('header_text_color', '#ffffff'),
+                'table_border': color_scheme.get('borders', '#000000'),
             }
             
         except Exception as e:
@@ -483,18 +440,29 @@ class ProposalGenerationService:
         logger.info(f"🎨 Logo endpoint (relative): {logo_endpoint}")
         
         # Preparar datos para el prompt
-        company_info = self._get_company_info(user_id)
+        company_info = DEFAULT_COMPANY_INFO
         pricing_data = self._format_pricing_data(pricing_calculation, currency)
         
-        # DEBUG: Log de datos originales
-        logger.info(f"🔍 DEBUG rfx_data keys: {list(rfx_data.keys())}")
-        logger.info(f"🔍 DEBUG products_info count: {len(products_info)}")
-        logger.info(f"🔍 DEBUG productos count: {len(rfx_data.get('productos', []))}")
+        # DEBUG: Log de datos originales (solo si DEBUG está activado)
+        if os.getenv('DEBUG_PROPOSAL_GEN') == 'true':
+            logger.debug(f"RFX data keys: {list(rfx_data.keys())}")
+            logger.debug(f"Products info count: {len(products_info)}")
         
-        # 🔧 MAPEAR datos al formato que espera el prompt
-        mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
+        # Mapear datos para el prompt (inline simplificado)
+        companies = rfx_data.get('companies', {})
+        client_name = companies.get('name', 'N/A') if isinstance(companies, dict) else 'N/A'
         
-        logger.info(f"✅ Mapped data - client: {mapped_rfx_data.get('client_name')}, products: {len(mapped_rfx_data.get('products', []))}")
+        from datetime import datetime, timedelta
+        mapped_rfx_data = {
+            'client_name': client_name,
+            'solicitud': rfx_data.get('title', 'N/A'),
+            'products': products_info,
+            'user_id': rfx_data.get('user_id'),
+            'current_date': datetime.now().strftime('%Y-%m-%d'),
+            'validity_date': (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        }
+        
+        logger.info(f"✅ Mapped data - client: {client_name}, products: {len(products_info)}")
         
         # Llamar al prompt con los parámetros correctos
         prompt = ProposalPrompts.get_prompt_with_branding(
@@ -517,11 +485,22 @@ class ProposalGenerationService:
         
         # Preparar datos para el prompt
         user_id = rfx_data.get('user_id', 'unknown')
-        company_info = self._get_company_info(user_id)
+        company_info = DEFAULT_COMPANY_INFO
         pricing_data = self._format_pricing_data(pricing_calculation, currency)
         
-        # 🔧 MAPEAR datos al formato que espera el prompt
-        mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
+        # Mapear datos para el prompt (inline simplificado)
+        companies = rfx_data.get('companies', {})
+        client_name = companies.get('name', 'N/A') if isinstance(companies, dict) else 'N/A'
+        
+        from datetime import datetime, timedelta
+        mapped_rfx_data = {
+            'client_name': client_name,
+            'solicitud': rfx_data.get('title', 'N/A'),
+            'products': products_info,
+            'user_id': rfx_data.get('user_id'),
+            'current_date': datetime.now().strftime('%Y-%m-%d'),
+            'validity_date': (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        }
         
         # Llamar al prompt con los parámetros correctos
         prompt = ProposalPrompts.get_prompt_default(
@@ -532,147 +511,182 @@ class ProposalGenerationService:
         
         return await self._call_ai(prompt)
     
-    async def _retry_generation(
-        self, original_html: str, issues: List[str], rfx_data: Dict,
-        products_info: List[Dict], pricing_calculation: Dict, currency: str
-    ) -> str:
-        """🔄 Reintenta generación con correcciones específicas"""
-        logger.info(f"🔄 Attempting retry with explicit corrections...")
-        logger.info(f"🔄 Issues to fix: {issues}")
+    async def _generate_with_ai_agents(
+        self, rfx_data: Dict, products_info: List[Dict], 
+        pricing_calculation: Dict, currency: str, user_id: str,
+        proposal_request: ProposalRequest
+    ) -> GeneratedProposal:
+        """
+        🤖 Genera propuesta usando el sistema de 3 agentes AI
         
-        # Obtener user_id para reconstruir el prompt
-        user_id = self._get_user_id(rfx_data, rfx_data.get('id', ''))
-        has_branding = self._has_complete_branding(user_id)
+        Flujo:
+        1. Obtiene template HTML del branding del usuario
+        2. Agente 1: Inserta datos en el template
+        3. Agente 2: Valida consistencia con branding
+        4. Retry automático si falla (máx 2 intentos)
+        5. Agente 3: Optimiza para PDF profesional
         
-        # Reconstruir el prompt original (sin llamar a AI)
-        if has_branding:
+        Returns:
+            GeneratedProposal: Propuesta completa generada por los agentes
+        """
+        logger.info("🤖 Starting AI Agents System for proposal generation")
+        
+        try:
+            # 1. Obtener branding con template HTML
+            branding = user_branding_service.get_branding_with_analysis(user_id)
+            
+            if not branding:
+                logger.warning("⚠️ No branding found - falling back to old system")
+                # Fallback al sistema antiguo
+                branding_config = self._get_branding_config(user_id)
+                html_content = await self._generate_with_branding(
+                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config
+                )
+                return self._create_proposal_object(rfx_data, html_content, proposal_request, pricing_calculation)
+            
+            # 2. Obtener template HTML desde BD
+            html_template = branding.get('html_template')
+            
+            if not html_template:
+                logger.info("📝 Fetching HTML template from database...")
+                # Obtener HTML template directamente desde BD
+                db = get_database_client()
+                template_result = db.client.table("company_branding_assets")\
+                    .select("html_template")\
+                    .eq("user_id", user_id)\
+                    .eq("is_active", True)\
+                    .execute()
+                
+                if template_result.data and template_result.data[0].get('html_template'):
+                    html_template = template_result.data[0]['html_template']
+                    logger.info(f"✅ HTML template retrieved - Length: {len(html_template)} chars")
+                else:
+                    raise ValueError(f"No HTML template found for user: {user_id}. Please upload and analyze a template first.")
+            
+            # 3. Preparar datos del RFX para los agentes
+            from datetime import datetime, timedelta
+            companies = rfx_data.get('companies', {})
+            client_name = companies.get('name', 'N/A') if isinstance(companies, dict) else 'N/A'
+            
+            rfx_agent_data = {
+                "client_name": client_name,
+                "solicitud": rfx_data.get('title', 'N/A'),
+                "products": products_info,
+                "pricing": self._format_pricing_data(pricing_calculation, currency, proposal_request.rfx_id)
+            }
+            
+            # 4. Preparar configuración de branding
+            template_analysis = branding.get('template_analysis', {})
+            color_scheme = template_analysis.get('color_scheme', {})
+            table_style = template_analysis.get('table_style', {})
+            
+            branding_config = {
+                "primary_color": color_scheme.get('primary', '#0e2541'),
+                "secondary_color": color_scheme.get('secondary', '#ffffff'),
+                "table_header_bg": table_style.get('header_background', '#0e2541'),
+                "table_header_text": table_style.get('header_text_color', '#ffffff'),
+                "table_border": color_scheme.get('borders', '#000000')
+            }
+            
+            # 5. Llamar al orquestador de agentes
+            logger.info("🎭 Calling Agent Orchestrator...")
+            result = await agent_orchestrator.generate_professional_proposal(
+                html_template=html_template,
+                rfx_data=rfx_agent_data,
+                branding_config=branding_config,
+                user_id=user_id
+            )
+            
+            if result["status"] != "success":
+                logger.error(f"❌ AI Agents failed: {result.get('error')}")
+                # Fallback al sistema antiguo
+                logger.warning("⚠️ Falling back to old system...")
+                branding_config_old = self._get_branding_config(user_id)
+                html_content = await self._generate_with_branding(
+                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config_old
+                )
+                return self._create_proposal_object(rfx_data, html_content, proposal_request, pricing_calculation)
+            
+            # 6. Obtener HTML final
+            html_final = result["html_final"]
+            metadata = result["metadata"]
+            
+            logger.info(f"✅ AI Agents completed successfully in {metadata['total_time_ms']}ms")
+            logger.info(f"   - Validation: {'✅ PASSED' if metadata['validation']['is_valid'] else '⚠️ WARNINGS'}")
+            logger.info(f"   - Retries: {metadata['validation']['retries']}")
+            logger.info(f"   - Agents used: {', '.join(metadata['agents_used'])}")
+            
+            # 7. Crear objeto de propuesta
+            return self._create_proposal_object(rfx_data, html_final, proposal_request, pricing_calculation)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in AI Agents System: {e}")
+            logger.warning("⚠️ Falling back to old system...")
+            
+            # Fallback al sistema antiguo en caso de error
             branding_config = self._get_branding_config(user_id)
-            # Usar ruta relativa para compatibilidad con servidor
-            logo_endpoint = f"/api/branding/files/{user_id}/logo"
-            
-            # Preparar datos para el prompt
-            company_info = self._get_company_info(user_id)
-            pricing_data = self._format_pricing_data(pricing_calculation, rfx_data.get('currency', 'USD'))
-            
-            original_prompt = ProposalPrompts.get_prompt_with_branding(
-                user_id=user_id,
-                logo_endpoint=logo_endpoint,
-                company_info=company_info,
-                rfx_data=rfx_data,
-                pricing_data=pricing_data,
-                branding_config=branding_config  # ✅ Pasar colores del branding
+            html_content = await self._generate_with_branding(
+                rfx_data, products_info, pricing_calculation, currency, user_id, branding_config
             )
-        else:
-            company_info = self._get_company_info(user_id)
-            pricing_data = self._format_pricing_data(pricing_calculation, rfx_data.get('currency', 'USD'))
-            
-            original_prompt = ProposalPrompts.get_prompt_default(
-                company_info=company_info,
-                rfx_data=rfx_data,
-                pricing_data=pricing_data
-            )
-        
-        # Construir prompt de retry con correcciones
-        retry_prompt = ProposalPrompts.get_retry_prompt(
-            original_prompt=original_prompt,
-            validation_errors=issues
-        )
-        
-        return await self._call_ai(retry_prompt)
+            return self._create_proposal_object(rfx_data, html_content, proposal_request, pricing_calculation)
     
-    async def _retry_generation_with_branding(
-        self, original_html: str, issues: List[str], rfx_data: Dict,
-        products_info: List[Dict], pricing_calculation: Dict, currency: str,
-        user_id: str, has_branding: bool, branding_config: Optional[Dict] = None
+    async def _retry_generation(
+        self, issues: List[str], rfx_data: Dict, products_info: List[Dict], 
+        pricing_calculation: Dict, currency: str, user_id: str, 
+        has_branding: bool, branding_config: Optional[Dict] = None
     ) -> str:
-        """
-        🔄 MEJORA #5: Reintenta generación con correcciones de HTML Y branding
+        """🔄 Método de retry unificado para HTML y branding"""
+        logger.info(f"🔄 Retrying generation with {len(issues)} issues to fix")
         
-        Args:
-            original_html: HTML original generado
-            issues: Lista de problemas (HTML + branding)
-            rfx_data: Datos del RFX
-            products_info: Información de productos
-            pricing_calculation: Cálculo de pricing
-            currency: Moneda
-            user_id: ID del usuario
-            has_branding: Si tiene branding configurado
-            branding_config: Configuración de branding (opcional)
-        """
-        logger.info(f"🔄 Attempting retry with branding corrections...")
-        logger.info(f"🔄 Total issues to fix: {len(issues)}")
+        # Preparar datos comunes
+        logo_endpoint = f"/api/branding/files/{user_id}/logo" if has_branding else "/api/branding/default/logo"
+        company_info = DEFAULT_COMPANY_INFO
+        pricing_data = self._format_pricing_data(pricing_calculation, currency)
         
-        # Separar issues de branding vs HTML
-        branding_issues = [issue for issue in issues if '⚠️' in issue or 'color' in issue.lower() or 'logo' in issue.lower()]
-        html_issues = [issue for issue in issues if issue not in branding_issues]
+        # Mapear datos para el prompt (inline simplificado)
+        companies = rfx_data.get('companies', {})
+        client_name = companies.get('name', 'N/A') if isinstance(companies, dict) else 'N/A'
         
-        logger.info(f"   - HTML issues: {len(html_issues)}")
-        logger.info(f"   - Branding issues: {len(branding_issues)}")
+        from datetime import datetime, timedelta
+        mapped_rfx_data = {
+            'client_name': client_name,
+            'solicitud': rfx_data.get('title', 'N/A'),
+            'products': products_info,
+            'user_id': rfx_data.get('user_id'),
+            'current_date': datetime.now().strftime('%Y-%m-%d'),
+            'validity_date': (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+        }
         
-        # Reconstruir el prompt original
+        # Construir prompt original
         if has_branding and branding_config:
-            logo_endpoint = f"/api/branding/files/{user_id}/logo"
-            company_info = self._get_company_info(user_id)
-            pricing_data = self._format_pricing_data(pricing_calculation, currency)
-            
-            # 🔧 MAPEAR datos igual que en la generación original
-            mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
-            logger.info(f"✅ Retry - Mapped data: client: {mapped_rfx_data.get('client_name')}, products: {len(mapped_rfx_data.get('products', []))}")
-            
             original_prompt = ProposalPrompts.get_prompt_with_branding(
-                user_id=user_id,
-                logo_endpoint=logo_endpoint,
-                company_info=company_info,
-                rfx_data=mapped_rfx_data,  # ✅ Usar datos mapeados
-                pricing_data=pricing_data,
-                branding_config=branding_config
+                user_id=user_id, logo_endpoint=logo_endpoint, company_info=company_info,
+                rfx_data=mapped_rfx_data, pricing_data=pricing_data, branding_config=branding_config
             )
         else:
-            company_info = self._get_company_info(user_id)
-            pricing_data = self._format_pricing_data(pricing_calculation, currency)
-            
-            # 🔧 MAPEAR datos igual que en la generación original
-            mapped_rfx_data = self._map_rfx_data_for_prompt(rfx_data, products_info)
-            logger.info(f"✅ Retry - Mapped data: client: {mapped_rfx_data.get('client_name')}, products: {len(mapped_rfx_data.get('products', []))}")
-            
             original_prompt = ProposalPrompts.get_prompt_default(
-                company_info=company_info,
-                rfx_data=mapped_rfx_data,  # ✅ Usar datos mapeados
-                pricing_data=pricing_data
+                company_info=company_info, rfx_data=mapped_rfx_data, pricing_data=pricing_data
             )
         
-        # Construir prompt de retry con TODOS los problemas
+        # Crear prompt de retry
         retry_prompt = f"""
-El HTML generado tiene los siguientes problemas que DEBES CORREGIR:
+El HTML generado tiene {len(issues)} problemas que DEBES CORREGIR:
 
-📋 PROBLEMAS DE HTML ({len(html_issues)}):
-{chr(10).join(f'- {issue}' for issue in html_issues) if html_issues else '(ninguno)'}
+PROBLEMAS:
+{chr(10).join(f'- {issue}' for issue in issues)}
 
-🎨 PROBLEMAS DE BRANDING ({len(branding_issues)}):
-{chr(10).join(f'- {issue}' for issue in branding_issues) if branding_issues else '(ninguno)'}
-
-🚨 INSTRUCCIONES PARA CORRECCIÓN:
-
-1. **COLORES:** Usa SOLO los colores especificados en el branding:
-   - Primario: {branding_config.get('primary_color', '#0e2541') if branding_config else '#0e2541'}
-   - Header tabla: {branding_config.get('table_header_bg', '#0e2541') if branding_config else '#0e2541'}
-   - Texto header: {branding_config.get('table_header_text', '#ffffff') if branding_config else '#ffffff'}
-
-2. **ESTRUCTURA:** Mantén la estructura exacta del prompt original
-
-3. **LOGO:** Asegúrate de incluir el logo correctamente
-
-4. **CONSISTENCIA:** NO improvises estilos nuevos
+INSTRUCCIONES:
+1. Mantén la estructura exacta del prompt original
+2. Corrige SOLO los problemas especificados
+3. NO improvises nuevos estilos o elementos
+4. Usa SOLO los colores del branding especificado
 
 ---
-
 PROMPT ORIGINAL:
 {original_prompt}
 
 ---
-
-GENERA DE NUEVO EL HTML CORRIGIENDO EXACTAMENTE ESTOS PROBLEMAS.
-RESPONDE SOLO CON EL HTML COMPLETO (sin ```html, sin markdown).
+GENERA EL HTML CORREGIDO.
 """
         
         return await self._call_ai(retry_prompt)
@@ -723,41 +737,28 @@ RESPONDE SOLO CON EL HTML COMPLETO (sin ```html, sin markdown).
             raise
     
     def _validate_html(self, html: str, products_info: List[Dict]) -> Dict[str, Any]:
-        """
-        🔍 Valida HTML usando HTMLValidator con sistema de scoring (0-10 puntos)
-        
-        Returns:
-            Dict con: is_valid, score, max_score, errors, warnings, details, percentage
-        """
+        """Valida HTML de manera simple - solo verifica elementos básicos"""
         logger.info(f"🔍 Validating HTML content...")
         
-        # Usar el validador robusto
-        validation = HTMLValidator.validate_proposal_html(html)
+        issues = []
         
-        # Logging detallado
-        logger.info(f"📊 Validation result: {validation['score']}/{validation['max_score']} ({validation['percentage']:.0f}%) - {'✅ VALID' if validation['is_valid'] else '❌ INVALID'}")
+        # Validaciones básicas
+        if '<!DOCTYPE' not in html:
+            issues.append("Missing DOCTYPE declaration")
+        if '<html' not in html:
+            issues.append("Missing HTML tag")
+        if '<table' not in html:
+            issues.append("Missing table")
+        if len(products_info) > 0 and f"{len(products_info)} productos" not in html and f"{len(products_info)} products" not in html:
+            issues.append("Products count mismatch")
         
-        if not validation['is_valid']:
-            logger.warning(f"⚠️ Validation errors found:")
-            for error in validation['errors']:
-                logger.warning(f"   - {error}")
+        is_valid = len(issues) == 0
         
-        if validation['warnings']:
-            logger.info(f"ℹ️ Validation warnings:")
-            for warning in validation['warnings']:
-                logger.info(f"   - {warning}")
+        logger.info(f"📊 Validation result: {'✅ VALID' if is_valid else '❌ INVALID'}")
         
-        # Log de detalles
-        logger.debug(f"📋 Validation details: {validation['details']}")
-        
-        # Convertir a formato compatible con el resto del código
         return {
-            'is_valid': validation['is_valid'],
-            'score': validation['score'],
-            'max_score': validation['max_score'],
-            'issues': validation['errors'] + validation['warnings'],
-            'details': validation['details'],
-            'percentage': validation['percentage']
+            'is_valid': is_valid,
+            'issues': issues
         }
     
     def _create_proposal_object(
