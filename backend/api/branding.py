@@ -322,12 +322,20 @@ def serve_branding_file(user_id: str, file_type: str):
             }), 400
         
         # Construir path al directorio de branding del usuario
-        # Usar path absoluto desde el directorio del proyecto
+        # Usar path absoluto desde el directorio del proyecto usando __file__
         import os
-        project_root = Path(os.getcwd())
+        from pathlib import Path
+        
+        # Get the project root by going up from this file's location
+        # backend/api/branding.py -> backend/ -> project_root/
+        current_file_dir = Path(__file__).parent  # backend/api/
+        backend_dir = current_file_dir.parent     # backend/
+        project_root = backend_dir.parent         # project_root/
+        
         branding_dir = project_root / "backend" / "static" / "branding" / user_id
+        logger.info(f"🔍 Project root: {project_root.absolute()}")
         logger.info(f"🔍 Looking for branding directory: {branding_dir.absolute()}")
-        logger.info(f"🔍 Current working directory: {project_root}")
+        logger.info(f"🔍 Current file location: {__file__}")
         
         if not branding_dir.exists():
             logger.warning(f"Branding directory not found: {branding_dir.absolute()}")
@@ -386,12 +394,19 @@ def serve_default_logo():
         import os
         from pathlib import Path
         
+        # Get the project root by going up from this file's location
+        # backend/api/branding.py -> backend/ -> project_root/
+        current_file_dir = Path(__file__).parent  # backend/api/
+        backend_dir = current_file_dir.parent     # backend/
+        project_root = backend_dir.parent         # project_root/
+        
         # Path al logo por defecto
-        project_root = Path(os.getcwd())
         default_dir = project_root / "backend" / "static" / "default"
         logo_file = default_dir / "sabra_logo.png"
         
+        logger.info(f"🔍 Project root: {project_root.absolute()}")
         logger.info(f"📁 Serving default logo: {logo_file}")
+        logger.info(f"🔍 Current file location: {__file__}")
         
         if not logo_file.exists():
             logger.error(f"Default logo not found: {logo_file}")
