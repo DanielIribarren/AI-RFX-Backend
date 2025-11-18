@@ -10,6 +10,7 @@ Enfoque: Analizar críticamente y tomar decisiones inteligentes sobre:
 """
 
 import logging
+import asyncio
 from typing import Dict, Any
 from openai import OpenAI
 
@@ -30,54 +31,17 @@ class PDFOptimizerAgent:
     
     async def optimize(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Optimiza HTML para conversión PDF profesional
-        
-        Args:
-            request: {
-                "html_content": "<html>...</html>",
-                "validation_results": {  
-                    "is_valid": True/False,
-                    "issues": ["issue1", "issue2"],
-                    "similarity_score": 0.95,
-                    "retries_performed": 2
-                },
-                "branding_config": {  
-                    "primary_color": "#0e2541",
-                    "table_header_bg": "#f0f0f0",
-                    ...
-                },
-                "page_config": {
-                    "size": "letter",  # letter, a4
-                    "orientation": "portrait"
-                },
-                "quality_requirements": {
-                    "professional_spacing": True,
-                    "table_centering": True,
-                    "min_margin": "15mm",
-                    "max_table_width": "190mm"
-                }
-            }
-        
-        Returns:
-            {
-                "status": "success" | "error",
-                "html_optimized": "<html>...optimizado...</html>",
-                "analysis": {
-                    "table_width": "190mm",
-                    "estimated_pages": 2,
-                    "adjustments_made": [...],
-                    "warnings": [...]
-                }
-            }
+        Optimiza HTML para conversión PDF profesional multipágina
+        Enfoque: Paginación inteligente, espaciado profesional, layout optimizado
         """
         try:
             logger.info("🎨 PDF Optimizer Agent - Starting optimization")
             
             html_content = request.get("html_content", "")
             validation_results = request.get("validation_results", {})
-            branding_config = request.get("branding_config", {})
             page_config = request.get("page_config", {})
             quality_req = request.get("quality_requirements", {})
+            branding_config = request.get("branding_config", {})
             
             if not html_content:
                 return {
@@ -86,7 +50,7 @@ class PDFOptimizerAgent:
                     "html_optimized": None
                 }
             
-            # Análisis y optimización con AI
+            # Optimización completa con AI para paginación multipágina
             optimization_result = await self._optimize_with_ai(
                 html_content, 
                 validation_results,
@@ -129,68 +93,59 @@ class PDFOptimizerAgent:
         page_size = page_config.get("size", "letter")
         max_width = "216mm" if page_size == "letter" else "210mm"  # Letter vs A4
         
-        # System prompt: Instrucciones de qué hacer con el JSON que recibe
-        system_prompt = """Eres un experto en optimización de HTML para conversión PDF profesional.
+        # System prompt SIMPLIFICADO para respuestas más rápidas
+        system_prompt = """Eres un experto en optimización de HTML para conversión PDF multipágina.
 
-Tu tarea es analizar el JSON que recibirás y optimizar el HTML para que se vea PERFECTO al convertirse en PDF.
+## OBJETIVO:
+Optimizar HTML para PDF profesional con paginación inteligente. Mantener TODO el contenido intacto.
 
-**OPTIMIZACIONES CRÍTICAS:**
+## OPTIMIZACIONES CRÍTICAS:
 
-1. **LOGOS EN BASE64:**
-   - NUNCA modifiques las imágenes con src="data:image/..."
-   - Asegura que tengan: max-width: 100%, height: auto
-   - Agrega: page-break-inside: avoid
-   - Mantén el CSS: image-rendering: -webkit-optimize-contrast
+### 1. PAGINACIÓN MULTIPÁGINA:
+- Si >12 productos: agregar `page-break-after: auto;` cada 12 filas
+- Header de tabla: `display: table-header-group;` (repetir en cada página)
+- Filas: `page-break-inside: avoid;` (no partir filas entre páginas)
 
-2. **ESTRUCTURA Y ESPACIADO:**
-   - Centrar tabla horizontalmente
-   - Espaciado profesional: 30px entre secciones
-   - Header: máximo 15% de altura
-   - Content: mínimo 70%
-   - Footer: máximo 15%
+### 2. CSS OBLIGATORIO:
+```css
+@page { size: letter; margin: 15mm; }
+body { -webkit-print-color-adjust: exact; }
+table { page-break-inside: auto; max-width: 190mm; margin: 0 auto; }
+tr { page-break-inside: avoid; }
+thead { display: table-header-group; }
+img { max-width: 100%; page-break-inside: avoid; }
+```
 
-3. **PAGINACIÓN:**
-   - Si >15 productos: agregar page-break cada 15 filas
-   - Header de tabla debe repetirse en cada página
-   - NUNCA cortar una fila entre páginas
+### 3. PRESERVAR:
+- Placeholder {{LOGO_PLACEHOLDER}} sin modificar
+- Todos los productos y precios
+- Colores del branding
+- Contenido completo
 
-4. **ANCHOS Y MÁRGENES:**
-   - Tabla máxima: 190mm (letter) o 180mm (A4)
-   - Márgenes mínimos: 15mm
-   - Si tabla muy ancha: ajustar proporcionalmente
-
-5. **COMPATIBILIDAD PDF:**
-   - Agregar: -webkit-print-color-adjust: exact
-   - Agregar: print-color-adjust: exact
-   - Usar unidades absolutas (mm, pt)
-   - NO usar position: fixed
-
-6. **COLORES Y BRANDING:**
-   - MANTENER colores exactos del branding
-   - NO modificar estilos del template
-   - Asegurar que colores se impriman correctamente
-
-**FORMATO DE RESPUESTA:**
-
-Debes responder ÚNICAMENTE con un JSON válido:
-
+## RESPUESTA JSON:
 {
-  "html_optimized": "HTML completo optimizado con todos los ajustes",
+  "html_optimized": "HTML completo optimizado",
   "table_width": "190mm",
   "estimated_pages": 2,
-  "adjustments_made": ["ajuste1", "ajuste2", ...],
-  "warnings": ["warning1", "warning2", ...],
-  "quality_score": 0.95
+  "adjustments_made": ["Lista de ajustes"],
+  "warnings": [],
+  "quality_score": 1.0
 }
 
-NO incluyas explicaciones adicionales.
-SOLO el JSON de optimización."""
+⚠️ NO truncar HTML. Retornar contenido completo."""
         
-        # User prompt: JSON directo del validator
+        # User prompt: HTML COMPLETO sin truncar (calidad > costo)
         optimization_payload = {
-            "html_content": html_content,
-            "validation_results": validation_results,
-            "branding_config": branding_config,
+            "html_content": html_content,  # HTML COMPLETO - NO truncar
+            "validation_results": {
+                "is_valid": validation_results.get("is_valid", False),
+                "issues_count": len(validation_results.get("issues", [])),
+                "similarity_score": validation_results.get("similarity_score", 0.0)
+            },
+            "branding_config": {
+                "primary_color": branding_config.get('primary_color', '#000000'),
+                "secondary_color": branding_config.get('secondary_color', '#ffffff')
+            },
             "page_config": {
                 "size": page_size,
                 "max_width": max_width,
@@ -207,26 +162,30 @@ SOLO el JSON de optimización."""
         import json
         user_prompt = json.dumps(optimization_payload, indent=2, ensure_ascii=False)
         
-        # Nota: Truncar HTML si es muy largo para evitar exceder límites de tokens
-        if len(user_prompt) > 50000:
-            # Truncar HTML pero mantener estructura
-            html_preview = html_content[:10000] + "\n...[HTML truncado]...\n" + html_content[-5000:]
-            optimization_payload["html_content"] = html_preview
-            user_prompt = json.dumps(optimization_payload, indent=2, ensure_ascii=False)
-        
-        logger.info(f"📤 Sending to AI - Payload size: {len(user_prompt)} chars")
+        logger.info(f"📤 Sending HTML COMPLETO to AI - Size: {len(html_content)} chars (NO truncado)")
+        logger.info(f"🤖 Model: {self.openai_config.model}, Temperature: 0.2")
         
         try:
-            response = self.client.chat.completions.create(
+            import time
+            start_time = time.time()
+            
+            logger.info("⏳ Calling OpenAI API...")
+            
+            # Ejecutar llamada síncrona en thread separado para no bloquear
+            response = await asyncio.to_thread(
+                self.client.chat.completions.create,
                 model=self.openai_config.model,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.3,
-                max_tokens=16000,
+                temperature=0.2,  # Baja temperatura para optimización precisa y consistente
+                # SIN max_tokens - dejar que el modelo genere HTML completo (calidad > costo)
                 response_format={"type": "json_object"}
             )
+            
+            elapsed = time.time() - start_time
+            logger.info(f"✅ OpenAI API responded in {elapsed:.2f}s")
             
             result = json.loads(response.choices[0].message.content)
             

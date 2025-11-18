@@ -5,8 +5,7 @@ Flujo: Generator → Validator → (Retry si falla) → PDF Optimizer → HTML F
 """
 
 import logging
-import base64
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
 
@@ -68,7 +67,8 @@ class AgentOrchestrator:
                 "html_template": html_template,
                 "user_id": user_id,
                 "logo_url": f"/api/branding/files/{user_id}/logo",
-                "data": rfx_data
+                "data": rfx_data,
+                "branding_config": branding_config  # Pasar branding para aplicar colores correctos
             }
             
             generator_response = await proposal_generator_agent.generate(generator_request)
@@ -84,9 +84,9 @@ class AgentOrchestrator:
             request_data = generator_response.get("metadata", {})
             
             # ========================================
-            # PASO 2: VALIDAR CON AGENTE 2
+            # PASO 2: VALIDAR + AUTO-CORREGIR CON AGENTE 2
             # ========================================
-            logger.info("✅ Step 2/4: Validating with Template Validator Agent")
+            logger.info("✅ Step 2/4: Validating + Auto-fixing with Validator Agent")
             
             validator_request = {
                 "html_generated": html_generated,
@@ -97,37 +97,15 @@ class AgentOrchestrator:
             
             validator_response = await template_validator_agent.validate(validator_request)
             
-            # ========================================
-            # PASO 3: RETRY SI VALIDACIÓN FALLA
-            # ========================================
-            retry_count = 0
-            while not validator_response["is_valid"] and retry_count < self.max_retries:
-                retry_count += 1
-                logger.warning(f"🔄 Step 3/4: Validation failed, retrying ({retry_count}/{self.max_retries})")
-                
-                # Regenerar con correcciones
-                regenerate_request = {
-                    "html_template": html_template,
-                    "previous_html": html_generated,
-                    "issues": validator_response["issues"],
-                    "user_id": user_id,
-                    "data": rfx_data
-                }
-                
-                generator_response = await proposal_generator_agent.regenerate(regenerate_request)
-                
-                if generator_response["status"] != "success":
-                    break
-                
-                html_generated = generator_response["html_generated"]
-                
-                # Re-validar
-                validator_request["html_generated"] = html_generated
-                validator_response = await template_validator_agent.validate(validator_request)
+            # El validador ahora retorna HTML corregido automáticamente
+            html_corrected = validator_response.get("html_corrected", html_generated)
+            corrections_made = validator_response.get("corrections_made", [])
             
-            # Si después de retries sigue fallando, continuar con advertencia
-            if not validator_response["is_valid"]:
-                logger.warning(f"⚠️ Validation still failing after {retry_count} retries - proceeding with warnings")
+            if corrections_made:
+                logger.info(f"🔧 Validator applied {len(corrections_made)} auto-corrections")
+                html_generated = html_corrected  # Usar HTML corregido
+            else:
+                logger.info("✅ No corrections needed - HTML was perfect")
             
             # ========================================
             # PASO 4: OPTIMIZAR PARA PDF CON AGENTE 3
@@ -138,9 +116,9 @@ class AgentOrchestrator:
                 "html_content": html_generated,
                 "validation_results": {
                     "is_valid": validator_response["is_valid"],
-                    "issues": validator_response["issues"],
+                    "corrections_made": corrections_made,
                     "similarity_score": validator_response.get("similarity_score", 0.0),
-                    "retries_performed": retry_count
+                    "quality_score": validator_response.get("quality_score", 0.0)
                 },
                 "branding_config": branding_config,  # Para optimizaciones específicas del branding
                 "page_config": {
@@ -185,13 +163,14 @@ class AgentOrchestrator:
                     "generation": generator_response.get("metadata", {}),
                     "validation": {
                         "is_valid": validator_response["is_valid"],
-                        "issues_count": len(validator_response["issues"]),
+                        "corrections_count": len(corrections_made),
+                        "corrections_made": corrections_made[:5],  # Primeras 5 correcciones
                         "similarity_score": validator_response.get("similarity_score", 0.0),
-                        "retries": retry_count
+                        "quality_score": validator_response.get("quality_score", 0.0)
                     },
                     "optimization": optimizer_response.get("analysis", {}),
                     "total_time_ms": total_time_ms,
-                    "agents_used": ["ProposalGenerator", "TemplateValidator", "PDFOptimizer"]
+                    "agents_used": ["ProposalGenerator", "ValidatorAutoFix", "PDFOptimizer"]
                 }
             }
             
@@ -312,24 +291,24 @@ class AgentOrchestrator:
     
     async def _insert_logo(self, html: str, user_id: str) -> str:
         """
-        Inserta logo en base64 sin usar AI (post-processing)
-        Reemplaza {{LOGO_PLACEHOLDER}} con el logo real en base64
+        Inserta logo usando ruta de archivo (post-processing)
+        Reemplaza {{LOGO_PLACEHOLDER}} con ruta absoluta del logo
         """
         try:
-            # Obtener logo en base64
-            logo_base64 = await self._get_user_logo_base64(user_id)
+            # Obtener ruta del logo
+            logo_path = self._get_user_logo_path(user_id)
             
-            if not logo_base64:
+            if not logo_path:
                 logger.warning(f"⚠️ No logo found for user {user_id}, keeping placeholder")
                 return html
             
-            # Reemplazar placeholder con logo real
-            html_with_logo = html.replace("{{LOGO_PLACEHOLDER}}", logo_base64)
+            # Reemplazar placeholder con ruta absoluta del archivo
+            html_with_logo = html.replace("{{LOGO_PLACEHOLDER}}", str(logo_path))
             
             # Contar cuántos reemplazos se hicieron
             replacements = html.count("{{LOGO_PLACEHOLDER}}")
             
-            logger.info(f"✅ Logo inserted - {replacements} placeholder(s) replaced, Size: {len(logo_base64)} chars")
+            logger.info(f"✅ Logo inserted - {replacements} placeholder(s) replaced with path: {logo_path}")
             
             return html_with_logo
             
@@ -337,45 +316,29 @@ class AgentOrchestrator:
             logger.error(f"❌ Error inserting logo: {e}")
             return html  # Retornar HTML sin logo en caso de error
     
-    async def _get_user_logo_base64(self, user_id: str) -> str:
-        """Obtiene el logo del usuario en formato base64 data URI"""
+    def _get_user_logo_path(self, user_id: str) -> Optional[Path]:
+        """Obtiene la ruta absoluta del logo del usuario"""
         try:
             # Buscar logo en directorio del usuario
             logo_dir = Path("backend/static/branding") / user_id
             
             # Buscar archivo de logo (cualquier extensión)
             logo_extensions = ['.png', '.jpg', '.jpeg', '.svg']
-            logo_path = None
             
             for ext in logo_extensions:
                 potential_path = logo_dir / f"logo{ext}"
                 if potential_path.exists():
-                    logo_path = potential_path
-                    break
+                    # Retornar ruta absoluta
+                    absolute_path = potential_path.resolve()
+                    logger.info(f"✅ Logo found: {absolute_path}")
+                    return absolute_path
             
-            if not logo_path:
-                logger.warning(f"⚠️ No logo found for user: {user_id}")
-                return ""  # Retornar vacío si no hay logo
-            
-            # Leer y convertir a base64
-            with open(logo_path, "rb") as image_file:
-                logo_base64 = base64.b64encode(image_file.read()).decode('utf-8')
-            
-            # Detectar tipo MIME
-            mime_type = "image/png"
-            if logo_path.suffix.lower() in ['.jpg', '.jpeg']:
-                mime_type = "image/jpeg"
-            elif logo_path.suffix.lower() == '.svg':
-                mime_type = "image/svg+xml"
-            
-            # Retornar data URI completo
-            data_uri = f"data:{mime_type};base64,{logo_base64}"
-            
-            return data_uri
+            logger.warning(f"⚠️ No logo found for user: {user_id}")
+            return None
             
         except Exception as e:
-            logger.error(f"❌ Error getting logo base64: {e}")
-            return ""
+            logger.error(f"❌ Error getting logo path: {e}")
+            return None
 
 
 # Singleton instance

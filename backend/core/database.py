@@ -779,6 +779,132 @@ class DatabaseClient:
             return None
 
     # ========================
+    # USER INFORMATION METHODS
+    # ========================
+    
+    def get_user_info_by_id(self, user_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
+        """Get user information from users table with comprehensive field selection"""
+        try:
+            if not user_id:
+                return None
+            
+            # Try to get user info from users table with available fields
+            try:
+                response = self.client.table("users")\
+                    .select("id, email, full_name, created_at")\
+                    .eq("id", str(user_id))\
+                    .limit(1)\
+                    .execute()
+                
+                if response.data and len(response.data) > 0:
+                    user = response.data[0]
+                    
+                    # Extract name with multiple fallbacks
+                    full_name = (
+                        user.get("full_name") or 
+                        user.get("email", "").split("@")[0].title() or
+                        "Unknown User"
+                    )
+                    
+                    return {
+                        "id": user.get("id"),
+                        "email": user.get("email"),
+                        "full_name": full_name,
+                        "name": full_name,
+                        "created_at": user.get("created_at")
+                    }
+            except Exception as e:
+                logger.debug(f"Could not get user from users table: {e}")
+            
+            # Fallback: return minimal info with user_id
+            logger.warning(f"⚠️ Using fallback user info for {user_id}")
+            return {
+                "id": str(user_id),
+                "email": "unknown@example.com",
+                "full_name": "Unknown User",
+                "name": "Unknown User",
+                "created_at": None
+            }
+        except Exception as e:
+            logger.error(f"❌ Failed to get user info for {user_id}: {e}")
+            return None
+    
+    def enrich_rfx_with_user_info(self, rfx_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Enrich RFX records with user information using batch query"""
+        try:
+            # Get unique user_ids
+            user_ids = set()
+            for record in rfx_records:
+                user_id = record.get("user_id")
+                if user_id:
+                    user_ids.add(str(user_id))
+            
+            if not user_ids:
+                logger.debug("No user_ids to enrich")
+                return rfx_records
+            
+            logger.info(f"🔍 Fetching info for {len(user_ids)} unique users")
+            
+            # Fetch all users in a single batch query
+            user_info_map = {}
+            try:
+                # Query users table with IN clause for all user_ids at once
+                response = self.client.table("users")\
+                    .select("id, email, full_name, created_at")\
+                    .in_("id", list(user_ids))\
+                    .execute()
+                
+                if response.data:
+                    for user in response.data:
+                        # Extract name with multiple fallbacks
+                        full_name = (
+                            user.get("full_name") or 
+                            user.get("email", "").split("@")[0].title() or
+                            "Unknown User"
+                        )
+                        
+                        user_info_map[str(user.get("id"))] = {
+                            "id": user.get("id"),
+                            "email": user.get("email"),
+                            "full_name": full_name,
+                            "name": full_name,
+                            "created_at": user.get("created_at")
+                        }
+                    
+                    logger.info(f"✅ Successfully fetched {len(user_info_map)} user records")
+            except Exception as e:
+                logger.warning(f"⚠️ Batch user query failed, falling back to individual queries: {e}")
+                # Fallback to individual queries if batch fails
+                for user_id in user_ids:
+                    user_info = self.get_user_info_by_id(user_id)
+                    if user_info:
+                        user_info_map[str(user_id)] = user_info
+            
+            # Enrich records with user info
+            for record in rfx_records:
+                user_id = record.get("user_id")
+                if user_id and str(user_id) in user_info_map:
+                    record["users"] = user_info_map[str(user_id)]
+                else:
+                    # Add minimal fallback info if user not found
+                    if user_id:
+                        logger.debug(f"User {user_id} not found, using fallback")
+                        record["users"] = {
+                            "id": str(user_id),
+                            "email": "unknown@example.com",
+                            "full_name": "Unknown User",
+                            "name": "Unknown User",
+                            "created_at": None
+                        }
+                    else:
+                        record["users"] = None
+            
+            return rfx_records
+        except Exception as e:
+            logger.error(f"❌ Failed to enrich RFX with user info: {e}")
+            return rfx_records
+    
+    # ========================
     # RAW SQL METHODS (for user_repository)
     # ========================
     
@@ -1042,6 +1168,24 @@ class DatabaseClient:
                 return False
         except Exception as e:
             logger.error(f"❌ Failed to update product: {e}")
+            raise
+
+    def update_rfx_title(self, rfx_id: Union[str, UUID], title: str) -> bool:
+        """Update RFX title"""
+        try:
+            response = self.client.table("rfx_v2")\
+                .update({"title": title.strip()})\
+                .eq("id", str(rfx_id))\
+                .execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"✅ RFX title updated: {rfx_id} -> '{title.strip()}'")
+                return True
+            else:
+                logger.warning(f"⚠️ No RFX found to update title: {rfx_id}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to update RFX title: {e}")
             raise
 
     # ========================

@@ -19,6 +19,7 @@ from backend.models.rfx_models import (
 )
 from backend.services.rfx_processor import RFXProcessorService
 from backend.core.config import get_file_upload_config
+from backend.utils.auth_middleware import jwt_required, get_current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -29,17 +30,26 @@ rfx_bp = Blueprint("rfx_api", __name__, url_prefix="/api/rfx")
 
 
 @rfx_bp.route("/process", methods=["POST"])
+@jwt_required
 def process_rfx():
     """
-    🎯 Main RFX processing endpoint - FLEXIBLE version
+    🎯 Main RFX processing endpoint - FLEXIBLE version (AUTENTICADO)
     Processes: SOLO ARCHIVOS | SOLO TEXTO | ARCHIVOS + TEXTO
+    
+    🔒 AUTENTICACIÓN REQUERIDA: JWT token necesario
     
     Casos de uso:
     1. Solo archivos: frontend envía files → procesa archivos
     2. Solo texto: frontend envía contenido_extraido → procesa texto
     3. Ambos: frontend envía files + contenido_extraido → procesa todo
+    
+    Headers: Authorization: Bearer <token>
     """
     try:
+        # 🔒 OBTENER USER_ID del token JWT (AUTOMÁTICO Y SEGURO)
+        current_user_id = get_current_user_id()
+        logger.info(f"🔒 RFX Process Request - Authenticated user: {current_user_id}")
+        
         # 🔍 LOGGING INICIAL - Debug para entender qué llega
         logger.info(f"🔍 RFX Process Request received")
         logger.info(f"📄 Request files: {list(request.files.keys())}")
@@ -151,24 +161,19 @@ def process_rfx():
         rfx_id = request.form.get('id', f"RFX-{int(time.time())}-{random.randint(1000, 9999)}")
         tipo_rfx = request.form.get('tipo_rfx', 'catering')
         
-        # 🆕 CRITICAL: Obtener user_id del request
-        user_id = request.form.get('user_id')
-        
-        if not user_id:
-            logger.warning(f"⚠️ No user_id provided in request for RFX {rfx_id}")
-            # Try to get from authentication context if available
-            # For now, log warning but continue (fallback will handle it)
-        else:
-            logger.info(f"✅ user_id received: {user_id}")
+        # 🔒 USAR user_id del token JWT (YA OBTENIDO ARRIBA)
+        # No necesitamos obtenerlo del request.form, viene del token autenticado
+        logger.info(f"✅ Using authenticated user_id: {current_user_id}")
         
         rfx_input = RFXInput(id=rfx_id, rfx_type=RFXType(tipo_rfx))
 
         logger.info(f"🚀 Starting RFX processing: {rfx_id} (type: {tipo_rfx})")
         logger.info(f"📊 Processing summary: {len(valid_files)} files, total_size: {total_size} bytes")
+        logger.info(f"👤 Processing for user: {current_user_id}")
 
         processor_service = RFXProcessorService()
-        # 🆕 PIPELINE FLEXIBLE: Procesa archivos Y/O texto
-        rfx_processed = processor_service.process_rfx_case(rfx_input, valid_files, user_id=user_id)
+        # 🔒 PIPELINE FLEXIBLE con USER_ID AUTENTICADO: Procesa archivos Y/O texto
+        rfx_processed = processor_service.process_rfx_case(rfx_input, valid_files, user_id=current_user_id)
         
         # NOTE: Proposal generation is now handled separately by user request
         # The user will review extracted data, set product costs, then request proposal generation
@@ -265,12 +270,16 @@ def get_rfx_history():
         
         rfx_records = db_client.get_rfx_history(limit=limit, offset=offset)
         
+        # Enrich with user information
+        rfx_records = db_client.enrich_rfx_with_user_info(rfx_records)
+        
         # Format response data with V2.0 structure
         history_items = []
         for record in rfx_records:
-            # V2.0: Extract company and requester data from related tables
+            # V2.0: Extract company, requester, and user data from related tables
             company_data = record.get("companies", {}) or {}
             requester_data = record.get("requesters", {}) or {}
+            user_data = record.get("users", {}) or {}  # ← NUEVO: Información del usuario
             metadata = record.get("metadata_json", {}) or {}
             
             # Map V2.0 status to legacy format
@@ -316,6 +325,14 @@ def get_rfx_history():
                 
                 # Empresa information
                 "empresa": empresa_info,
+                
+                # 🆕 NUEVO: Información del usuario que procesó el RFX
+                "processed_by": {
+                    "id": user_data.get("id"),
+                    "name": user_data.get("full_name", user_data.get("name", "Unknown User")),
+                    "email": user_data.get("email", "unknown@example.com"),
+                    "username": user_data.get("username")
+                },
                 
                 # Additional fields for frontend consistency
                 "client": requester_data.get("name", "Unknown Requester"),
@@ -401,9 +418,14 @@ def get_rfx_by_id(rfx_id: str):
                 "error": f"No RFX found with ID: {rfx_id}"
             }), 404
         
+        # Enrich with user information
+        rfx_records_list = db_client.enrich_rfx_with_user_info([rfx_record])
+        rfx_record = rfx_records_list[0] if rfx_records_list else rfx_record
+        
         # Convert V2.0 database record to response format
         company_data = rfx_record.get("companies", {}) or {}
         requester_data = rfx_record.get("requesters", {}) or {}
+        user_data = rfx_record.get("users", {}) or {}  # ← NUEVO: Información del usuario
         metadata = rfx_record.get("metadata_json", {}) or {}
         
         # Get proposals to determine processing state
@@ -487,6 +509,14 @@ def get_rfx_by_id(rfx_id: str):
             "telefono_empresa": company_data.get("phone", metadata.get("telefono_empresa", "")),
             "telefono_solicitante": requester_data.get("phone", metadata.get("telefono_solicitante", "")),
             "cargo_solicitante": requester_data.get("position", metadata.get("cargo_solicitante", "")),
+            
+            # 🆕 Información del usuario que procesó el RFX
+            "processed_by": {
+                "id": user_data.get("id"),
+                "name": user_data.get("full_name", user_data.get("name", "Unknown User")),
+                "email": user_data.get("email", "unknown@example.com"),
+                "username": user_data.get("username")
+            },
             
             # 🆕 Generated HTML content for frontend preview
             "generated_html": generated_html
@@ -1658,6 +1688,117 @@ def update_rfx_product(rfx_id: str, product_id: str):
         }), 500
 
 
+@rfx_bp.route("/<rfx_id>/title", methods=["PATCH"])
+@jwt_required
+def update_rfx_title(rfx_id: str):
+    """
+    📝 Actualizar el título de un RFX
+
+    PATCH /api/rfx/<rfx_id>/title
+    Body: {"title": "Nuevo título del RFX"}
+    """
+    try:
+        logger.info(f"📝 Updating title for RFX: {rfx_id}")
+
+        if not request.is_json:
+            return jsonify({
+                "status": "error",
+                "message": "Content-Type must be application/json"
+            }), 400
+
+        data = request.get_json()
+        new_title = data.get("title")
+
+        if not new_title or not isinstance(new_title, str):
+            return jsonify({
+                "status": "error",
+                "message": "Title is required and must be a string",
+                "error": "Invalid title"
+            }), 400
+
+        # Validar longitud del título
+        if len(new_title.strip()) < 3:
+            return jsonify({
+                "status": "error",
+                "message": "Title must be at least 3 characters long",
+                "error": "Title too short"
+            }), 400
+
+        if len(new_title.strip()) > 200:
+            return jsonify({
+                "status": "error",
+                "message": "Title must be less than 200 characters",
+                "error": "Title too long"
+            }), 400
+
+        from ..core.database import get_database_client
+        db_client = get_database_client()
+
+        # Verificar que el RFX existe
+        rfx_record = db_client.get_rfx_by_id(rfx_id)
+        if not rfx_record:
+            return jsonify({
+                "status": "error",
+                "message": "RFX not found",
+                "error": f"No RFX found with ID: {rfx_id}"
+            }), 404
+
+        old_title = rfx_record.get("title", "")
+
+        # Actualizar el título
+        try:
+            success = db_client.update_rfx_title(rfx_id, new_title)
+
+            if success:
+                logger.info(f"✅ RFX title updated: {rfx_id} -> '{new_title.strip()}'")
+
+                # Crear evento en historial
+                history_event = {
+                    "rfx_id": rfx_id,
+                    "event_type": "title_updated",
+                    "description": f"RFX title changed from '{old_title}' to '{new_title.strip()}'",
+                    "old_values": {"title": old_title},
+                    "new_values": {"title": new_title.strip()},
+                    "performed_by": "user"
+                }
+                db_client.insert_rfx_history(history_event)
+
+                return jsonify({
+                    "status": "success",
+                    "message": "RFX title updated successfully",
+                    "data": {
+                        "rfx_id": rfx_id,
+                        "old_title": old_title,
+                        "new_title": new_title.strip()
+                    }
+                }), 200
+            else:
+                logger.error(f"❌ Failed to update RFX title: {rfx_id}")
+                return jsonify({
+                    "status": "error",
+                    "message": "Failed to update RFX title",
+                    "error": "Database update failed"
+                }), 500
+
+        except Exception as db_error:
+            logger.error(f"❌ Database error updating RFX title: {db_error}")
+            return jsonify({
+                "status": "error",
+                "message": "Database error while updating RFX title",
+                "error": str(db_error)
+            }), 500
+
+    except Exception as e:
+        logger.error(f"❌ Exception in update_rfx_title: {e}")
+        import traceback
+        logger.error(f"❌ Full traceback: {traceback.format_exc()}")
+        return jsonify({
+            "status": "error",
+            "message": "Internal server error",
+            "error": str(e)
+        }), 500
+
+
 @rfx_bp.route("/latest", methods=["GET"])
 def get_latest_rfx():
     """
@@ -1691,12 +1832,16 @@ def get_latest_rfx():
         
         rfx_records = db_client.get_latest_rfx(limit=limit, offset=0)
         
+        # Enrich with user information
+        rfx_records = db_client.enrich_rfx_with_user_info(rfx_records)
+        
         # Format response data with consistent structure
         latest_items = []
         for record in rfx_records:
-            # Extract company and requester data from V2.0 schema
+            # Extract company, requester, and user data from V2.0 schema
             company_data = record.get("companies", {}) or {}
             requester_data = record.get("requesters", {}) or {}
+            user_data = record.get("users", {}) or {}  # ← NUEVO: Información del usuario
             metadata = record.get("metadata_json", {}) or {}
             
             # Map V2.0 status to frontend format
@@ -1750,7 +1895,15 @@ def get_latest_rfx():
                 
                 # Additional metadata
                 "requirements": record.get("requirements"),
-                "requirements_confidence": record.get("requirements_confidence")
+                "requirements_confidence": record.get("requirements_confidence"),
+                
+                # 🆕 NUEVO: Información del usuario que procesó el RFX
+                "processed_by": {
+                    "id": user_data.get("id"),
+                    "name": user_data.get("full_name", user_data.get("name", "Unknown User")),
+                    "email": user_data.get("email", "unknown@example.com"),
+                    "username": user_data.get("username")
+                } if user_data else None
             }
             latest_items.append(latest_item)
         

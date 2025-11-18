@@ -1,29 +1,27 @@
 """
-🤖 Proposal Generator AI Agent
+🤖 Proposal Generator Agent (NO AI - Python Puro)
 Responsabilidad: Insertar datos del RFX en el template HTML del usuario
-Enfoque: Simple - Template + Datos → OpenAI → HTML con datos
+Enfoque: ULTRA SIMPLE - Template + Datos → .replace() → HTML con datos
+Sin llamadas a OpenAI - 100% determinístico y rápido
 """
 
 import logging
-import json
-from typing import Dict, Any
+from typing import Dict, Any, List
 from datetime import datetime, timedelta
-from openai import OpenAI
-
-from backend.core.config import get_openai_config
 
 logger = logging.getLogger(__name__)
 
 
 class ProposalGeneratorAgent:
     """
-    Agente especializado en insertar datos en templates HTML
-    Arquitectura simple: Template + Datos → LLM → HTML generado
+    Agente especializado en insertar datos en templates HTML usando Python puro
+    NO usa AI - 100% determinístico, rápido y confiable
+    Arquitectura ULTRA SIMPLE: Template + Datos → .replace() → HTML completo
     """
     
     def __init__(self):
-        self.openai_config = get_openai_config()
-        self.client = OpenAI(api_key=self.openai_config.api_key)
+        """No requiere configuración - solo lógica Python pura"""
+        pass
     
     async def generate(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -47,84 +45,16 @@ class ProposalGeneratorAgent:
             
             html_template = request.get("html_template")
             data = request.get("data", {})
+            branding_config = request.get("branding_config", {})
             
             if not html_template:
                 return {"status": "error", "error": "html_template required", "html_generated": None}
             
-            # Mapear datos usando función del service
+            # Mapear datos
             mapped_data = self._map_data(data)
             
-            # System prompt
-            system_prompt = """Eres un sistema de generación de presupuestos HTML.
-
-Tu tarea:
-1. Tomar el template HTML proporcionado
-2. Insertar los datos del cliente, productos y totales en el template
-3. Mantener EXACTAMENTE la estructura, colores y estilos del template original
-4. NO inventar datos - usar SOLO los datos proporcionados
-
-Reglas críticas:
-- NO cambies colores ni estilos CSS del template
-- NO agregues elementos nuevos no solicitados
-- Mantén la estructura HTML exacta del template
-- Si una variable no tiene valor, usa texto apropiado como "N/A" o deja vacío
-
-⚠️ **CRÍTICO - ESTRUCTURA Y POSICIONAMIENTO:**
-- NO modifiques el layout del template (flex, grid, position, etc.)
-- NO cambies el orden de los elementos HTML
-- NO muevas elementos de su posición original
-- Si el template tiene "PRESUPUESTO" en la esquina derecha, DEBE quedar en la esquina derecha
-- Si el template usa clases específicas, MANTENLAS exactamente igual
-- COPIA la estructura HTML del template, NO la recrees desde cero"""
-            
-            # User prompt
-            user_prompt = f"""# TEMPLATE HTML:
-
-{html_template}
-
-# DATOS DEL PRESUPUESTO:
-
-{json.dumps(mapped_data, indent=2, ensure_ascii=False)}
-
-# INSTRUCCIONES:
-
-Genera el HTML completo del presupuesto insertando los datos en el template.
-- Cliente: {mapped_data.get('client_name', 'N/A')}
-- Solicitud: {mapped_data.get('solicitud', 'N/A')}
-- Productos: {len(mapped_data.get('products', []))} items
-- Total: {mapped_data.get('pricing', {}).get('total_formatted', '$0.00')}
-- Fecha: {mapped_data.get('current_date', 'N/A')}
-
-⚠️ **CRÍTICO - LOGO PLACEHOLDER:**
-El logo se insertará después. DEBES usar este placeholder EXACTO:
-<img src="{{{{LOGO_PLACEHOLDER}}}}" alt="Logo" class="logo">
-
-NO modifiques este placeholder. NO uses URLs. NO uses base64.
-USA EXACTAMENTE: {{{{LOGO_PLACEHOLDER}}}}
-
-Genera SOLO el HTML completo. NO incluyas markdown (```html)."""
-            
-            # Llamar OpenAI
-            response = self.client.chat.completions.create(
-                model=self.openai_config.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,
-                max_tokens=8000
-            )
-            
-            html_generated = (response.choices[0].message.content or "").strip()
-            
-            # Limpiar markdown si existe
-            if html_generated.startswith("```html"):
-                html_generated = html_generated[7:]
-            if html_generated.startswith("```"):
-                html_generated = html_generated[3:]
-            if html_generated.endswith("```"):
-                html_generated = html_generated[:-3]
-            html_generated = html_generated.strip()
+            # Insertar datos en template usando Python puro (SIN AI)
+            html_generated = self._insert_data_in_template(html_template, mapped_data, branding_config)
             
             logger.info(f"✅ HTML generated - Length: {len(html_generated)} chars")
             
@@ -164,92 +94,116 @@ Genera SOLO el HTML completo. NO incluyas markdown (```html)."""
         
         return mapped
     
+    def _insert_data_in_template(self, html_template: str, mapped_data: Dict, branding_config: Dict = None) -> str:
+        """
+        Inserta datos en template usando replace (SIN AI - Python puro)
+        100% determinístico, rápido y confiable
+        """
+        html = html_template
+        
+        # Aplicar colores del branding si están disponibles
+        if branding_config:
+            primary_color = branding_config.get('primary_color', '')
+            table_header_bg = branding_config.get('table_header_bg', '')
+            table_header_text = branding_config.get('table_header_text', '')
+            
+            # Reemplazar colores hardcodeados del template con colores del branding
+            if primary_color:
+                # Reemplazar variaciones comunes de colores hardcodeados
+                html = html.replace('#1F2A44', primary_color)
+                html = html.replace('#1f2a44', primary_color)
+                html = html.replace('color: #1F2A44', f'color: {primary_color}')
+                html = html.replace('background-color: #1F2A44', f'background-color: {primary_color}')
+                
+                logger.info(f"🎨 Applied primary color: {primary_color}")
+        
+        # Reemplazos simples de variables (múltiples variaciones para compatibilidad)
+        client_name = mapped_data.get('client_name', 'N/A')
+        solicitud = mapped_data.get('solicitud', 'N/A')
+        current_date = mapped_data.get('current_date', 'N/A')
+        validity_date = mapped_data.get('validity_date', 'N/A')
+        
+        # Cliente (variaciones posibles)
+        html = html.replace("{{CLIENT_NAME}}", client_name)
+        html = html.replace("{{CLIENTE}}", client_name)
+        
+        # Solicitud/Request (variaciones posibles)
+        html = html.replace("{{SOLICITUD}}", solicitud)
+        html = html.replace("{{REQUEST_DESCRIPTION}}", solicitud)
+        html = html.replace("{{REQUEST}}", solicitud)
+        html = html.replace("{{DESCRIPCION}}", solicitud)
+        
+        # Fechas (variaciones posibles)
+        html = html.replace("{{CURRENT_DATE}}", current_date)
+        html = html.replace("{{DATE}}", current_date)
+        html = html.replace("{{FECHA}}", current_date)
+        
+        html = html.replace("{{VALIDITY_DATE}}", validity_date)
+        html = html.replace("{{VIGENCIA}}", validity_date)
+        html = html.replace("{{VALIDITY}}", validity_date)
+        
+        # Totales y pricing
+        pricing = mapped_data.get('pricing', {})
+        html = html.replace("{{TOTAL}}", pricing.get('total_formatted', '$0.00'))
+        html = html.replace("{{TOTAL_AMOUNT}}", pricing.get('total_formatted', '$0.00'))
+        html = html.replace("{{SUBTOTAL}}", pricing.get('subtotal_formatted', '$0.00'))
+        html = html.replace("{{TAX}}", pricing.get('tax_formatted', '$0.00'))
+        html = html.replace("{{COORDINATION}}", pricing.get('coordination_formatted', '$0.00'))
+        
+        # Generar filas de productos
+        products = mapped_data.get('products', [])
+        products_html = self._generate_product_rows(products)
+        html = html.replace("{{PRODUCT_ROWS}}", products_html)
+        
+        logger.info(f"✅ Data inserted - {len(products)} products, {html.count('{{')//2} remaining placeholders")
+        
+        return html
+    
+    def _generate_product_rows(self, products: List[Dict]) -> str:
+        """
+        Genera filas HTML de productos (Python puro - SIN AI)
+        Formato consistente y predecible
+        """
+        if not products:
+            return '<tr><td colspan="5" style="text-align: center;">No hay productos</td></tr>'
+        
+        rows = []
+        for i, product in enumerate(products, 1):
+            nombre = product.get('nombre', 'N/A')
+            cantidad = product.get('cantidad', 0)
+            unidad = product.get('unidad', 'unidad')
+            precio_unitario = product.get('precio_unitario', 0.0)
+            total = product.get('total', 0.0)
+            
+            row = f"""        <tr>
+            <td>{i}</td>
+            <td>{nombre}</td>
+            <td>{cantidad} {unidad}</td>
+            <td>${precio_unitario:.2f}</td>
+            <td>${total:.2f}</td>
+        </tr>"""
+            rows.append(row)
+        
+        logger.info(f"📦 Generated {len(rows)} product rows")
+        return "\n".join(rows)
+    
     async def regenerate(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Regenera HTML corrigiendo issues específicos
+        Regenera HTML (con Python puro siempre genera igual - determinístico)
+        Solo vuelve a llamar generate() ya que no hay errores de AI
         
         Args:
             request: {
                 "html_template": "...",
-                "previous_html": "...",
-                "issues": ["error1", "error2"],
+                "issues": ["error1", "error2"],  # Se ignoran con Python puro
                 "data": {...}
             }
         """
-        try:
-            logger.info(f"🔄 Regenerating with {len(request.get('issues', []))} corrections")
-            
-            html_template = request.get("html_template")
-            issues = request.get("issues", [])
-            data = request.get("data", {})
-            
-            # Mapear datos
-            mapped_data = self._map_data(data)
-            
-            issues_text = "\n".join([f"- {issue}" for issue in issues])
-            
-            # System prompt
-            system_prompt = """Eres un sistema de corrección de presupuestos HTML.
-
-Tu tarea:
-1. Corregir los problemas específicos listados
-2. Mantener la estructura y estilos del template original
-3. Insertar correctamente los datos del presupuesto"""
-            
-            # User prompt
-            user_prompt = f"""# PROBLEMAS A CORREGIR:
-
-{issues_text}
-
-# TEMPLATE ORIGINAL:
-
-{html_template}
-
-# DATOS DEL PRESUPUESTO:
-
-{json.dumps(mapped_data, indent=2, ensure_ascii=False)}
-
-# INSTRUCCIONES:
-
-Genera el HTML corregido:
-1. Corrige SOLO los problemas listados arriba
-2. Inserta correctamente los datos del presupuesto
-3. Mantén la estructura y estilos del template
-
-Genera SOLO el HTML completo. NO incluyas markdown."""
-            
-            # Llamar OpenAI
-            response = self.client.chat.completions.create(
-                model=self.openai_config.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,
-                max_tokens=4000
-            )
-            
-            html_corrected = (response.choices[0].message.content or "").strip()
-            
-            # Limpiar markdown
-            if html_corrected.startswith("```html"):
-                html_corrected = html_corrected[7:]
-            if html_corrected.startswith("```"):
-                html_corrected = html_corrected[3:]
-            if html_corrected.endswith("```"):
-                html_corrected = html_corrected[:-3]
-            html_corrected = html_corrected.strip()
-            
-            return {
-                "status": "success",
-                "html_generated": html_corrected,
-                "metadata": {"corrections_applied": len(issues), "regeneration": True},
-                "request_data": mapped_data,
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ Error in regeneration: {e}")
-            return {"status": "error", "error": str(e), "html_generated": None}
+        logger.info(f"🔄 Regenerating (Python puro - issues ignorados, siempre determinístico)")
+        
+        # Con Python puro, simplemente regeneramos desde cero
+        # No hay "errores de interpretación de AI" que corregir
+        return await self.generate(request)
 
 
 # Singleton instance
