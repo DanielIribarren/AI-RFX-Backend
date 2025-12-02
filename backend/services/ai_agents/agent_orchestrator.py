@@ -291,24 +291,25 @@ class AgentOrchestrator:
     
     async def _insert_logo(self, html: str, user_id: str) -> str:
         """
-        Inserta logo usando ruta de archivo (post-processing)
-        Reemplaza {{LOGO_PLACEHOLDER}} con ruta absoluta del logo
+        Inserta logo usando URL de Cloudinary (post-processing)
+        Reemplaza {{LOGO_PLACEHOLDER}} con URL pública de Cloudinary
+        ✅ MIGRADO A CLOUDINARY: Ya no usa rutas locales
         """
         try:
-            # Obtener ruta del logo
-            logo_path = self._get_user_logo_path(user_id)
+            # Obtener URL de Cloudinary desde BD
+            logo_url = await self._get_user_logo_url(user_id)
             
-            if not logo_path:
-                logger.warning(f"⚠️ No logo found for user {user_id}, keeping placeholder")
+            if not logo_url:
+                logger.warning(f"⚠️ No Cloudinary logo URL found for user {user_id}, keeping placeholder")
                 return html
             
-            # Reemplazar placeholder con ruta absoluta del archivo
-            html_with_logo = html.replace("{{LOGO_PLACEHOLDER}}", str(logo_path))
+            # Reemplazar placeholder con URL de Cloudinary
+            html_with_logo = html.replace("{{LOGO_PLACEHOLDER}}", logo_url)
             
             # Contar cuántos reemplazos se hicieron
             replacements = html.count("{{LOGO_PLACEHOLDER}}")
             
-            logger.info(f"✅ Logo inserted - {replacements} placeholder(s) replaced with path: {logo_path}")
+            logger.info(f"☁️ Logo inserted - {replacements} placeholder(s) replaced with Cloudinary URL: {logo_url}")
             
             return html_with_logo
             
@@ -316,28 +317,38 @@ class AgentOrchestrator:
             logger.error(f"❌ Error inserting logo: {e}")
             return html  # Retornar HTML sin logo en caso de error
     
-    def _get_user_logo_path(self, user_id: str) -> Optional[Path]:
-        """Obtiene la ruta absoluta del logo del usuario"""
+    async def _get_user_logo_url(self, user_id: str) -> Optional[str]:
+        """
+        Obtiene la URL pública del logo desde Cloudinary (BD)
+        ✅ MIGRADO A CLOUDINARY: Ya no busca en filesystem local
+        """
         try:
-            # Buscar logo en directorio del usuario
-            logo_dir = Path("backend/static/branding") / user_id
+            from backend.core.database import get_database_client
             
-            # Buscar archivo de logo (cualquier extensión)
-            logo_extensions = ['.png', '.jpg', '.jpeg', '.svg']
+            # Obtener URL de Cloudinary desde BD
+            db = get_database_client()
+            response = db.client.table("company_branding_assets")\
+                .select("logo_url")\
+                .eq("user_id", user_id)\
+                .eq("is_active", True)\
+                .execute()
             
-            for ext in logo_extensions:
-                potential_path = logo_dir / f"logo{ext}"
-                if potential_path.exists():
-                    # Retornar ruta absoluta
-                    absolute_path = potential_path.resolve()
-                    logger.info(f"✅ Logo found: {absolute_path}")
-                    return absolute_path
+            if not response.data or not response.data[0].get('logo_url'):
+                logger.warning(f"⚠️ No Cloudinary logo URL found for user: {user_id}")
+                return None
             
-            logger.warning(f"⚠️ No logo found for user: {user_id}")
-            return None
+            logo_url = response.data[0]['logo_url']
+            
+            # Verificar que sea URL pública de Cloudinary
+            if logo_url and logo_url.startswith('http'):
+                logger.info(f"☁️ Cloudinary logo URL retrieved: {logo_url}")
+                return logo_url
+            else:
+                logger.warning(f"⚠️ Invalid logo URL format: {logo_url}")
+                return None
             
         except Exception as e:
-            logger.error(f"❌ Error getting logo path: {e}")
+            logger.error(f"❌ Error getting Cloudinary logo URL: {e}")
             return None
 
 

@@ -1250,13 +1250,12 @@ def create_rfx_product(rfx_id: str):
         if not rfx_record:
             return jsonify({
                 "status": "error",
-                "message": "RFX not found",
-                "error": f"No RFX found with ID: {rfx_id}"
+                "message": "RFX not found"
             }), 404
         
         # Preparar datos del producto con valores por defecto
         product_data = {
-            "product_name": nombre.strip(),
+            "product_name": (data.get("nombre") or data.get("product_name") or "").strip(),
             "quantity": int(data.get("cantidad") or data.get("quantity") or 1),
             "unit": (data.get("unidad") or data.get("unit") or "unidades").strip().lower(),
             "estimated_unit_price": float(data.get("precio_unitario") or data.get("estimated_unit_price") or 0) if data.get("precio_unitario") or data.get("estimated_unit_price") else None,
@@ -1264,9 +1263,8 @@ def create_rfx_product(rfx_id: str):
             "notes": (data.get("notas") or data.get("notes") or "").strip() or None
         }
         
-        # Calcular total si hay precio unitario
-        if product_data["estimated_unit_price"]:
-            product_data["total_estimated_cost"] = product_data["estimated_unit_price"] * product_data["quantity"]
+        # NOTA: NO calculamos total_estimated_cost porque esa columna no existe en la BD
+        # La BD solo tiene: product_name, quantity, unit, estimated_unit_price, unit_cost, description, notes
         
         logger.info(f"📦 Product data prepared: {product_data}")
         

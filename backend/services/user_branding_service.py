@@ -103,7 +103,7 @@ class UserBrandingService:
             result.update(template_info)
         
         # 3. Guardar archivos en BD
-        await self._save_to_database(user_id, result, analyze_now)
+        await self._save_in_database(user_id, result, analyze_now)
         
         # 4. Llamar a analyze_template que genera HTML y guarda en BD
         if analyze_now and result.get("template_path"):
@@ -195,20 +195,42 @@ class UserBrandingService:
         logo_file: FileStorage, 
         user_dir: Path
     ) -> Dict:
-        """Guarda archivo de logo"""
-        extension = logo_file.filename.rsplit('.', 1)[1].lower()
-        filename = f"logo.{extension}"
-        file_path = user_dir / filename
-        
-        logo_file.save(str(file_path))
-        
-        logger.info(f"💾 Logo saved: {file_path}")
-        
-        return {
-            "logo_filename": filename,
-            "logo_path": str(file_path),
-            "logo_url": f"/static/branding/{user_id}/{filename}"
-        }
+        """
+        Guarda archivo de logo en Cloudinary
+        ✅ MIGRADO A CLOUDINARY: Ahora usa CDN público en lugar de filesystem local
+        """
+        try:
+            from backend.services.cloudinary_service import upload_logo
+            
+            # Subir a Cloudinary y obtener URL pública
+            cloudinary_url = upload_logo(user_id, logo_file)
+            
+            logger.info(f"☁️ Logo uploaded to Cloudinary: {cloudinary_url}")
+            
+            return {
+                "logo_filename": "logo",
+                "logo_path": cloudinary_url,      # URL pública de Cloudinary
+                "logo_url": cloudinary_url        # URL pública de Cloudinary
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error uploading logo to Cloudinary: {e}")
+            logger.warning("⚠️ Falling back to local filesystem storage")
+            
+            # Fallback: Guardar localmente si Cloudinary falla
+            extension = logo_file.filename.rsplit('.', 1)[1].lower()
+            filename = f"logo.{extension}"
+            file_path = user_dir / filename
+            
+            logo_file.save(str(file_path))
+            
+            logger.info(f"💾 Logo saved locally (fallback): {file_path}")
+            
+            return {
+                "logo_filename": filename,
+                "logo_path": str(file_path),
+                "logo_url": f"/static/branding/{user_id}/{filename}"
+            }
     
     async def _save_template(
         self, 
@@ -263,13 +285,18 @@ class UserBrandingService:
             logger.error(f"❌ Error updating branding in database: {e}")
             raise
     
-    async def _save_to_database(
+    async def _save_in_database(
         self, 
         user_id: str, 
         file_info: Dict,
         analyze_now: bool
     ):
-        """Guarda información de archivos en base de datos usando UPSERT"""
+        """
+        Guarda información de archivos en base de datos usando Supabase client
+        ✅ MIGRADO A SUPABASE: Usa self.db.client (Supabase) para consistencia
+        """
+        from datetime import datetime
+        
         # Extraer información de archivos
         logo_filename = file_info.get("logo_filename")
         logo_path = file_info.get("logo_path")
@@ -281,48 +308,68 @@ class UserBrandingService:
         
         analysis_status = "analyzing" if analyze_now else "pending"
         
-        # Usar UPSERT para actualizar si existe
-        # NOTA: Usa company_branding_assets con user_id (migrado en V3.0 MVP)
-        query = """
-            INSERT INTO company_branding_assets 
-                (user_id, logo_filename, logo_path, logo_url, logo_uploaded_at,
-                 template_filename, template_path, template_url, template_uploaded_at,
-                 analysis_status, analysis_started_at, is_active)
-            VALUES (%s, %s, %s, %s, NOW(), %s, %s, %s, NOW(), %s, %s, true)
-            ON CONFLICT (user_id) 
-            DO UPDATE SET 
-                logo_filename = COALESCE(EXCLUDED.logo_filename, company_branding_assets.logo_filename),
-                logo_path = COALESCE(EXCLUDED.logo_path, company_branding_assets.logo_path),
-                logo_url = COALESCE(EXCLUDED.logo_url, company_branding_assets.logo_url),
-                logo_uploaded_at = CASE 
-                    WHEN EXCLUDED.logo_filename IS NOT NULL THEN NOW()
-                    ELSE company_branding_assets.logo_uploaded_at 
-                END,
-                template_filename = COALESCE(EXCLUDED.template_filename, company_branding_assets.template_filename),
-                template_path = COALESCE(EXCLUDED.template_path, company_branding_assets.template_path),
-                template_url = COALESCE(EXCLUDED.template_url, company_branding_assets.template_url),
-                template_uploaded_at = CASE 
-                    WHEN EXCLUDED.template_filename IS NOT NULL THEN NOW()
-                    ELSE company_branding_assets.template_uploaded_at 
-                END,
-                analysis_status = EXCLUDED.analysis_status,
-                analysis_started_at = EXCLUDED.analysis_started_at,
-                is_active = true,
-                updated_at = NOW()
-        """
-        
-        self.db.execute(
-            query,
-            (
-                user_id,
-                logo_filename, logo_path, logo_url,
-                template_filename, template_path, template_url,
-                analysis_status,
-                "NOW()" if analyze_now else None
-            )
-        )
-        
-        logger.info(f"💾 Branding info saved to database for user: {user_id}")
+        try:
+            # 1. Verificar si ya existe registro para este usuario
+            existing = self.db.client.table("company_branding_assets")\
+                .select("*")\
+                .eq("user_id", user_id)\
+                .eq("is_active", True)\
+                .execute()
+            
+            # 2. Preparar datos para insert/update
+            data = {
+                "user_id": user_id,
+                "is_active": True,
+                "analysis_status": analysis_status
+            }
+            
+            # Solo actualizar campos que se proporcionaron
+            if logo_filename:
+                data["logo_filename"] = logo_filename
+                data["logo_path"] = logo_path
+                data["logo_url"] = logo_url
+                data["logo_uploaded_at"] = datetime.now().isoformat()
+                logger.info(f"📝 Updating logo URL in BD: {logo_url}")
+            
+            if template_filename:
+                data["template_filename"] = template_filename
+                data["template_path"] = template_path
+                data["template_url"] = template_url
+                data["template_uploaded_at"] = datetime.now().isoformat()
+            
+            if analyze_now:
+                data["analysis_started_at"] = datetime.now().isoformat()
+            
+            # 3. Insert o Update según si existe
+            if existing.data:
+                # UPDATE
+                response = self.db.client.table("company_branding_assets")\
+                    .update(data)\
+                    .eq("user_id", user_id)\
+                    .execute()
+                logger.info(f"✅ Branding UPDATED in BD for user: {user_id}")
+            else:
+                # INSERT
+                response = self.db.client.table("company_branding_assets")\
+                    .insert(data)\
+                    .execute()
+                logger.info(f"✅ Branding INSERTED in BD for user: {user_id}")
+            
+            # 4. Verificar que se guardó correctamente
+            if logo_url:
+                verify = self.db.client.table("company_branding_assets")\
+                    .select("logo_url")\
+                    .eq("user_id", user_id)\
+                    .execute()
+                
+                if verify.data and verify.data[0].get('logo_url') == logo_url:
+                    logger.info(f"✅ Logo URL verified in BD: {logo_url}")
+                else:
+                    logger.error(f"❌ Logo URL verification FAILED - Expected: {logo_url}, Got: {verify.data[0].get('logo_url') if verify.data else 'None'}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error saving to database: {e}")
+            raise
     
     # ========================
     # LECTURA Y CONSULTAS
@@ -332,6 +379,7 @@ class UserBrandingService:
         """
         Obtiene configuración de branding con análisis cacheado
         Lectura rápida desde BD - sin llamadas a IA
+        ✅ MIGRADO A SUPABASE: Usa self.db.client para consistencia
         
         Args:
             user_id: ID del usuario
@@ -345,49 +393,48 @@ class UserBrandingService:
             logger.error(f"Invalid user_id format: {user_id}")
             return None
         
-        # NOTA: Usa company_branding_assets con user_id (migrado en V3.0 MVP)
-        query = """
-            SELECT 
-                user_id,
-                logo_filename, logo_path, logo_url, logo_uploaded_at,
-                template_filename, template_path, template_url, template_uploaded_at,
-                logo_analysis, template_analysis,
-                html_template,
-                analysis_status, analysis_error,
-                analysis_started_at,
-                is_active,
-                created_at,
-                updated_at
-            FROM company_branding_assets
-            WHERE user_id = %s AND is_active = true
-        """
-        
-        result = self.db.query_one(query, (user_id,))
-        
-        if not result:
+        try:
+            # Usar Supabase client
+            response = self.db.client.table("company_branding_assets")\
+                .select("*")\
+                .eq("user_id", user_id)\
+                .eq("is_active", True)\
+                .execute()
+            
+            if not response.data:
+                return None
+            
+            result = response.data[0]
+            
+            # Parsear JSON fields (Supabase ya los retorna como dict si son JSONB)
+            if isinstance(result.get('logo_analysis'), str):
+                try:
+                    result['logo_analysis'] = json.loads(result['logo_analysis'])
+                except:
+                    result['logo_analysis'] = {}
+            elif not result.get('logo_analysis'):
+                result['logo_analysis'] = {}
+            
+            if isinstance(result.get('template_analysis'), str):
+                try:
+                    result['template_analysis'] = json.loads(result['template_analysis'])
+                except:
+                    result['template_analysis'] = {}
+            elif not result.get('template_analysis'):
+                result['template_analysis'] = {}
+            
+            logger.debug(f"📖 Retrieved branding for user: {user_id}, status: {result.get('analysis_status')}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ Error retrieving branding: {e}")
             return None
-        
-        # Convertir a dict y parsear JSONB
-        result = dict(result)
-        
-        # Parsear JSON fields
-        try:
-            result['logo_analysis'] = json.loads(result['logo_analysis']) if result['logo_analysis'] else {}
-        except:
-            result['logo_analysis'] = {}
-        
-        try:
-            result['template_analysis'] = json.loads(result['template_analysis']) if result['template_analysis'] else {}
-        except:
-            result['template_analysis'] = {}
-        
-        logger.debug(f"📖 Retrieved branding for user: {user_id}, status: {result.get('analysis_status')}")
-        return result
     
     def get_analysis_status(self, user_id: str) -> Optional[Dict]:
         """
         Obtiene solo el estado del análisis
         Útil para polling desde frontend
+        ✅ MIGRADO A SUPABASE: Usa self.db.client para consistencia
         
         Args:
             user_id: ID del usuario
@@ -400,22 +447,23 @@ class UserBrandingService:
         except ValueError:
             return None
         
-        # NOTA: Usa company_branding_assets con user_id (migrado en V3.0 MVP)
-        query = """
-            SELECT 
-                analysis_status,
-                analysis_error,
-                analysis_started_at
-            FROM company_branding_assets
-            WHERE user_id = %s AND is_active = true
-        """
-        
-        result = self.db.query_one(query, (user_id,))
-        return dict(result) if result else None
+        try:
+            response = self.db.client.table("company_branding_assets")\
+                .select("analysis_status, analysis_error, analysis_started_at")\
+                .eq("user_id", user_id)\
+                .eq("is_active", True)\
+                .execute()
+            
+            return response.data[0] if response.data else None
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting analysis status: {e}")
+            return None
     
     def delete_branding(self, user_id: str) -> bool:
         """
         Elimina configuración de branding (marca como inactiva)
+        ✅ MIGRADO A SUPABASE: Usa self.db.client para consistencia
         
         Args:
             user_id: ID del usuario
@@ -429,14 +477,15 @@ class UserBrandingService:
             return False
         
         try:
-            # NOTA: Usa company_branding_assets con user_id (migrado en V3.0 MVP)
-            self.db.execute("""
-                UPDATE company_branding_assets
-                SET 
-                    is_active = false,
-                    updated_at = NOW()
-                WHERE user_id = %s
-            """, (user_id,))
+            from datetime import datetime
+            
+            response = self.db.client.table("company_branding_assets")\
+                .update({
+                    "is_active": False,
+                    "updated_at": datetime.now().isoformat()
+                })\
+                .eq("user_id", user_id)\
+                .execute()
             
             logger.info(f"🗑️ Branding deactivated for user: {user_id}")
             return True
@@ -452,6 +501,7 @@ class UserBrandingService:
     def has_branding_configured(self, user_id: str) -> bool:
         """
         Verificar si usuario tiene branding completamente configurado
+        ✅ MIGRADO A SUPABASE: Usa self.db.client para consistencia
         
         Args:
             user_id: ID del usuario
@@ -464,11 +514,27 @@ class UserBrandingService:
         except ValueError:
             return False
         
-        result = self.db.query_one("""
-            SELECT has_user_branding_configured(%s) as has_branding
-        """, (user_id,))
-        
-        return result['has_branding'] if result else False
+        try:
+            response = self.db.client.table("company_branding_assets")\
+                .select("logo_filename, template_filename, analysis_status")\
+                .eq("user_id", user_id)\
+                .eq("is_active", True)\
+                .execute()
+            
+            if not response.data:
+                return False
+            
+            branding = response.data[0]
+            # Tiene branding si tiene logo, template y análisis completado
+            return bool(
+                branding.get('logo_filename') and 
+                branding.get('template_filename') and 
+                branding.get('analysis_status') == 'completed'
+            )
+            
+        except Exception as e:
+            logger.error(f"❌ Error checking branding configured: {e}")
+            return False
     
     def get_branding_summary(self, user_id: str) -> Dict:
         """

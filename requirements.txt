@@ -61,6 +61,11 @@ pdfkit==1.0.0
 playwright==1.47.0
 
 # ========================
+# Cloud Storage & CDN
+# ========================
+cloudinary==1.36.0  # 🆕 CDN para logos (soluciona problema de logos en PM2)
+
+# ========================
 # HTTP Requests & APIs
 # ========================
 requests==2.31.0

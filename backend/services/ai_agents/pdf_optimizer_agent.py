@@ -122,16 +122,44 @@ img { max-width: 100%; page-break-inside: avoid; }
 - Colores del branding
 - Contenido completo
 
-## RESPUESTA JSON:
+## FORMATO DE RESPUESTA JSON OBLIGATORIO:
+
 {
-  "html_optimized": "HTML completo optimizado",
+  "html_optimized": "HTML completo optimizado (sin truncar)",
   "table_width": "190mm",
   "estimated_pages": 2,
-  "adjustments_made": ["Lista de ajustes"],
+  "adjustments_made": [
+    "Lista de ajustes en lenguaje claro y específico"
+  ],
   "warnings": [],
   "quality_score": 1.0
 }
 
+## EJEMPLOS DE AJUSTES BIEN REDACTADOS:
+
+✅ CORRECTO - Específico y claro:
+- "Agregado CSS @page { size: letter; margin: 15mm; } para configuración de página"
+- "Aplicado page-break-after: auto; cada 12 productos para paginación multipágina"
+- "Ajustado ancho de tabla de 100% a 190mm para centrado perfecto en página letter"
+- "Agregado display: table-header-group; al <thead> para repetir headers en cada página"
+- "Aplicado page-break-inside: avoid; a todas las filas <tr> para evitar cortes"
+- "Cambiado margin del body de 20px a 0 para aprovechar márgenes de @page"
+
+❌ INCORRECTO - Vago y poco útil:
+- "Agregado CSS para PDF"
+- "Aplicado page-breaks"
+- "Ajustado ancho de tabla"
+- "Optimizado headers"
+- "Corregido márgenes"
+
+## REGLAS CRÍTICAS PARA REDACCIÓN:
+
+1. **Sé específico**: Menciona QUÉ CSS/propiedad agregaste o modificaste
+2. **Sé técnico**: Usa nombres exactos de propiedades CSS (page-break-after, display, etc.)
+3. **Sé útil**: Explica PARA QUÉ sirve el ajuste (ej: "para paginación multipágina")
+4. **Sé completo**: Lista TODOS los ajustes, no resumas
+
+⚠️ IMPORTANTE: Tus ajustes serán leídos por humanos para debugging. Hazlos técnicos, específicos y útiles.
 ⚠️ NO truncar HTML. Retornar contenido completo."""
         
         # User prompt: HTML COMPLETO sin truncar (calidad > costo)
@@ -189,7 +217,43 @@ img { max-width: 100%; page-break-inside: avoid; }
             
             result = json.loads(response.choices[0].message.content)
             
-            logger.info(f"✅ PDF optimization complete - Adjustments: {len(result.get('adjustments_made', []))}")
+            # ========================================
+            # 📊 LOG DETALLADO DE RESULTADOS DEL PDF OPTIMIZER
+            # ========================================
+            html_optimized = result.get("html_optimized", html_content)
+            adjustments_made = result.get("adjustments_made", [])
+            
+            logger.info("=" * 80)
+            logger.info("🎨 PDF OPTIMIZER AGENT - RESULTADO COMPLETO")
+            logger.info("=" * 80)
+            
+            # Log del HTML optimizado (truncado para legibilidad)
+            html_preview = html_optimized[:500] + "..." if len(html_optimized) > 500 else html_optimized
+            logger.info(f"✅ HTML OPTIMIZED (preview):\n{html_preview}")
+            logger.info(f"📏 HTML Length: {len(html_optimized)} chars")
+            
+            # Log de todos los ajustes aplicados
+            logger.info(f"\n🔧 ADJUSTMENTS MADE ({len(adjustments_made)} total):")
+            if adjustments_made:
+                for i, adjustment in enumerate(adjustments_made, 1):
+                    logger.info(f"  {i}. {adjustment}")
+            else:
+                logger.info("  ✅ No adjustments needed - HTML was already optimized")
+            
+            # Metadata adicional
+            logger.info(f"\n📊 OPTIMIZATION METADATA:")
+            logger.info(f"  - Table Width: {result.get('table_width', 'N/A')}")
+            logger.info(f"  - Estimated Pages: {result.get('estimated_pages', 'N/A')}")
+            logger.info(f"  - Quality Score: {result.get('quality_score', 0.0)}")
+            
+            # Warnings si existen
+            warnings = result.get("warnings", [])
+            if warnings:
+                logger.warning(f"\n⚠️ WARNINGS ({len(warnings)} total):")
+                for i, warning in enumerate(warnings, 1):
+                    logger.warning(f"  {i}. {warning}")
+            
+            logger.info("=" * 80)
             
             return result
             

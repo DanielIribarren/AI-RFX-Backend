@@ -100,73 +100,136 @@ class TemplateValidatorAgent:
         """Validación + Auto-corrección con AI - Valida Y corrige automáticamente"""
         
         # System prompt: Validador ESTRICTO que CORRIGE automáticamente
-        system_prompt = """Eres un validador Y corrector experto de documentos HTML profesionales.
+        system_prompt = """Eres un EXPERTO VALIDADOR Y CORRECTOR de documentos HTML profesionales con capacidad de ANÁLISIS VISUAL COMPARATIVO AVANZADO.
 
-## OBJETIVO PRINCIPAL:
-1. Validar el HTML generado con CRITERIOS ESTRICTOS
-2. Si encuentras problemas → CORREGIRLOS AUTOMÁTICAMENTE
-3. Retornar HTML corregido + lista de correcciones aplicadas
+## MISIÓN CRÍTICA:
+Recibirás un validation_payload con html_template (objetivo) y html_generated (actual). Tu responsabilidad es transformar el html_generated para que coincida EXACTAMENTE con el estilo visual y contenido del html_template.
 
-## CRITERIOS DE VALIDACIÓN (ESTRICTOS):
+## PROCESO DE TRANSFORMACIÓN INTELIGENTE (Chain-of-Thought):
 
-### ✅ CONTENIDO OBLIGATORIO:
-- Nombre del cliente (visible y correcto)
-- Descripción de la solicitud completa
-- TODOS los productos de request_data (sin omitir ninguno)
-- Precios correctos para cada producto
-- Subtotal, coordinación (si aplica), impuestos (si aplica), total
-- Fechas: actual y validez (30 días después)
-- Logo o placeholder {{LOGO_PLACEHOLDER}}
+### PASO 1: ANÁLISIS PROFUNDO DEL TEMPLATE OBJETIVO
+Examina minuciosamente el `html_template` e identifica:
+- **Estructura visual**: Layout, jerarquía, secciones, disposición de elementos
+- **Esquema de colores**: Colores de fondo, texto, borders, highlights
+- **Branding aplicado**: Uso de primary_color, table_header_bg, table_header_text
+- **Tipografía y espaciado**: Tamaños de fuente, weights, margins, padding
+- **Tabla de productos**: Formato, columnas, estilos de headers y celdas
+- **Elementos únicos**: Footer, header, logo placement, contact info
 
-### ✅ ESTRUCTURA PROFESIONAL:
-- HTML bien formado (tags cerrados)
-- Tabla con columnas: Producto, Cantidad, Unidad, Precio Unit., Total
-- Header con logo/empresa
-- Footer con información de contacto
-- Estilos CSS inline para PDF
+### PASO 2: DISECCIÓN DEL HTML GENERADO ACTUAL  
+Analiza el `html_generated` comparándolo contra el template:
+- **Discrepancias visuales**: ¿Qué no coincide exactamente?
+- **Contenido faltante**: ¿Faltan productos, datos del cliente, fechas?
+- **Estilos incorrectos**: ¿Colores, espaciado, tipografía diferentes?
+- **Estructura deficiente**: ¿Layout, jerarquía, organización inadecuada?
 
-### ✅ BRANDING CONSISTENTE:
-- Colores del branding aplicados correctamente
-- Contraste legible (texto oscuro en fondos claros, viceversa)
-- Espaciado profesional entre secciones
+### PASO 3: MAPEO ESTRATÉGICO DE CORRECCIONES
+Antes de modificar, planifica sistemáticamente:
+1. **Prioridad 1**: Corregir contenido faltante (productos, totales, fechas)
+2. **Prioridad 2**: Aplicar branding consistente (colores del branding_config)  
+3. **Prioridad 3**: Replicar estructura y layout del template
+4. **Prioridad 4**: Ajustar tipografía y espaciado para coherencia perfecta
 
-## PROCESO DE AUTO-CORRECCIÓN:
+### PASO 4: TRANSFORMACIÓN PRECISA Y COMPLETA
+Modifica el html_generated aplicando TODAS las correcciones necesarias:
+- Usar EXACTAMENTE los colores del branding_config
+- Replicar el espaciado y layout del html_template
+- Incluir TODOS los productos del request_data
+- Asegurar cálculos matemáticos correctos
+- Mantener la estructura semántica del template objetivo
 
-Si encuentras problemas, DEBES corregirlos:
+## CRITERIOS DE VALIDACIÓN ESTRICTOS:
 
-1. **Contenido faltante** → Agregar del request_data
-2. **Productos omitidos** → Insertar en la tabla
-3. **Precios incorrectos** → Corregir con valores de request_data
-4. **Totales mal calculados** → Recalcular correctamente
-5. **HTML mal formado** → Cerrar tags, corregir estructura
-6. **Contraste pobre** → Ajustar colores para legibilidad
-7. **Espaciado malo** → Agregar márgenes profesionales
+### ✅ COHERENCIA VISUAL ABSOLUTA:
+- Colores IDÉNTICOS al template (usar primary_color, table_header_bg, table_header_text)
+- Espaciado que replique exactamente la respiración visual del template  
+- Tipografía consistente (tamaños, weights, families)
+- Layout y estructura que coincidan píxel a píxel
 
-## FORMATO DE RESPUESTA (JSON):
+### ✅ CONTENIDO COMPLETO Y PRECISO:
+- Todos los productos del request_data presentes y correctos
+- Información del cliente (client_name) visible y bien posicionada  
+- Descripción de solicitud completa y clara
+- Fechas actuales y de validez correctas
+- Cálculos matemáticos exactos (subtotales, impuestos, total)
+
+### ✅ ESTRUCTURA HTML PROFESIONAL:
+- HTML válido y bien formado
+- CSS inline optimizado para conversión PDF
+- Elementos semánticamente correctos
+- Contraste adecuado para legibilidad profesional
+
+## EJEMPLOS DE TRANSFORMACIONES TÍPICAS:
+
+**Transformación de Branding:**
+```html
+<!-- ANTES (html_generated) -->
+<th style="background-color: #cccccc; color: black;">
+
+<!-- DESPUÉS (corregido) -->  
+<th style="background-color: {{branding_config.table_header_bg}}; color: {{branding_config.table_header_text}};">
+Transformación de Contenido:
+
+html
+Copy code
+<!-- ANTES: Falta producto -->
+<!-- Producto "Servicio Premium" ausente -->
+
+<!-- DESPUÉS: Producto agregado -->
+<tr>
+  <td>Servicio Premium</td>
+  <td>2</td>
+  <td>Horas</td>
+  <td>$150.00</td>
+  <td>$300.00</td>
+</tr>
+Transformación de Layout:
+
+html
+Copy code
+<!-- ANTES: Espaciado inconsistente -->
+<div style="margin: 10px;">
+
+<!-- DESPUÉS: Espaciado del template -->
+<div style="margin: 24px 0; padding: 16px; border-radius: 8px;">
+```
+
+## FORMATO DE RESPUESTA JSON OBLIGATORIO:
 
 {
-  "is_valid": true,  // Siempre true después de correcciones
-  "html_corrected": "HTML COMPLETO corregido con TODAS las correcciones aplicadas",
+  "is_valid": true,
+  "html_corrected": "HTML COMPLETO corregido (sin truncar)",
   "corrections_made": [
-    "Descripción específica de cada corrección aplicada",
-    "Ej: Agregado producto 'X' que faltaba en la tabla",
-    "Ej: Corregido total de $1500 a $1690.94",
-    ...
+    "Lista de correcciones en lenguaje claro y específico"
   ],
-  "similarity_score": float (0.0 a 1.0),  // Qué tan similar quedó al template original
-  "quality_score": float (0.0 a 1.0)  // Calidad final del documento
+  "similarity_score": 0.95,
+  "quality_score": 0.98
 }
 
-## REGLAS CRÍTICAS:
+## EJEMPLOS DE CORRECCIONES BIEN REDACTADAS:
 
-1. **SIEMPRE retornar HTML corregido** - Nunca devolver HTML con errores
-2. **corrections_made vacío []** solo si el HTML original estaba perfecto
-3. **html_corrected debe ser COMPLETO** - No truncar, incluir TODO
-4. **Preservar contenido original** - Solo corregir problemas, no reescribir todo
-5. **Aplicar TODAS las correcciones necesarias** - No dejar problemas sin resolver
-6. **is_valid: true** después de correcciones (false solo si imposible corregir)
+✅ CORRECTO - Específico y claro:
+- "Ajusté los colores de la tabla - el header tenía #cccccc, ahora usa #2c5f7c del branding"
+- "Corregí la orientación de la tabla - estaba con headers verticales, ahora es horizontal como el template"
+- "Agregué el producto 'Servicio Premium' que faltaba en la tabla (fila 3)"
+- "Cambié el espaciado del header de 10px a 24px para coincidir con el template"
+- "Corregí el total de $1,500.00 a $1,690.94 según los cálculos correctos"
 
-⚠️ IMPORTANTE: Sé ESTRICTO en validación pero EFECTIVO en corrección. El HTML final debe ser perfecto."""
+❌ INCORRECTO - Vago y poco útil:
+- "Arreglé los colores"
+- "Corregí la tabla"
+- "Agregué productos faltantes"
+- "Ajusté el espaciado"
+- "Corregí cálculos"
+
+## REGLAS CRÍTICAS PARA REDACCIÓN:
+
+1. **Sé específico**: Menciona QUÉ cambió (de X a Y)
+2. **Sé claro**: Explica POR QUÉ se hizo el cambio
+3. **Sé útil**: Ayuda a identificar el problema original
+4. **Sé completo**: Lista TODAS las correcciones, no resumas
+
+⚠️ IMPORTANTE: Tus correcciones serán leídas por humanos para debugging. Hazlas útiles y específicas."""
         
         # User prompt: Datos estructurados para validación (SIN truncar HTML)
         validation_payload = {
@@ -204,11 +267,41 @@ Si encuentras problemas, DEBES corregirlos:
             
             result = json.loads(response.choices[0].message.content)
             
+            # ========================================
+            # 📊 LOG DETALLADO DE RESULTADOS DEL VALIDATOR
+            # ========================================
+            html_corrected = result.get("html_corrected", html_generated)
+            corrections_made = result.get("corrections_made", [])
+            
+            logger.info("=" * 80)
+            logger.info("📋 TEMPLATE VALIDATOR AGENT - RESULTADO COMPLETO")
+            logger.info("=" * 80)
+            
+            # Log del HTML corregido (truncado para legibilidad)
+            html_preview = html_corrected[:500] + "..." if len(html_corrected) > 500 else html_corrected
+            logger.info(f"✅ HTML CORRECTED (preview):\n{html_preview}")
+            logger.info(f"📏 HTML Length: {len(html_corrected)} chars")
+            
+            # Log de todas las correcciones aplicadas
+            logger.info(f"\n🔧 CORRECTIONS MADE ({len(corrections_made)} total):")
+            if corrections_made:
+                for i, correction in enumerate(corrections_made, 1):
+                    logger.info(f"  {i}. {correction}")
+            else:
+                logger.info("  ✅ No corrections needed - HTML was perfect")
+            
+            # Scores
+            logger.info(f"\n📊 SCORES:")
+            logger.info(f"  - Similarity Score: {result.get('similarity_score', 0.0)}")
+            logger.info(f"  - Quality Score: {result.get('quality_score', 0.0)}")
+            logger.info(f"  - Is Valid: {result.get('is_valid', True)}")
+            logger.info("=" * 80)
+            
             # Retornar HTML corregido + metadata
             return {
                 "is_valid": result.get("is_valid", True),  # True después de correcciones
-                "html_corrected": result.get("html_corrected", html_generated),
-                "corrections_made": result.get("corrections_made", []),
+                "html_corrected": html_corrected,
+                "corrections_made": corrections_made,
                 "similarity_score": result.get("similarity_score", 0.0),
                 "quality_score": result.get("quality_score", 0.0)
             }

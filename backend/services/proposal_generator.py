@@ -112,9 +112,15 @@ class ProposalGenerationService:
             # ✅ NUEVO: Usar sistema de 3 agentes AI si está activado
             if USE_AI_AGENTS and has_branding:
                 logger.info("🤖 Using AI Agents System (3-Agent Architecture)")
-                return await self._generate_with_ai_agents(
+                proposal = await self._generate_with_ai_agents(
                     rfx_data, products_info, pricing_calculation, currency, user_id, proposal_request
                 )
+                
+                # 🔧 FIX: Guardar en BD antes de retornar
+                await self._save_to_database(proposal)
+                logger.info(f"✅ Proposal generated successfully (AI Agents) - Document ID: {proposal.id}")
+                
+                return proposal
             
             # 6. Generar HTML usando el prompt apropiado (SISTEMA ANTIGUO)
             if has_branding:
@@ -435,9 +441,16 @@ class ProposalGenerationService:
         """🎨 Genera propuesta CON branding usando ProposalPrompts"""
         logger.info(f"🎨 Building prompt with branding for user {user_id}")
         
-        # Construir URL del logo - Usar ruta relativa para compatibilidad con servidor
-        logo_endpoint = f"/api/branding/files/{user_id}/logo"
-        logger.info(f"🎨 Logo endpoint (relative): {logo_endpoint}")
+        # ✅ CLOUDINARY: Obtener URL pública del logo desde branding_config
+        logo_endpoint = branding_config.get('logo_url', '')
+        
+        # Validar que sea URL pública (debe empezar con http/https)
+        if logo_endpoint and logo_endpoint.startswith('http'):
+            logger.info(f"☁️ Using Cloudinary logo URL: {logo_endpoint}")
+        else:
+            # Fallback: usar endpoint local si no hay URL de Cloudinary
+            logo_endpoint = f"/api/branding/files/{user_id}/logo"
+            logger.warning(f"⚠️ Cloudinary URL not found, using local endpoint: {logo_endpoint}")
         
         # Preparar datos para el prompt
         company_info = DEFAULT_COMPANY_INFO
@@ -611,10 +624,8 @@ class ProposalGenerationService:
             html_final = result["html_final"]
             metadata = result["metadata"]
             
-            logger.info(f"✅ AI Agents completed successfully in {metadata['total_time_ms']}ms")
-            logger.info(f"   - Validation: {'✅ PASSED' if metadata['validation']['is_valid'] else '⚠️ WARNINGS'}")
-            logger.info(f"   - Retries: {metadata['validation']['retries']}")
-            logger.info(f"   - Agents used: {', '.join(metadata['agents_used'])}")
+            logger.info(f"✅ AI Agents completed successfully in {metadata.get('total_time_ms', 0)}ms")
+            logger.info(f"   - Validation: {'✅ PASSED' if metadata.get('validation', {}).get('is_valid', False) else '⚠️ WARNINGS'}")
             
             # 7. Crear objeto de propuesta
             return self._create_proposal_object(rfx_data, html_final, proposal_request, pricing_calculation)

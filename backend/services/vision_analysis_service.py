@@ -55,8 +55,8 @@ class VisionAnalysisService:
             
             image_data = self._encode_image(image_path)
 
-            # Obtener logo del usuario en base64
-            logo_base64 = await self._get_user_logo_base64(user_id)
+            # Obtener URL pública del logo desde Cloudinary
+            logo_url = await self._get_user_logo_url(user_id)
             
             prompt = f"""
 🎯 TAREA: Observa esta imagen de template de presupuesto y genera HTML IDÉNTICO
@@ -76,11 +76,11 @@ class VisionAnalysisService:
    - Totales: Estilo, posición, formato
    - Comentarios: Si existe, su estilo
 
-3. **LOGO DEL USUARIO (BASE64):**
-   - DEBES reemplazar cualquier logo que veas en el template con esta variable: {{{{LOGO_BASE64}}}}
-   - Usa exactamente: <img src="{{{{LOGO_BASE64}}}}" alt="Logo">
+3. **LOGO DEL USUARIO (URL CLOUDINARY):**
+   - DEBES reemplazar cualquier logo que veas en el template con esta variable: {{{{LOGO_URL}}}}
+   - Usa exactamente: <img src="{{{{LOGO_URL}}}}" alt="Logo">
    - Mantén el tamaño y posición similares al logo original
-   - NO uses URLs, solo la variable {{{{LOGO_BASE64}}}}
+   - La variable contendrá una URL pública de Cloudinary
 
 4. **GENERA HTML COMPLETO CON:**
    - <!DOCTYPE html>, <head>, <style>, <body>
@@ -88,7 +88,9 @@ class VisionAnalysisService:
    - Espaciado y proporciones correctas
    - Variables dinámicas:
      {{{{CLIENT_NAME}}}}, {{{{REQUEST_DESCRIPTION}}}}, {{{{PRODUCT_ROWS}}}}, {{{{TOTAL_AMOUNT}}}}, {{{{CURRENT_DATE}}}}
-   - Logo con variable {{{{LOGO_BASE64}}}} en la posición correcta
+   - Logo con variable {{{{LOGO_URL}}}} en la posición correcta
+   - Asegurate de que todo lo que tenga que ver en con productos y precios del presupuesto se encuentre dentro de la tabla de productos
+   como total amount impuestos, etc.
 
 5. **REQUISITOS:**
    - Diseño para impresión (letter: 216mm x 279mm)
@@ -147,15 +149,15 @@ class VisionAnalysisService:
             
             html_template = html_template.strip()
             
-            # Reemplazar variable LOGO_BASE64 con el logo real
-            html_template = html_template.replace("{{LOGO_BASE64}}", logo_base64)
-            html_template = html_template.replace("{{{{LOGO_BASE64}}}}", logo_base64)  # Por si AI usa doble llave
+            # Reemplazar variable LOGO_URL con la URL de Cloudinary
+            html_template = html_template.replace("{{LOGO_URL}}", logo_url)
+            html_template = html_template.replace("{{{{LOGO_URL}}}}", logo_url)  # Por si AI usa doble llave
             
             logger.info(f"✅ HTML cleaned - Final length: {len(html_template)} characters")
-            logger.info(f"✅ Logo base64 injected - Logo size: {len(logo_base64)} chars")
+            logger.info(f"☁️ Cloudinary logo URL injected: {logo_url}")
             logger.info(f"✅ HTML starts with: {html_template[:200]}")
             print(f"🔥 DEBUG: HTML cleaned - Length: {len(html_template)}")
-            print(f"🔥 DEBUG: Logo base64 size: {len(logo_base64)} chars")
+            print(f"🔥 DEBUG: Cloudinary logo URL: {logo_url}")
             print(f"🔥 DEBUG: HTML starts with: {html_template[:200]}")
             print("🔥 DEBUG: FULL HTML BELOW:")
             print(html_template)
@@ -234,50 +236,39 @@ class VisionAnalysisService:
             text = text.rsplit("```", 1)[0]
         return text.strip()
     
-    async def _get_user_logo_base64(self, user_id: str) -> str:
-        """Obtiene el logo del usuario en formato base64"""
+    async def _get_user_logo_url(self, user_id: str) -> str:
+        """
+        Obtiene la URL pública del logo desde Cloudinary (BD)
+        ✅ MIGRADO A CLOUDINARY: Ya no convierte a base64, usa URL pública
+        """
         try:
-            from pathlib import Path
+            from backend.core.database import get_database_client
             
-            # Buscar logo en directorio del usuario
-            logo_dir = Path("backend/static/branding") / user_id
+            # Obtener URL de Cloudinary desde BD
+            db = get_database_client()
+            response = db.client.table("company_branding_assets")\
+                .select("logo_url")\
+                .eq("user_id", user_id)\
+                .eq("is_active", True)\
+                .execute()
             
-            # Buscar archivo de logo (cualquier extensión)
-            logo_extensions = ['.png', '.jpg', '.jpeg', '.svg']
-            logo_path = None
+            if not response.data or not response.data[0].get('logo_url'):
+                logger.warning(f"⚠️ No Cloudinary logo URL found for user: {user_id}")
+                return ""
             
-            for ext in logo_extensions:
-                potential_path = logo_dir / f"logo{ext}"
-                if potential_path.exists():
-                    logo_path = potential_path
-                    break
+            logo_url = response.data[0]['logo_url']
             
-            if not logo_path:
-                logger.warning(f"⚠️ No logo found for user: {user_id}")
-                return ""  # Retornar vacío si no hay logo
-            
-            # Convertir SVG a PNG si es necesario
-            if logo_path.suffix.lower() == '.svg':
-                logo_path = Path(self._convert_svg_to_png(str(logo_path)))
-            
-            # Leer y convertir a base64
-            with open(logo_path, "rb") as image_file:
-                logo_base64 = base64.b64encode(image_file.read()).decode('utf-8')
-            
-            # Detectar tipo MIME
-            mime_type = "image/png"
-            if logo_path.suffix.lower() in ['.jpg', '.jpeg']:
-                mime_type = "image/jpeg"
-            
-            # Retornar data URI completa
-            data_uri = f"data:{mime_type};base64,{logo_base64}"
-            logger.info(f"✅ Logo converted to base64 - Size: {len(logo_base64)} chars")
-            
-            return data_uri
+            # Verificar que sea URL pública de Cloudinary
+            if logo_url and logo_url.startswith('http'):
+                logger.info(f"☁️ Using Cloudinary logo URL: {logo_url}")
+                return logo_url
+            else:
+                logger.warning(f"⚠️ Invalid logo URL format: {logo_url}")
+                return ""
                 
         except Exception as e:
-            logger.error(f"❌ Error getting user logo base64: {e}")
-            return ""  # Retornar vacío en caso de error
+            logger.error(f"❌ Error getting Cloudinary logo URL: {e}")
+            return ""
     
     async def _save_to_database(self, user_id: str, analysis: Dict, html_template: str):
         """Guarda análisis y HTML template en BD usando Supabase client"""
