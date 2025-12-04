@@ -135,6 +135,11 @@ class AIConfig:
             )
         
         return True
+    
+    # ==================== LangChain Configuration ====================
+    DATABASE_URL: Final[str] = os.getenv("DATABASE_URL", "")  # Para LangChain memory
+    LANGCHAIN_TRACING_V2: Final[str] = os.getenv("LANGCHAIN_TRACING_V2", "false")
+    LANGCHAIN_API_KEY: Final[str] = os.getenv("LANGCHAIN_API_KEY", "")  # Opcional: LangSmith
 
 
 # Exportar

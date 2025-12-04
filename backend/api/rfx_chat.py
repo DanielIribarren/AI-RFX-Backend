@@ -9,6 +9,7 @@ from flask import Blueprint, request, jsonify
 import logging
 import uuid
 import asyncio
+import json
 
 from backend.services.chat_agent import ChatAgent
 from backend.services.rfx_chat_service import RFXChatService
@@ -42,23 +43,43 @@ def send_chat_message(rfx_id):
         current_user = get_current_user()
         user_id = current_user.get('id') or current_user.get('sub')
         
-        # 1. Parsear request
-        data = request.get_json()
+        # 1. Parsear request (FormData igual que /api/rfx/process)
+        message = request.form.get('message')
+        context_str = request.form.get('context')
         
-        if not data or 'message' not in data or 'context' not in data:
+        if not message or not context_str:
             return jsonify({
                 'status': 'error',
                 'message': 'Request inválido: se requiere message y context'
             }), 400
         
-        message = data['message']
-        context = data['context']
-        files = data.get('files', [])
+        # Parse context JSON
+        try:
+            context = json.loads(context_str)
+        except json.JSONDecodeError:
+            return jsonify({
+                'status': 'error',
+                'message': 'Context debe ser JSON válido'
+            }), 400
+        
+        # Procesar archivos (igual que /api/rfx/process)
+        files = []
+        if 'files' in request.files:
+            uploaded_files = request.files.getlist('files')
+            for file in uploaded_files:
+                if file and file.filename:
+                    files.append({
+                        'name': file.filename,
+                        'type': file.content_type or 'application/octet-stream',
+                        'content': file.read()  # bytes directamente
+                    })
+                    file.seek(0)  # Reset para posible relectura
         
         logger.info(
             f"[RFXChat] Message received: "
             f"rfx_id={rfx_id}, user_id={user_id}, "
-            f"message_length={len(message)}, correlation_id={correlation_id}"
+            f"message_length={len(message)}, files_count={len(files)}, "
+            f"correlation_id={correlation_id}"
         )
         
         # 2. Llamar al agente de IA (ÉL DECIDE TODO)
@@ -82,6 +103,16 @@ def send_chat_message(rfx_id):
         # 3. Guardar en historial
         chat_service = RFXChatService()
         
+        # Convertir files a formato serializable (sin bytes)
+        files_metadata = [
+            {
+                'name': f.get('name'),
+                'type': f.get('type'),
+                'size': len(f.get('content', b''))
+            }
+            for f in files
+        ]
+        
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
@@ -94,7 +125,7 @@ def send_chat_message(rfx_id):
                 changes_applied=[change.dict() for change in response.changes],
                 confidence=response.confidence,
                 requires_confirmation=response.requires_confirmation,
-                user_files=files,
+                user_files=files_metadata,  # Solo metadata, no bytes
                 tokens_used=response.metadata.tokens_used if response.metadata else 0,
                 cost_usd=response.metadata.cost_usd if response.metadata else 0.0,
                 processing_time_ms=response.metadata.processing_time_ms if response.metadata else 0,

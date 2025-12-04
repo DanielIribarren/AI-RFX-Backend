@@ -52,12 +52,18 @@ class RFXChatService:
         La IA ya validó todo.
         """
         try:
+            # Sanitizar mensajes: remover caracteres null que PostgreSQL rechaza
+            def sanitize_text(text: str) -> str:
+                if not text:
+                    return text
+                return text.replace('\x00', '').replace('\u0000', '')
+            
             data = {
                 "rfx_id": rfx_id,
                 "user_id": user_id,
-                "user_message": user_message,
+                "user_message": sanitize_text(user_message),
                 "user_files": user_files or [],
-                "assistant_message": assistant_message,
+                "assistant_message": sanitize_text(assistant_message),
                 "confidence": confidence,
                 "changes_applied": changes_applied,
                 "requires_confirmation": requires_confirmation,

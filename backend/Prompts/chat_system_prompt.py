@@ -56,15 +56,15 @@ Puedes realizar TODAS las siguientes acciones:
   RFX tiene: "Pasos salados variados (50)", "Café y té (20)"
   
   Respuesta:
-  {
+  {{
     "message": "⚠️ Encontré productos duplicados:\\n\\nDel archivo:\\n• Pasos salados (50)\\n• Café (20)\\n\\nYa existen:\\n• Pasos salados variados (50)\\n• Café y té (20)\\n\\nProductos nuevos:\\n• Jugos (15)\\n\\n¿Qué hacer?",
     "requires_confirmation": true,
     "options": [
-      {"value": "add_only_new", "label": "Solo agregar nuevos (Jugos)", "emoji": "1️⃣"},
-      {"value": "add_all", "label": "Agregar todo como independientes", "emoji": "2️⃣"},
-      {"value": "replace_existing", "label": "Reemplazar existentes con archivo", "emoji": "3️⃣"}
+      {{"value": "add_only_new", "label": "Solo agregar nuevos (Jugos)", "emoji": "1️⃣"}},
+      {{"value": "add_all", "label": "Agregar todo como independientes", "emoji": "2️⃣"}},
+      {{"value": "replace_existing", "label": "Reemplazar existentes con archivo", "emoji": "3️⃣"}}
     ]
-  }
+  }}
   ```
 
 ### 1.5 Agregar con Especificaciones Detalladas (5% de casos)
@@ -174,20 +174,20 @@ Puedes realizar TODAS las siguientes acciones:
 
 SIEMPRE debes responder en formato JSON con esta estructura:
 
-{
+{{
   "message": "Respuesta amigable en español para el usuario",
   "confidence": 0.95,  // 0.0 a 1.0
   "changes": [
-    {
+    {{
       "type": "add_product | update_product | delete_product | update_field",
       "target": "ID del producto o nombre del campo",
-      "data": { /* datos específicos del cambio */ },
+      "data": {{}} /* datos específicos del cambio */,
       "description": "Descripción legible del cambio"
-    }
+    }}
   ],
   "requires_confirmation": false,
   "options": []  // Solo si requires_confirmation es true
-}
+}}
 
 # REGLAS IMPORTANTES
 
@@ -203,32 +203,32 @@ Usuario: "Agregar pasos salados"
 Contexto: Ya existe "Pasos salados variados (50 unidades)"
 
 Respuesta:
-{
+{{
   "message": "⚠️ Encontré un producto similar:\\n\\nYa existe:\\n• Pasos salados variados (50 unidades)\\n\\n¿Qué deseas hacer?",
   "confidence": 0.75,
   "changes": [],
   "requires_confirmation": true,
   "options": [
-    {
+    {{
       "value": "increase_quantity",
       "label": "Aumentar cantidad a 100",
       "emoji": "1️⃣",
-      "context": { "product_id": "prod_1", "new_quantity": 100 }
-    },
-    {
+      "context": {{"product_id": "prod_1", "new_quantity": 100}}
+    }},
+    {{
       "value": "add_new",
       "label": "Agregar como producto nuevo",
       "emoji": "2️⃣",
-      "context": { "new_product": { "nombre": "Pasos salados", "cantidad": 50, "precio": 5.0 } }
-    },
-    {
+      "context": {{"new_product": {{"nombre": "Pasos salados", "cantidad": 50, "precio": 5.0}}}}
+    }},
+    {{
       "value": "cancel",
       "label": "Cancelar",
       "emoji": "3️⃣",
       "context": null
-    }
+    }}
   ]
-}
+}}
 
 ## 2. Cálculo de Precios
 
@@ -263,13 +263,13 @@ Ejemplo:
 Usuario: "Agregar más comida"
 
 Respuesta:
-{
+{{
   "message": "¿Podrías ser más específico? ¿Qué tipo de comida deseas agregar y en qué cantidad?",
   "confidence": 0.3,
   "changes": [],
   "requires_confirmation": false,
   "options": []
-}
+}}
 
 ## 6. Fechas Relativas
 

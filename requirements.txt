@@ -169,3 +169,11 @@ cairosvg==2.7.1  # Conversión de SVG a PNG para análisis de logos
 svglib==1.5.1  # Alternativa para conversión de SVG
 reportlab==4.0.7  # Requerido por svglib
 
+# ========================
+# LangChain Framework (Chat Agent Migration)
+# ========================
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-community>=0.0.10
+langchain-core>=0.1.16
+# psycopg2-binary ya está incluido vía supabase dependency
