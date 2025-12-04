@@ -43,18 +43,18 @@ def get_rfx_by_id_secure(rfx_id: str, user_id: str) -> Optional[Dict[str, Any]]:
     try:
         db_client = get_database_client()
         
-        # CRÍTICO: Agregar filtro por user_id para seguridad
-        result = db_client.query_one("""
-            SELECT rfx.*, companies.*, requesters.*
-            FROM rfx_v2 rfx
-            LEFT JOIN companies ON rfx.company_id = companies.id
-            LEFT JOIN requesters ON rfx.requester_id = requesters.id
-            WHERE rfx.id = %s AND rfx.user_id = %s
-        """, (rfx_id, user_id))
+        # CRÍTICO: Usar Supabase client directamente (no query_one con JOINs)
+        # Filtrar por id Y user_id para seguridad
+        response = db_client.client.table("rfx_v2")\
+            .select("*")\
+            .eq("id", rfx_id)\
+            .eq("user_id", user_id)\
+            .limit(1)\
+            .execute()
         
-        if result:
+        if response.data and len(response.data) > 0:
             logger.info(f"✅ RFX {rfx_id} accessed by owner {user_id}")
-            return dict(result)
+            return response.data[0]
         else:
             logger.warning(f"⚠️ RFX {rfx_id} access denied for user {user_id} (not found or not owner)")
             return None

@@ -21,7 +21,7 @@ pydantic[email]==2.5.2
 # ========================
 # AI & OpenAI Integration
 # ========================
-openai==1.7.2
+openai==1.10.0
 
 # ========================
 # Database Integration
@@ -172,8 +172,11 @@ reportlab==4.0.7  # Requerido por svglib
 # ========================
 # LangChain Framework (Chat Agent Migration)
 # ========================
-langchain>=0.1.0
-langchain-openai>=0.0.5
-langchain-community>=0.0.10
-langchain-core>=0.1.16
+# NOTA: Versiones específicas para evitar backtracking de pip
+# Si necesitas actualizar, usa: ./install_langchain_fast.sh
+langchain==0.1.9
+langchain-openai==0.0.5
+langchain-community==0.0.25
+langchain-core==0.1.28
+langchain-text-splitters==0.0.1
 # psycopg2-binary ya está incluido vía supabase dependency

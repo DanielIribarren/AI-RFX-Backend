@@ -14,7 +14,7 @@ class AIConfig:
     
     # ==================== OpenAI Configuration ====================
     OPENAI_API_KEY: Final[str] = os.getenv("OPENAI_API_KEY", "")
-    MODEL: Final[str] = os.getenv("OPENAI_MODEL", "gpt-4o")
+    MODEL: Final[str] = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     MAX_TOKENS: Final[int] = int(os.getenv("OPENAI_MAX_TOKENS", "2000"))
     TEMPERATURE: Final[float] = float(os.getenv("OPENAI_TEMPERATURE", "0.3"))
     TIMEOUT: Final[int] = int(os.getenv("OPENAI_TIMEOUT", "60"))
