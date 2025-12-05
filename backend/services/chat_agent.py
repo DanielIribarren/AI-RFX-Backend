@@ -1,19 +1,17 @@
 """
 Agente de IA para procesar mensajes del chat conversacional RFX.
 
-FASE 1: LangChain con memoria conversacional, parsing manual.
-- Reutiliza RFXProcessorService para parsing de archivos
-- Logging orientado a razonamiento del agente
-- Memoria conversacional con RunnableWithMessageHistory
+ARQUITECTURA SIMPLIFICADA (Estilo TypeScript/NestJS):
+- Un solo system prompt simple e inteligente
+- El agente decide cuándo usar tools
+- Streaming de respuestas para mejor UX
+- Sin construcción dinámica de prompts
 
-Responsabilidad: Llamar a OpenAI y retornar cambios estructurados.
-NO tiene lógica de negocio - la IA decide TODO.
-
-Filosofía KISS:
-- Una sola responsabilidad: comunicarse con OpenAI
-- Sin validación de negocio (la IA lo hace)
-- Sin lógica compleja (la IA lo hace)
-- Solo formatear entrada y parsear salida
+Filosofía AI-FIRST:
+- El agente es inteligente, toma decisiones
+- Las tools proveen datos, el agente razona
+- Respuestas conversacionales, NO JSON
+- El backend solo ejecuta lo que el agente decide
 """
 
 from langchain_openai import ChatOpenAI
@@ -21,6 +19,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain.agents import create_openai_functions_agent, AgentExecutor
 from typing import List, Dict, Any
 import json
 import time
@@ -37,29 +36,35 @@ from backend.core.ai_config import AIConfig
 from backend.services.chat_history import RFXMessageHistory
 from backend.services.rfx_processor import RFXProcessorService
 from backend.utils.chat_logger import get_chat_logger
+from backend.services.tools import (
+    get_request_data_tool,
+    add_products_tool,
+    update_product_tool,
+    delete_product_tool,
+    modify_request_details_tool
+)
 
 logger = logging.getLogger(__name__)
 
 
 class ChatAgent:
     """
-    Agente de IA para el chat conversacional con LangChain.
+    Agente de IA conversacional con arquitectura simplificada.
     
-    FASE 1: Sin tools, parsing manual antes del agente.
-    - Reutiliza RFXProcessorService para parsing de archivos
-    - Logging orientado a razonamiento del agente
-    - Memoria conversacional con RunnableWithMessageHistory
+    Inspirado en arquitectura TypeScript/NestJS:
+    - Un solo system prompt inteligente
+    - El agente decide cuándo usar tools
+    - Streaming para mejor UX
+    - Sin construcción dinámica de prompts
     
-    KISS: Solo hace 3 cosas:
-    1. Formatear el contexto para la IA
-    2. Llamar a OpenAI (vía LangChain)
-    3. Parsear la respuesta
-    
-    La IA decide TODO lo demás.
+    El agente es INTELIGENTE:
+    - Decide cuándo consultar datos (get_request_data_tool)
+    - Decide cuándo modificar (add/update/delete tools)
+    - Responde conversacionalmente, NO en JSON
     """
     
     def __init__(self):
-        """Inicializa el agente LangChain"""
+        """Inicializa el agente con LangChain + Tools"""
         # LangChain LLM (reemplaza AsyncOpenAI)
         self.llm = ChatOpenAI(
             model=AIConfig.MODEL,
@@ -72,24 +77,44 @@ class ChatAgent:
         # ✅ REUTILIZAR: Parser de archivos existente
         self.file_processor = RFXProcessorService()
         
+        # ✅ FASE 2: Tools disponibles para el agente
+        self.tools = [
+            get_request_data_tool,
+            add_products_tool,
+            update_product_tool,
+            delete_product_tool,
+            modify_request_details_tool,
+        ]
+        
         # Output parser (JSON)
         self.parser = JsonOutputParser()
         
-        # Prompt con placeholder de historia
+        # ✅ PROMPT SIMPLE: Solo system prompt + historia + input
         self.prompt = ChatPromptTemplate.from_messages([
             ("system", CHAT_SYSTEM_PROMPT),
-            ("system", "⚠️ REGLA CRÍTICA: Si no se menciona precio, USA 0.00. NO inventes precios."),
-            ("system", "Por favor responde en formato JSON con la estructura especificada."),
-            MessagesPlaceholder(variable_name="history"),  # ← Memoria inyectada
-            ("human", "{input}")
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad")
         ])
         
-        # Chain base (sin historial todavía)
-        self.chain = self.prompt | self.llm | self.parser
+        # ✅ FASE 2: Crear agente con tools
+        self.agent = create_openai_functions_agent(
+            llm=self.llm,
+            tools=self.tools,
+            prompt=self.prompt
+        )
+        
+        # ✅ FASE 2: AgentExecutor (reemplaza chain simple)
+        self.agent_executor = AgentExecutor(
+            agent=self.agent,
+            tools=self.tools,
+            verbose=True,  # Para debugging
+            return_intermediate_steps=False
+        )
         
         self.model = AIConfig.MODEL
         
-        logger.info("🦜 ChatAgent initialized with LangChain")
+        logger.info(f"🦜 ChatAgent initialized with LangChain + {len(self.tools)} tools")
     
     async def process_message(
         self,
@@ -99,41 +124,31 @@ class ChatAgent:
         files: List[Dict[str, Any]] = None
     ) -> ChatResponse:
         """
-        Procesa mensaje del usuario con memoria conversacional.
+        Procesa mensaje del usuario con streaming (estilo TypeScript).
         
-        Flujo:
-        1. Log input del usuario
-        2. Si hay archivos, extraer contenido (REUTILIZA RFXProcessor)
-        3. Recuperar historial (log mensajes reales)
-        4. Ejecutar chain con memoria
-        5. Log razonamiento y respuesta del agente
+        Flujo Simplificado:
+        1. Preparar input (mensaje + archivos si hay)
+        2. Ejecutar agent con streaming
+        3. Capturar respuesta final
+        4. Retornar ChatResponse
         
-        Args:
-            message: Mensaje del usuario
-            context: Contexto actual del RFX
-            rfx_id: ID del RFX (para logging y memoria)
-            files: Archivos adjuntos (opcional)
-            
-        Returns:
-            ChatResponse con mensaje y cambios a aplicar
+        El agente decide TODO: cuándo usar tools, qué responder, etc.
         """
         chat_log = get_chat_logger(rfx_id)
         start_time = time.time()
         files = files or []
         
         try:
-            # 1. Log input del usuario
+            # 1. Log input
             chat_log.user_input(message, has_files=bool(files))
             
-            # 2. Si hay archivos, extraer contenido (REUTILIZA parsing existente)
-            files_content = ""
+            # 2. Procesar archivos si hay
             if files:
                 files_content = self._extract_files_content(files, chat_log)
-                # Agregar al mensaje del usuario
                 if files_content:
                     message = f"{message}\n\n### ARCHIVOS ADJUNTOS:\n{files_content}"
             
-            # 3. Crear instancia de historial (debe ser la misma para todo el request)
+            # 3. Configurar historial
             history_store = {}
             
             def get_session_history(session_id: str):
@@ -141,75 +156,66 @@ class ChatAgent:
                     history_store[session_id] = RFXMessageHistory(session_id)
                 return history_store[session_id]
             
-            # 4. Recuperar y loggear historial
-            history = get_session_history(rfx_id)
-            history_messages = history.messages
-            
-            # Convertir a formato para logging
-            history_for_log = [
-                {"role": "human" if isinstance(m, HumanMessage) else "assistant", 
-                 "content": m.content}
-                for m in history_messages
-            ]
-            chat_log.history_context(history_for_log)
-            
-            # 5. Log contexto del agente
-            context_summary = f"{len(context.get('current_products', []))} products, " \
-                            f"total: ${context.get('current_total', 0):.2f}"
-            chat_log.agent_thinking(context_summary)
-            
-            # 6. Configurar chain con historial
-            chain_with_history = RunnableWithMessageHistory(
-                self.chain,
+            # 4. Agent con historial
+            agent_with_history = RunnableWithMessageHistory(
+                self.agent_executor,
                 get_session_history,
                 input_messages_key="input",
                 history_messages_key="history"
             )
             
-            # 7. Ejecutar chain (LangChain inyecta historial automáticamente)
-            ai_response = await chain_with_history.ainvoke(
-                {
-                    "input": self._format_input(message, context)
-                },
+            # 5. ✅ STREAMING (estilo TypeScript)
+            response_message = None
+            intermediate_steps = []
+            
+            # Preparar input simple: mensaje + contexto del RFX ID
+            # El agente sabrá que request_id = rfx_id del contexto
+            agent_input = {
+                "input": f"{message}\n\n[CONTEXT: request_id={rfx_id}]"
+            }
+            
+            # Stream execution
+            async for step in agent_with_history.astream(
+                agent_input,
                 config={"configurable": {"session_id": rfx_id}}
-            )
+            ):
+                # Capturar output final
+                if "output" in step:
+                    response_message = step["output"]
+                    logger.info(f"🤖 Agent response: {response_message}")
+                
+                # Capturar intermediate steps (tools usadas)
+                if "intermediate_steps" in step:
+                    intermediate_steps = step["intermediate_steps"]
             
-            # 8. Log decisión y respuesta del agente
-            chat_log.agent_decision(
-                ai_response.get("message", ""),
-                len(ai_response.get("changes", []))
-            )
-            chat_log.agent_response(ai_response.get("message", ""))
+            # 6. Si no hay respuesta, usar fallback
+            if not response_message:
+                response_message = "Lo siento, no pude procesar tu solicitud."
             
-            # 9. Calcular métricas (para guardar en BD, NO para logs)
+            # 7. Extraer cambios de tools usadas
+            changes = self._extract_changes_from_steps(intermediate_steps)
+            
+            # 8. Log respuesta
+            chat_log.agent_response(response_message)
+            chat_log.agent_decision(response_message, len(changes))
+            
+            # 9. Construir ChatResponse
             processing_time_ms = int((time.time() - start_time) * 1000)
             
-            # 10. Construir ChatResponse (KISS: conversión directa)
             return ChatResponse(
                 status="success",
-                message=ai_response.get("message", ""),
-                confidence=ai_response.get("confidence", 0.0),
+                message=response_message,
+                confidence=1.0 if len(changes) > 0 else 0.95,
                 changes=[
                     RFXChange(**change) 
-                    for change in ai_response.get("changes", [])
+                    for change in changes
                 ],
-                requires_confirmation=ai_response.get("requires_confirmation", False),
-                options=[
-                    ConfirmationOption(**opt) 
-                    for opt in ai_response.get("options", [])
-                ],
+                requires_confirmation=False,
+                options=[],
                 metadata=ChatMetadata(
                     processing_time_ms=processing_time_ms,
                     model_used=self.model
                 )
-            )
-            
-        except json.JSONDecodeError as e:
-            chat_log.error("JSON Parse Error", str(e))
-            logger.error(f"[ChatAgent] JSON parse error: {e}")
-            return self._error_response(
-                "La respuesta de la IA no es válida. Por favor intenta de nuevo.",
-                start_time
             )
             
         except Exception as e:
@@ -219,6 +225,42 @@ class ChatAgent:
                 "Lo siento, no pude procesar tu solicitud. ¿Podrías reformularla?",
                 start_time
             )
+    
+    def _extract_changes_from_steps(self, intermediate_steps: List) -> List[Dict[str, Any]]:
+        """
+        Extrae cambios estructurados de las tools ejecutadas.
+        
+        Args:
+            intermediate_steps: Lista de (action, observation) del AgentExecutor
+            
+        Returns:
+            Lista de cambios en formato RFXChange
+        """
+        changes = []
+        
+        for action, observation in intermediate_steps:
+            tool_name = action.tool
+            tool_input = action.tool_input
+            
+            # Solo extraer de tools CRUD (no de get_request_data_tool)
+            if tool_name in ["add_products_tool", "update_product_tool", "delete_product_tool", "modify_request_details_tool"]:
+                try:
+                    # Parsear observation si es string
+                    tool_result = json.loads(observation) if isinstance(observation, str) else observation
+                    
+                    # Solo agregar si fue exitoso
+                    if tool_result.get("status") == "success":
+                        changes.append({
+                            "type": tool_name.replace("_tool", ""),
+                            "field": tool_input.get("product_id") or tool_input.get("request_id"),
+                            "old_value": None,
+                            "new_value": tool_input.get("updates") or tool_input.get("products"),
+                            "confidence": 1.0
+                        })
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not parse tool result: {e}")
+        
+        return changes
     
     def _extract_files_content(
         self, 
@@ -260,45 +302,6 @@ class ChatAgent:
         
         return "\n\n".join(extracted_parts) if extracted_parts else ""
     
-    def _format_input(self, message: str, context: Dict[str, Any]) -> str:
-        """
-        Formatea input para el agente (igual que antes).
-        KISS: Template simple y directo.
-        """
-        # Productos actuales
-        products_text = ""
-        for i, product in enumerate(context.get("current_products", []), 1):
-            if isinstance(product, dict):
-                products_text += (
-                    f"{i}. {product.get('nombre', 'Sin nombre')}\n"
-                    f"   - ID: {product.get('id', 'N/A')}\n"
-                    f"   - Cantidad: {product.get('cantidad', 0)} {product.get('unidad', 'unidades')}\n"
-                    f"   - Precio: ${product.get('precio', 0):.2f}\n\n"
-                )
-        
-        if not products_text:
-            products_text = "No hay productos en el RFX actualmente.\n"
-        
-        # Construir prompt completo
-        prompt = f"""# SOLICITUD DEL USUARIO
-
-{message}
-
-# CONTEXTO ACTUAL DEL RFX
-
-## Productos Actuales:
-{products_text}
-
-## Información del RFX:
-- Total actual: ${context.get('current_total', 0):.2f}
-- Fecha de entrega: {context.get('delivery_date', 'No especificada')}
-- Lugar de entrega: {context.get('delivery_location', 'No especificado')}
-- Cliente: {context.get('client_name', 'No especificado')}
-- Moneda: {context.get('currency', 'MXN')}
-
-Por favor responde en formato JSON con la estructura especificada.
-"""
-        return prompt
     
     def _error_response(self, message: str, start_time: float) -> ChatResponse:
         """
