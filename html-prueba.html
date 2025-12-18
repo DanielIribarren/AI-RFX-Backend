@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            width: 216mm;
+            height: 279mm;
+            print-color-adjust: exact;
+        }
+        .container {
+            border: 1px solid #000;
+            margin: 20mm;
+            padding: 10mm;
+        }
+        .header {
+            background-color: #009688;
+            color: #fff;
+            text-align: center;
+            padding: 10px;
+            position: relative;
+        }
+        .header img {
+            position: absolute;
+            left: 10px;
+            top: 10px;
+            height: 40px;
+        }
+        .client-info, .budget-info {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+        }
+        .client-info div, .budget-info div {
+            width: 48%;
+        }
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        .table th, .table td {
+            border: 1px solid #009688;
+            padding: 5px;
+            text-align: left;
+        }
+        .table th {
+            background-color: #009688;
+            color: #fff;
+        }
+        .totals {
+            margin-top: 10px;
+            text-align: right;
+        }
+        .totals div {
+            margin-bottom: 5px;
+        }
+        .signatures {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 20px;
+        }
+        .signatures div {
+            width: 48%;
+            border: 1px solid #009688;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <img src="https://res.cloudinary.com/dffys3mxv/image/upload/v1764165738/logos/ca4e5353-9073-45eb-9833-7eff908a1d3b/logo.jpg" alt="Logo">
+            <h2>Presupuesto (Número)</h2>
+        </div>
+        <div class="client-info">
+            <div>
+                <strong>Garcia y Asociados (Empresa)</strong><br>
+                C/ Paseo Grande, 1 (Dirección)<br>
+                NIF: A12345678<br>
+                Teléfono: 612 456 789<br>
+                Mail: gasociados@garciasociados.com
+            </div>
+            <div>
+                <strong>(Empresa)</strong><br>
+                (Dirección)<br>
+                NIF:<br>
+                Teléfono:<br>
+                Mail:
+            </div>
+        </div>
+        <div class="budget-info">
+            <div>Fecha del presupuesto: XX/XX/XXXX</div>
+            <div>Validez: X días</div>
+        </div>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>DESCRIPCIÓN</th>
+                    <th>UNIDADES</th>
+                    <th>PRECIO</th>
+                    <th>TOTAL</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{PRODUCT_ROWS}}
+            </tbody>
+        </table>
+        <div class="totals">
+            <div>SUB-TOTAL: 893,00 €</div>
+            <div>DESCUENTO: 35,00 €</div>
+            <div>IVA %: 21,00%</div>
+            <div><strong>TOTAL PRESUPUESTADO: {{TOTAL_AMOUNT}}</strong></div>
+        </div>
+        <div class="signatures">
+            <div>Firma</div>
+            <div>Firma del cliente</div>
+        </div>
+    </div>
+</body>
+</html>

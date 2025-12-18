@@ -13,8 +13,10 @@ import json
 
 from backend.services.chat_agent import ChatAgent
 from backend.services.rfx_chat_service import RFXChatService
+from backend.services.credits_service import get_credits_service
 from backend.models.chat_models import ChatRequest, ChatContext
-from backend.utils.auth_middleware import jwt_required, get_current_user
+from backend.utils.auth_middleware import jwt_required, get_current_user, get_current_user_organization_id
+from backend.exceptions import InsufficientCreditsError
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,74 @@ def send_chat_message(rfx_id):
             f"correlation_id={correlation_id}"
         )
         
+        # 🔒 VALIDAR OWNERSHIP DEL RFX
+        organization_id = get_current_user_organization_id()
+        
+        from ..core.database import get_database_client
+        db = get_database_client()
+        
+        rfx = db.get_rfx_by_id(rfx_id)
+        if not rfx:
+            logger.error(f"❌ RFX not found: {rfx_id}")
+            return jsonify({
+                "status": "error",
+                "message": "RFX not found"
+            }), 404
+        
+        # Validar ownership
+        rfx_org_id = rfx.get("organization_id")
+        rfx_user_id = rfx.get("user_id")
+        
+        if rfx_org_id:
+            # RFX organizacional
+            if rfx_org_id != organization_id:
+                logger.warning(f"🚨 Access denied: User {user_id} tried to access RFX from org {rfx_org_id}")
+                return jsonify({
+                    "status": "error",
+                    "message": "Access denied - RFX belongs to different organization"
+                }), 403
+        else:
+            # RFX personal
+            if rfx_user_id != user_id:
+                logger.warning(f"🚨 Access denied: User {user_id} tried to access RFX of user {rfx_user_id}")
+                return jsonify({
+                    "status": "error",
+                    "message": "Access denied - RFX belongs to different user"
+                }), 403
+            
+            if organization_id:
+                logger.warning(f"🚨 Access denied: User {user_id} in org tried to access personal RFX")
+                return jsonify({
+                    "status": "error",
+                    "message": "Access denied - Personal RFX not accessible while in organization"
+                }), 403
+        
+        logger.info(f"✅ Ownership validated for RFX {rfx_id}")
+        
+        # 💳 VERIFICAR CRÉDITOS DISPONIBLES (1 crédito por mensaje de chat)
+        credits_service = get_credits_service()
+        
+        # Verificar créditos según contexto del usuario
+        has_credits, available, msg = credits_service.check_credits_available(
+            organization_id,  # None para usuarios personales
+            'chat_message',   # 1 crédito
+            user_id=user_id   # Requerido para usuarios personales
+        )
+        
+        if not has_credits:
+            context = "organization" if organization_id else "personal plan"
+            logger.warning(f"⚠️ Insufficient credits for chat message ({context}): {msg}")
+            return jsonify({
+                "status": "error",
+                "error_type": "insufficient_credits",
+                "message": msg,
+                "credits_required": 1,
+                "credits_available": available
+            }), 402  # 402 Payment Required
+        
+        context = "organization" if organization_id else "personal"
+        logger.info(f"✅ Credits verified ({context}): {available} available")
+        
         # 2. Llamar al agente de IA (ÉL DECIDE TODO)
         chat_agent = ChatAgent()
         
@@ -135,21 +205,31 @@ def send_chat_message(rfx_id):
         
         loop.close()
         
+        # 💳 CONSUMIR CRÉDITO (1 crédito por mensaje de chat)
+        consume_result = credits_service.consume_credits(
+            organization_id=organization_id,  # None para usuarios personales
+            operation='chat_message',
+            rfx_id=rfx_id,
+            user_id=user_id,  # Requerido para usuarios personales
+            description=f"Chat message for RFX {rfx_id}"
+        )
+        
+        if consume_result["status"] == "success":
+            context = "organization" if organization_id else "personal"
+            logger.info(f"✅ Credits consumed ({context}): 1 (remaining: {consume_result['credits_remaining']})")
+        else:
+            logger.error(f"❌ Failed to consume credits: {consume_result.get('message')})")
+        
         logger.info(
             f"[RFXChat] Message processed: "
             f"rfx_id={rfx_id}, confidence={response.confidence:.2f}, "
             f"changes={len(response.changes)}, correlation_id={correlation_id}"
         )
         
-        # 4. Retornar respuesta (KISS: conversión directa a dict)
+        # 4. Retornar respuesta (solo campos necesarios para frontend)
         return jsonify({
-            'status': response.status,
             'message': response.message,
-            'confidence': response.confidence,
-            'changes': [change.dict() for change in response.changes],
-            'requires_confirmation': response.requires_confirmation,
-            'options': [opt.dict() for opt in response.options],
-            'metadata': response.metadata.dict() if response.metadata else {}
+            'confidence': response.confidence
         }), 200
         
     except Exception as e:

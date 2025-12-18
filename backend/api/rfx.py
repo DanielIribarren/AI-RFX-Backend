@@ -18,8 +18,11 @@ from backend.models.rfx_models import (
     TipoRFX
 )
 from backend.services.rfx_processor import RFXProcessorService
+from backend.services.credits_service import get_credits_service
 from backend.core.config import get_file_upload_config
-from backend.utils.auth_middleware import jwt_required, get_current_user_id
+from backend.core.database import get_database_client
+from backend.utils.auth_middleware import jwt_required, get_current_user_id, get_current_user_organization_id
+from backend.exceptions import InsufficientCreditsError
 
 logger = logging.getLogger(__name__)
 
@@ -171,9 +174,84 @@ def process_rfx():
         logger.info(f"📊 Processing summary: {len(valid_files)} files, total_size: {total_size} bytes")
         logger.info(f"👤 Processing for user: {current_user_id}")
 
+        # 💳 VERIFICAR CRÉDITOS DISPONIBLES
+        # Usuario puede estar en organización O ser usuario personal
+        organization_id = get_current_user_organization_id()  # Puede ser None
+        
+        logger.info(f"🔍 User context - org_id: {organization_id}, user_id: {current_user_id}")
+        
+        credits_service = get_credits_service()
+        db = get_database_client()
+        
+        # Verificar créditos según contexto del usuario
+        has_credits, available, msg = credits_service.check_credits_available(
+            organization_id,  # None para usuarios personales
+            'extraction',     # 5 créditos
+            user_id=current_user_id  # Requerido para usuarios personales
+        )
+        
+        if not has_credits:
+            context = "organization" if organization_id else "personal plan"
+            logger.warning(f"⚠️ Insufficient credits for {context}: {msg}")
+            return jsonify({
+                "status": "error",
+                "error_type": "insufficient_credits",
+                "message": msg,
+                "credits_required": 5,
+                "credits_available": available
+            }), 402  # 402 Payment Required
+        
+        context = "organization" if organization_id else "personal"
+        logger.info(f"✅ Credits verified ({context}): {available} available")
+
         processor_service = RFXProcessorService()
-        # 🔒 PIPELINE FLEXIBLE con USER_ID AUTENTICADO: Procesa archivos Y/O texto
-        rfx_processed = processor_service.process_rfx_case(rfx_input, valid_files, user_id=current_user_id)
+        # 🔒 PIPELINE FLEXIBLE con USER_ID y ORGANIZATION_ID: Procesa archivos Y/O texto
+        # IMPORTANTE: process_rfx_case() guarda el RFX en BD internamente
+        rfx_processed = processor_service.process_rfx_case(
+            rfx_input, 
+            valid_files, 
+            user_id=current_user_id,
+            organization_id=organization_id  # ← CRÍTICO: Pasar organization_id
+        )
+        
+        # ✅ AHORA el RFX existe en BD, usar su ID real (no el generado al inicio)
+        actual_rfx_id = str(rfx_processed.id)
+        logger.info(f"✅ RFX saved with ID: {actual_rfx_id}")
+        
+        # 💳 CONSUMIR CRÉDITOS (5 créditos: solo extracción)
+        # Usuario organizacional → consumir de organización
+        # Usuario personal → consumir de user_credits
+        try:
+            consume_result = credits_service.consume_credits(
+                organization_id=organization_id,  # None para usuarios personales
+                operation='extraction',  # Solo extracción (5 créditos)
+                rfx_id=actual_rfx_id,  # ← CRÍTICO: Usar ID del RFX guardado
+                user_id=current_user_id,  # Requerido para usuarios personales
+                description=f"RFX data extraction from documents"
+            )
+            
+            if consume_result["status"] == "success":
+                context = "organization" if organization_id else "personal"
+                logger.info(f"✅ Credits consumed ({context}): 5 (remaining: {consume_result['credits_remaining']})")
+            else:
+                logger.error(f"❌ Failed to consume credits: {consume_result.get('message')}")
+        except Exception as e:
+            logger.error(f"❌ Error consuming credits (non-critical): {e}")
+            # No fallar el request - el RFX ya se procesó exitosamente
+        
+        # 📊 ACTUALIZAR PROCESSING STATUS
+        try:
+            db.upsert_processing_status(actual_rfx_id, {  # ← Usar ID real
+                "has_extracted_data": True,
+                "has_generated_proposal": False,  # No se genera propuesta automáticamente
+                "extraction_completed_at": datetime.now().isoformat(),
+                "generation_completed_at": None,  # No hay generación aún
+                "extraction_credits_consumed": 5,
+                "generation_credits_consumed": 0  # No se consumieron créditos de generación
+            })
+        except Exception as e:
+            logger.error(f"❌ Error updating processing status (non-critical): {e}")
+            # No fallar el request - el RFX ya se procesó exitosamente
         
         # NOTE: Proposal generation is now handled separately by user request
         # The user will review extracted data, set product costs, then request proposal generation
@@ -187,7 +265,7 @@ def process_rfx():
             propuesta_url=None  # User will generate proposal manually
         )
         
-        logger.info(f"✅ RFX processed successfully: {rfx_id}")
+        logger.info(f"✅ RFX processed successfully: {actual_rfx_id}")
         return jsonify({"status":"success","data":rfx_processed.model_dump(mode='json')}), 200
     except Exception as e:
         logger.exception("❌ Error processing RFX")
@@ -195,14 +273,38 @@ def process_rfx():
 
 
 @rfx_bp.route("/recent", methods=["GET"])
+@jwt_required
 def get_recent_rfx():
-    """Get recent RFX for sidebar (limited to 12 items)"""
+    """
+    Get recent RFX for sidebar (limited to 12 items) with data isolation.
+    
+    🔒 AUTENTICACIÓN REQUERIDA
+    
+    Lógica de aislamiento:
+    - Usuario SIN organización: Ve solo sus RFX personales
+    - Usuario CON organización: Ve RFX de toda la organización
+    """
     try:
+        # 🔒 Obtener usuario autenticado
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()  # Puede ser None
+        
+        logger.info(f"🔍 Recent RFX request - user: {user_id}, org: {organization_id}")
+        
         from ..core.database import get_database_client
         db_client = get_database_client()
         
-        # Get last 12 RFX records for sidebar
-        rfx_records = db_client.get_rfx_history(limit=12, offset=0)
+        # Get last 12 RFX records for sidebar CON FILTRO DE SEGURIDAD
+        rfx_records = db_client.get_rfx_history(
+            user_id=user_id,
+            organization_id=organization_id,
+            limit=12, 
+            offset=0
+        )
+        
+        logger.info(f"📊 Recent RFX - Retrieved {len(rfx_records)} records")
+        if rfx_records:
+            logger.info(f"📋 First RFX ID: {rfx_records[0].get('id')}, user_id: {rfx_records[0].get('user_id')}, org_id: {rfx_records[0].get('organization_id')}")
         
         # Format for sidebar display with consistent structure (V2.0)
         recent_items = []
@@ -248,9 +350,24 @@ def get_recent_rfx():
 
 
 @rfx_bp.route("/history", methods=["GET"])
+@jwt_required
 def get_rfx_history():
-    """Get RFX processing history with pagination"""
+    """
+    Get RFX processing history with pagination and data isolation.
+    
+    🔒 AUTENTICACIÓN REQUERIDA
+    
+    Lógica de aislamiento:
+    - Usuario SIN organización: Ve solo sus RFX personales
+    - Usuario CON organización: Ve RFX de toda la organización
+    """
     try:
+        # 🔒 Obtener usuario autenticado
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()  # Puede ser None
+        
+        logger.info(f"🔍 History request - user: {user_id}, org: {organization_id}")
+        
         # Get pagination parameters
         page = int(request.args.get('page', 1))
         limit = int(request.args.get('limit', 50))
@@ -264,11 +381,20 @@ def get_rfx_history():
                 "error": "Page must be >= 1, limit between 1-100"
             }), 400
         
-        # Get data from database
+        # Get data from database CON FILTRO DE SEGURIDAD
         from ..core.database import get_database_client
         db_client = get_database_client()
         
-        rfx_records = db_client.get_rfx_history(limit=limit, offset=offset)
+        rfx_records = db_client.get_rfx_history(
+            user_id=user_id,
+            organization_id=organization_id,
+            limit=limit,
+            offset=offset
+        )
+        
+        logger.info(f"📊 History - Retrieved {len(rfx_records)} records")
+        if rfx_records:
+            logger.info(f"📋 First RFX ID: {rfx_records[0].get('id')}, user_id: {rfx_records[0].get('user_id')}, org_id: {rfx_records[0].get('organization_id')}")
         
         # Enrich with user information
         rfx_records = db_client.enrich_rfx_with_user_info(rfx_records)
@@ -365,11 +491,23 @@ def get_rfx_history():
 
 
 @rfx_bp.route("/<rfx_id>/finalize", methods=["POST"])
+@jwt_required
 def finalize_rfx(rfx_id: str):
     """Mark an RFX as finalized/completed"""
     try:
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+        
         from ..core.database import get_database_client
+        from ..utils.rfx_ownership import get_and_validate_rfx_ownership
+        
         db_client = get_database_client()
+        
+        rfx, error = get_and_validate_rfx_ownership(
+            db_client, rfx_id, user_id, organization_id
+        )
+        if error:
+            return error
         
         # Update RFX status to completed
         result = db_client.update_rfx_status(rfx_id, "completed")
@@ -403,20 +541,32 @@ def finalize_rfx(rfx_id: str):
 
 
 @rfx_bp.route("/<rfx_id>", methods=["GET"])
+@jwt_required
 def get_rfx_by_id(rfx_id: str):
-    """Get specific RFX by ID"""
+    """
+    Get specific RFX by ID with ownership validation.
+    
+    🔒 AUTENTICACIÓN Y VALIDACIÓN DE OWNERSHIP REQUERIDA
+    """
     try:
+        # 🔒 Obtener usuario autenticado
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+        
+        logger.info(f"🔍 Get RFX by ID request - rfx_id: {rfx_id}, user: {user_id}, org: {organization_id}")
+        
         from ..core.database import get_database_client
+        from ..utils.rfx_ownership import get_and_validate_rfx_ownership
+        
         db_client = get_database_client()
         
-        rfx_record = db_client.get_rfx_by_id(rfx_id)
-        
-        if not rfx_record:
-            return jsonify({
-                "status": "error",
-                "message": "RFX not found",
-                "error": f"No RFX found with ID: {rfx_id}"
-            }), 404
+        # Validar ownership
+        rfx_record, error = get_and_validate_rfx_ownership(
+            db_client, rfx_id, user_id, organization_id
+        )
+        if error:
+            logger.warning(f"⚠️ Ownership validation failed for RFX {rfx_id}")
+            return error
         
         # Enrich with user information
         rfx_records_list = db_client.enrich_rfx_with_user_info([rfx_record])
@@ -540,20 +690,23 @@ def get_rfx_by_id(rfx_id: str):
 
 
 @rfx_bp.route("/<rfx_id>/products", methods=["GET"])
+@jwt_required
 def get_rfx_products(rfx_id: str):
     """Get products for a specific RFX with currency information"""
     try:
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+        
         from ..core.database import get_database_client
+        from ..utils.rfx_ownership import get_and_validate_rfx_ownership
+        
         db_client = get_database_client()
         
-        # Verificar que el RFX existe y obtener su moneda
-        rfx_record = db_client.get_rfx_by_id(rfx_id)
-        if not rfx_record:
-            return jsonify({
-                "status": "error",
-                "message": "RFX not found",
-                "error": f"No RFX found with ID: {rfx_id}"
-            }), 404
+        rfx_record, error = get_and_validate_rfx_ownership(
+            db_client, rfx_id, user_id, organization_id
+        )
+        if error:
+            return error
         
         # Obtener productos
         products = db_client.get_rfx_products(rfx_id)
@@ -654,9 +807,22 @@ def get_rfx_products(rfx_id: str):
 
 
 @rfx_bp.route("/<rfx_id>/currency", methods=["PUT"])
+@jwt_required
 def update_rfx_currency(rfx_id: str):
     """Update currency for an RFX (simple version - no conversions)"""
     try:
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+        
+        from ..utils.rfx_ownership import get_and_validate_rfx_ownership
+        
+        db_client = get_database_client()
+        rfx, error = get_and_validate_rfx_ownership(
+            db_client, rfx_id, user_id, organization_id
+        )
+        if error:
+            return error
+        
         logger.info(f"🔄 Updating currency for RFX: {rfx_id}")
         
         # Validate request format
@@ -793,9 +959,22 @@ def update_rfx_currency(rfx_id: str):
 
 
 @rfx_bp.route("/<rfx_id>/data", methods=["PUT"])
+@jwt_required
 def update_rfx_data(rfx_id: str):
     """Actualizar datos del RFX (empresa, cliente, solicitud, etc.)"""
     try:
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+        
+        from ..utils.rfx_ownership import get_and_validate_rfx_ownership
+        
+        db_client = get_database_client()
+        rfx, error = get_and_validate_rfx_ownership(
+            db_client, rfx_id, user_id, organization_id
+        )
+        if error:
+            return error
+        
         logger.info(f"🔄 DEBUG: update_rfx_data endpoint called for RFX: {rfx_id}")
         logger.info(f"🔄 DEBUG: Request headers: {dict(request.headers)}")
         logger.info(f"🔄 DEBUG: Request content-type: {request.content_type}")
@@ -1026,9 +1205,22 @@ def update_rfx_data(rfx_id: str):
 
 
 @rfx_bp.route("/<rfx_id>/products/costs", methods=["PUT"])
+@jwt_required
 def update_product_costs(rfx_id: str):
     """Actualizar costos unitarios de productos RFX proporcionados por el usuario"""
     try:
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+        
+        from ..utils.rfx_ownership import get_and_validate_rfx_ownership
+        
+        db_client = get_database_client()
+        rfx, error = get_and_validate_rfx_ownership(
+            db_client, rfx_id, user_id, organization_id
+        )
+        if error:
+            return error
+        
         if not request.is_json:
             return jsonify({
                 "status": "error",
@@ -1209,6 +1401,7 @@ def rfx_webhook_compatibility():
 
 
 @rfx_bp.route("/<rfx_id>/products", methods=["POST"])
+@jwt_required
 def create_rfx_product(rfx_id: str):
     """
     ➕ Crear un nuevo producto para un RFX existente
@@ -1348,6 +1541,7 @@ def create_rfx_product(rfx_id: str):
 
 
 @rfx_bp.route("/<rfx_id>/products/<product_id>", methods=["DELETE"])
+@jwt_required
 def delete_rfx_product(rfx_id: str, product_id: str):
     """
     🗑️ Eliminar un producto específico de un RFX
@@ -1451,9 +1645,22 @@ def delete_rfx_product(rfx_id: str, product_id: str):
 
 
 @rfx_bp.route("/<rfx_id>/products/<product_id>", methods=["PUT"])
+@jwt_required
 def update_rfx_product(rfx_id: str, product_id: str):
     """Actualizar un producto específico del RFX"""
     try:
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+        
+        from ..utils.rfx_ownership import get_and_validate_rfx_ownership
+        
+        db_client = get_database_client()
+        rfx, error = get_and_validate_rfx_ownership(
+            db_client, rfx_id, user_id, organization_id
+        )
+        if error:
+            return error
+        
         logger.info(f"🔄 DEBUG: update_rfx_product endpoint called for RFX: {rfx_id}, Product: {product_id}")
         
         if not request.is_json:
@@ -1798,9 +2005,16 @@ def update_rfx_title(rfx_id: str):
 
 
 @rfx_bp.route("/latest", methods=["GET"])
+@jwt_required
 def get_latest_rfx():
     """
     🎯 Get the latest 10 RFX records ordered by creation date (most recent first)
+    
+    🔒 AUTENTICACIÓN REQUERIDA
+    
+    Lógica de aislamiento:
+    - Usuario SIN organización: Ve solo sus RFX personales
+    - Usuario CON organización: Ve RFX de toda la organización
     
     This endpoint returns the first 10 most recent RFX records with optimized 
     load-more pagination information for infinite scroll UI patterns.
@@ -1813,6 +2027,10 @@ def get_latest_rfx():
     - pagination: Load-more pagination info with next_offset
     """
     try:
+        # 🔒 Obtener usuario autenticado
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()  # Puede ser None
+        
         # Get and validate limit parameter
         limit = int(request.args.get('limit', 10))
         if limit < 1 or limit > 50:
@@ -1822,13 +2040,18 @@ def get_latest_rfx():
                 "error": "Limit must be between 1 and 50"
             }), 400
         
-        logger.info(f"🎯 Getting latest {limit} RFX records")
+        logger.info(f"🎯 Getting latest {limit} RFX records for user {user_id}, org {organization_id}")
         
-        # Get data from database using optimized method
+        # Get data from database using optimized method CON FILTRO DE SEGURIDAD
         from ..core.database import get_database_client
         db_client = get_database_client()
         
-        rfx_records = db_client.get_latest_rfx(limit=limit, offset=0)
+        rfx_records = db_client.get_latest_rfx(
+            user_id=user_id,
+            organization_id=organization_id,
+            limit=limit,
+            offset=0
+        )
         
         # Enrich with user information
         rfx_records = db_client.enrich_rfx_with_user_info(rfx_records)

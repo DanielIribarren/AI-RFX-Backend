@@ -196,27 +196,87 @@ class DatabaseClient:
             logger.error(f"❌ Failed to get RFX {rfx_id}: {e}")
             raise
     
-    def get_rfx_history(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get RFX history with pagination"""
+    def get_rfx_history(
+        self, 
+        user_id: str,
+        organization_id: Optional[str] = None,
+        limit: int = 50, 
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        Get RFX history with pagination and data isolation.
+        
+        🔒 SEGURIDAD: Implementa aislamiento de datos
+        
+        Lógica:
+        - Si organization_id != NULL → WHERE organization_id = org_id
+          (Usuario ve RFX de TODA la organización)
+        - Si organization_id = NULL → WHERE user_id = user_id AND organization_id IS NULL
+          (Usuario ve SOLO sus RFX personales)
+        
+        Args:
+            user_id: ID del usuario autenticado
+            organization_id: ID de la organización (None si usuario personal)
+            limit: Número máximo de registros
+            offset: Offset para paginación
+        
+        Returns:
+            Lista de RFX filtrados según contexto del usuario
+        """
         try:
-            response = self.client.table("rfx_v2")\
-                .select("*, companies(*), requesters(*)")\
-                .order("received_at", desc=True)\
+            query = self.client.table("rfx_v2")\
+                .select("*, companies(*), requesters(*)")
+            
+            if organization_id:
+                # Usuario organizacional - ver RFX de toda la org
+                logger.info(f"🔍 Filtering RFX by organization: {organization_id}")
+                query = query.eq("organization_id", organization_id)
+            else:
+                # Usuario personal - ver SOLO sus RFX personales
+                logger.info(f"🔍 Filtering RFX by user (personal): {user_id}")
+                query = query.eq("user_id", user_id).is_("organization_id", "null")
+            
+            response = query.order("received_at", desc=True)\
                 .range(offset, offset + limit - 1)\
                 .execute()
             
+            logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} RFX records")
             return response.data or []
         except Exception as e:
             logger.error(f"❌ Failed to get RFX history: {e}")
             raise
     
-    def get_latest_rfx(self, limit: int = 10, offset: int = 0) -> List[Dict[str, Any]]:
-        """Get latest RFX ordered by creation date with optimized query for load-more pattern"""
+    def get_latest_rfx(
+        self,
+        user_id: str,
+        organization_id: Optional[str] = None,
+        limit: int = 10, 
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        Get latest RFX ordered by creation date with data isolation.
+        
+        🔒 SEGURIDAD: Implementa aislamiento de datos
+        
+        Args:
+            user_id: ID del usuario autenticado
+            organization_id: ID de la organización (None si usuario personal)
+            limit: Número máximo de registros
+            offset: Offset para paginación
+        """
         try:
             # Use created_at as primary sort, fallback to received_at if needed
-            response = self.client.table("rfx_v2")\
-                .select("*, companies(*), requesters(*)")\
-                .order("created_at", desc=True)\
+            query = self.client.table("rfx_v2")\
+                .select("*, companies(*), requesters(*)")
+            
+            if organization_id:
+                # Usuario organizacional - ver RFX de toda la org
+                query = query.eq("organization_id", organization_id)
+            else:
+                # Usuario personal - ver SOLO sus RFX personales
+                query = query.eq("user_id", user_id).is_("organization_id", "null")
+            
+            response = query.order("created_at", desc=True)\
                 .range(offset, offset + limit - 1)\
                 .execute()
             
@@ -226,9 +286,15 @@ class DatabaseClient:
             # Fallback to received_at if created_at doesn't work
             logger.warning(f"⚠️ Primary query failed, trying fallback: {e}")
             try:
-                response = self.client.table("rfx_v2")\
-                    .select("*, companies(*), requesters(*)")\
-                    .order("received_at", desc=True)\
+                query = self.client.table("rfx_v2")\
+                    .select("*, companies(*), requesters(*)")
+                
+                if organization_id:
+                    query = query.eq("organization_id", organization_id)
+                else:
+                    query = query.eq("user_id", user_id).is_("organization_id", "null")
+                
+                response = query.order("received_at", desc=True)\
                     .range(offset, offset + limit - 1)\
                     .execute()
                 
@@ -1226,6 +1292,436 @@ class DatabaseClient:
             logger.error(f"❌ save_generated_document failed: {e}")
             logger.error(f"❌ Problematic document data: {doc_data}")
             raise
+    
+    # ========================
+    # MULTI-TENANT ORGANIZATION HELPERS
+    # ========================
+    
+    def filter_by_organization(self, query, organization_id: Union[str, UUID]):
+        """
+        Agregar filtro de organization_id a una query.
+        
+        Args:
+            query: Query builder de Supabase
+            organization_id: UUID de la organización
+        
+        Returns:
+            Query con filtro aplicado
+        
+        Ejemplo:
+            query = db.client.table("rfx_v2").select("*")
+            query = db.filter_by_organization(query, org_id)
+            result = query.execute()
+        """
+        return query.eq("organization_id", str(organization_id))
+    
+    def get_organization(self, organization_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
+        """
+        Obtener información de una organización.
+        
+        Args:
+            organization_id: UUID de la organización
+        
+        Returns:
+            Diccionario con datos de la organización o None
+        """
+        try:
+            response = self.client.table("organizations")\
+                .select("*")\
+                .eq("id", str(organization_id))\
+                .single()\
+                .execute()
+            
+            if response.data:
+                logger.info(f"✅ Organization retrieved: {response.data.get('name')}")
+                return response.data
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get organization {organization_id}: {e}")
+            return None
+    
+    def check_organization_limit(
+        self, 
+        organization_id: Union[str, UUID], 
+        limit_type: str
+    ) -> Dict[str, Any]:
+        """
+        Verificar si una organización ha alcanzado sus límites.
+        
+        Args:
+            organization_id: UUID de la organización
+            limit_type: Tipo de límite ('users' o 'rfx_monthly')
+        
+        Returns:
+            Diccionario con:
+                - can_proceed: bool
+                - current_count: int
+                - limit: int
+                - plan_tier: str
+        
+        Ejemplo:
+            result = db.check_organization_limit(org_id, 'users')
+            if not result['can_proceed']:
+                return error_response("User limit reached")
+        """
+        try:
+            # Obtener organización
+            org = self.get_organization(organization_id)
+            if not org:
+                return {
+                    'can_proceed': False,
+                    'error': 'Organization not found'
+                }
+            
+            plan_tier = org.get('plan_tier', 'free')
+            
+            if limit_type == 'users':
+                # Contar usuarios actuales
+                response = self.client.table("users")\
+                    .select("id", count="exact")\
+                    .eq("organization_id", str(organization_id))\
+                    .execute()
+                
+                current_count = response.count or 0
+                limit = org.get('max_users', 2)
+                
+                return {
+                    'can_proceed': current_count < limit,
+                    'current_count': current_count,
+                    'limit': limit,
+                    'plan_tier': plan_tier
+                }
+            
+            elif limit_type == 'rfx_monthly':
+                # Contar RFX del mes actual
+                from datetime import datetime
+                current_month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                
+                response = self.client.table("rfx_v2")\
+                    .select("id", count="exact")\
+                    .eq("organization_id", str(organization_id))\
+                    .gte("created_at", current_month_start.isoformat())\
+                    .execute()
+                
+                current_count = response.count or 0
+                limit = org.get('max_rfx_per_month', 10)
+                
+                return {
+                    'can_proceed': current_count < limit,
+                    'current_count': current_count,
+                    'limit': limit,
+                    'plan_tier': plan_tier
+                }
+            
+            else:
+                return {
+                    'can_proceed': False,
+                    'error': f'Invalid limit_type: {limit_type}'
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to check organization limit: {e}")
+            return {
+                'can_proceed': False,
+                'error': str(e)
+            }
+    
+    def get_organization_members(self, organization_id: Union[str, UUID]) -> List[Dict[str, Any]]:
+        """
+        Obtener todos los miembros de una organización.
+        
+        Args:
+            organization_id: UUID de la organización
+        
+        Returns:
+            Lista de usuarios con sus roles
+        """
+        try:
+            response = self.client.table("users")\
+                .select("id, email, full_name, role, created_at")\
+                .eq("organization_id", str(organization_id))\
+                .order("role", desc=True)\
+                .order("created_at")\
+                .execute()
+            
+            return response.data or []
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get organization members: {e}")
+            return []
+    
+    def update_organization(self, organization_id: Union[str, UUID], update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Actualizar información de una organización.
+        
+        Args:
+            organization_id: UUID de la organización
+            update_data: Datos a actualizar (name, slug, etc.)
+        
+        Returns:
+            Organización actualizada o None si falla
+        """
+        try:
+            response = self.client.table("organizations")\
+                .update(update_data)\
+                .eq("id", str(organization_id))\
+                .execute()
+            
+            if response.data:
+                logger.info(f"✅ Organization updated: {organization_id}")
+                return response.data[0]
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to update organization: {e}")
+            return None
+    
+    def update_user_role(self, user_id: Union[str, UUID], new_role: str) -> bool:
+        """
+        Cambiar el rol de un usuario en su organización.
+        
+        Args:
+            user_id: UUID del usuario
+            new_role: Nuevo rol ('owner', 'admin', 'member')
+        
+        Returns:
+            True si se actualizó correctamente, False si falló
+        """
+        try:
+            # Validar rol
+            valid_roles = ['owner', 'admin', 'member']
+            if new_role not in valid_roles:
+                logger.error(f"❌ Invalid role: {new_role}")
+                return False
+            
+            response = self.client.table("users")\
+                .update({"role": new_role})\
+                .eq("id", str(user_id))\
+                .execute()
+            
+            if response.data:
+                logger.info(f"✅ User role updated: {user_id} → {new_role}")
+                return True
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to update user role: {e}")
+            return False
+    
+    def remove_user_from_organization(self, user_id: Union[str, UUID]) -> bool:
+        """
+        Remover un usuario de su organización (set organization_id y role a NULL).
+        
+        El usuario NO es eliminado de la base de datos, solo removido de la organización.
+        Después de esto, el usuario tendrá plan personal (organization_id = NULL).
+        
+        NOTA: Requiere que la columna organization_id permita NULL.
+        Ejecutar migración: migrations/20251216_allow_null_organization_id.sql
+        
+        Args:
+            user_id: UUID del usuario
+        
+        Returns:
+            True si se removió correctamente, False si falló
+        """
+        try:
+            response = self.client.table("users")\
+                .update({
+                    "organization_id": None,
+                    "role": None
+                })\
+                .eq("id", str(user_id))\
+                .execute()
+            
+            if response.data:
+                logger.info(f"✅ User removed from organization (now has personal plan): {user_id}")
+                return True
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to remove user from organization: {e}")
+            logger.error(f"💡 Hint: Run migration 'migrations/20251216_allow_null_organization_id.sql' to allow NULL in organization_id")
+            return False
+    
+    def get_user_by_id(self, user_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
+        """
+        Obtener información de un usuario por su ID.
+        
+        Args:
+            user_id: UUID del usuario
+        
+        Returns:
+            Diccionario con datos del usuario o None
+        """
+        try:
+            response = self.client.table("users")\
+                .select("*")\
+                .eq("id", str(user_id))\
+                .single()\
+                .execute()
+            
+            return response.data if response.data else None
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get user: {e}")
+            return None
+    
+    # ========================
+    # RFX PROCESSING STATUS (Tabla Normalizada)
+    # ========================
+    
+    def get_processing_status(self, rfx_id: Union[str, UUID]) -> Optional[Dict]:
+        """
+        Obtener estado de procesamiento de un RFX.
+        
+        Args:
+            rfx_id: UUID del RFX
+        
+        Returns:
+            Diccionario con estado o None si no existe
+        
+        Ejemplo:
+            status = db.get_processing_status(rfx_id)
+            if status and status['has_extracted_data']:
+                print("RFX ya tiene datos extraídos")
+        """
+        try:
+            rfx_id_str = str(rfx_id)
+            
+            response = self.client.table("rfx_processing_status")\
+                .select("*")\
+                .eq("rfx_id", rfx_id_str)\
+                .single()\
+                .execute()
+            
+            return response.data if response.data else None
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to get processing status for RFX {rfx_id}: {e}")
+            return None
+    
+    def upsert_processing_status(self, rfx_id: Union[str, UUID], data: Dict) -> Dict:
+        """
+        Crear o actualizar estado de procesamiento de un RFX.
+        
+        Args:
+            rfx_id: UUID del RFX
+            data: Diccionario con campos a actualizar
+        
+        Returns:
+            Diccionario con resultado
+        
+        Ejemplo:
+            db.upsert_processing_status(rfx_id, {
+                "has_extracted_data": True,
+                "extraction_completed_at": datetime.now().isoformat(),
+                "extraction_credits_consumed": 5
+            })
+        """
+        try:
+            rfx_id_str = str(rfx_id)
+            
+            # Agregar rfx_id al data
+            data["rfx_id"] = rfx_id_str
+            
+            # Upsert (insert or update)
+            response = self.client.table("rfx_processing_status")\
+                .upsert(data, on_conflict="rfx_id")\
+                .execute()
+            
+            logger.info(f"✅ Processing status updated for RFX {rfx_id}")
+            return {"status": "success", "data": response.data}
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to upsert processing status: {e}")
+            return {"status": "error", "message": str(e)}
+    
+    def get_regeneration_count(self, rfx_id: Union[str, UUID]) -> int:
+        """
+        Obtener número de regeneraciones de un RFX.
+        
+        Args:
+            rfx_id: UUID del RFX
+        
+        Returns:
+            Número de regeneraciones (0 si no existe)
+        """
+        try:
+            status = self.get_processing_status(rfx_id)
+            return status.get("regeneration_count", 0) if status else 0
+        except Exception as e:
+            logger.error(f"❌ Failed to get regeneration count: {e}")
+            return 0
+    
+    def increment_regeneration_count(self, rfx_id: Union[str, UUID]) -> bool:
+        """
+        Incrementar contador de regeneraciones.
+        
+        Args:
+            rfx_id: UUID del RFX
+        
+        Returns:
+            True si se incrementó exitosamente
+        """
+        try:
+            rfx_id_str = str(rfx_id)
+            
+            # Obtener estado actual
+            status = self.get_processing_status(rfx_id)
+            
+            if not status:
+                logger.warning(f"⚠️ Processing status not found for RFX {rfx_id}")
+                return False
+            
+            current_count = status.get("regeneration_count", 0)
+            
+            # Actualizar contador
+            from datetime import datetime
+            self.upsert_processing_status(rfx_id, {
+                "regeneration_count": current_count + 1,
+                "last_regeneration_at": datetime.now().isoformat()
+            })
+            
+            logger.info(f"✅ Regeneration count incremented for RFX {rfx_id}: {current_count} → {current_count + 1}")
+            return True
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to increment regeneration count: {e}")
+            return False
+    
+    def is_operation_completed(self, rfx_id: Union[str, UUID], operation_type: str) -> bool:
+        """
+        Verificar si una operación ya fue completada.
+        
+        Args:
+            rfx_id: UUID del RFX
+            operation_type: Tipo de operación ('extraction' o 'generation')
+        
+        Returns:
+            True si la operación fue completada
+        
+        Ejemplo:
+            if db.is_operation_completed(rfx_id, 'extraction'):
+                print("Ya se extrajo data de este RFX")
+        """
+        try:
+            status = self.get_processing_status(rfx_id)
+            
+            if not status:
+                return False
+            
+            if operation_type == 'extraction':
+                return status.get("has_extracted_data", False)
+            elif operation_type == 'generation':
+                return status.get("has_generated_proposal", False)
+            else:
+                logger.warning(f"⚠️ Unknown operation type: {operation_type}")
+                return False
+        
+        except Exception as e:
+            logger.error(f"❌ Failed to check operation completion: {e}")
+            return False
 
 
 # Global database client instance

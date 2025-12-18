@@ -588,25 +588,13 @@ class ProposalGenerationService:
                 "pricing": self._format_pricing_data(pricing_calculation, currency, proposal_request.rfx_id)
             }
             
-            # 4. Preparar configuración de branding
-            template_analysis = branding.get('template_analysis', {})
-            color_scheme = template_analysis.get('color_scheme', {})
-            table_style = template_analysis.get('table_style', {})
-            
-            branding_config = {
-                "primary_color": color_scheme.get('primary', '#0e2541'),
-                "secondary_color": color_scheme.get('secondary', '#ffffff'),
-                "table_header_bg": table_style.get('header_background', '#0e2541'),
-                "table_header_text": table_style.get('header_text_color', '#ffffff'),
-                "table_border": color_scheme.get('borders', '#000000')
-            }
-            
-            # 5. Llamar al orquestador de agentes
+            # 4. Llamar al orquestador de agentes
+            # El html_template ya contiene los colores del branding embebidos en el CSS
             logger.info("🎭 Calling Agent Orchestrator...")
             result = await agent_orchestrator.generate_professional_proposal(
                 html_template=html_template,
                 rfx_data=rfx_agent_data,
-                branding_config=branding_config,
+                branding_config=None,  # No enviamos colores hardcodeados
                 user_id=user_id
             )
             

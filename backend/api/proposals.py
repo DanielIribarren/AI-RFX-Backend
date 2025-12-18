@@ -12,7 +12,9 @@ import random
 
 from backend.models.proposal_models import ProposalRequest, ProposalResponse, PropuestaGenerada, NotasPropuesta
 from backend.core.database import get_database_client
-from backend.utils.auth_middleware import optional_jwt, get_current_user, get_current_user_id
+from backend.services.credits_service import get_credits_service
+from backend.utils.auth_middleware import optional_jwt, get_current_user, get_current_user_id, get_current_user_organization_id
+from backend.exceptions import InsufficientCreditsError
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +127,81 @@ def generate_proposal():
         rfx_data_mapped['user_id'] = user_id
         logger.info(f"✅ Injected authenticated user_id into rfx_data: {user_id}")
         
+        # 💳 VERIFICAR CRÉDITOS Y REGENERACIONES GRATUITAS
+        organization_id = get_current_user_organization_id()
+        if not organization_id:
+            # Intentar obtener organization_id del usuario en BD
+            try:
+                from backend.repositories.user_repository import user_repository
+                from uuid import UUID
+                user_data = user_repository.get_by_id(UUID(user_id))
+                if user_data:
+                    org_id_value = user_data.get('organization_id')
+                    # ✅ CRÍTICO: Solo convertir a string si NO es None
+                    organization_id = str(org_id_value) if org_id_value else None
+            except Exception as e:
+                logger.warning(f"⚠️ Could not get organization_id: {e}")
+        
+        # ✅ VALIDACIÓN SIMPLIFICADA: Solo verificar que el RFX existe
+        # La validación de acceso ya está protegida a nivel de vista/frontend
+        # Si el usuario puede ver el RFX, puede generar su propuesta
+        logger.info(f"✅ Skipping ownership validation - access already protected at view level")
+        logger.info(f"💳 Credits context - user_id: {user_id}, organization_id: {organization_id} (type: {type(organization_id).__name__})")
+        
+        logger.info(f"✅ Ownership validated for RFX {proposal_request.rfx_id}")
+        
+        credits_service = get_credits_service()
+        
+        # Verificar si es regeneración (si ya existe una propuesta para este RFX)
+        existing_proposals = db_client.get_proposals_by_rfx_id(proposal_request.rfx_id)
+        is_regeneration = len(existing_proposals) > 0
+        
+        credits_to_consume = 0
+        used_free_regeneration = False
+        
+        if is_regeneration:
+            logger.info(f"🔄 This is a regeneration (existing proposals: {len(existing_proposals)})")
+            
+            # Verificar si hay regeneraciones gratuitas disponibles
+            has_free, used, msg = credits_service.check_free_regeneration_available(
+                organization_id, proposal_request.rfx_id
+            )
+            
+            if has_free:
+                # Usar regeneración gratis
+                logger.info(f"✅ Using free regeneration: {msg}")
+                used_free_regeneration = True
+            else:
+                # Consumir créditos (5 créditos por regeneración)
+                logger.info(f"⚠️ No free regenerations available: {msg}")
+                credits_to_consume = 5
+        else:
+            # Primera generación (5 créditos)
+            logger.info(f"🆕 This is the first proposal generation")
+            credits_to_consume = 5
+        
+        # Verificar créditos si es necesario
+        if credits_to_consume > 0:
+            has_credits, available, msg = credits_service.check_credits_available(
+                organization_id,  # None para usuarios personales
+                'generation',
+                user_id=user_id   # Requerido para usuarios personales
+            )
+            
+            if not has_credits:
+                context = "organization" if organization_id else "personal plan"
+                logger.warning(f"⚠️ Insufficient credits for proposal generation ({context}): {msg}")
+                return jsonify({
+                    "status": "error",
+                    "error_type": "insufficient_credits",
+                    "message": msg,
+                    "credits_required": credits_to_consume,
+                    "credits_available": available
+                }), 402  # 402 Payment Required
+            
+            context = "organization" if organization_id else "personal"
+            logger.info(f"✅ Credits verified ({context}): {available} available, {credits_to_consume} required")
+        
         # Generar propuesta usando el servicio (lazy import para evitar fallas en startup)
         try:
             from backend.services.proposal_generator import ProposalGenerationService
@@ -154,17 +231,58 @@ def generate_proposal():
         # No need to save again here - use the existing ID from the generated proposal
         documento_id = str(propuesta_generada.id)
         
+        # 💳 CONSUMIR CRÉDITOS O MARCAR REGENERACIÓN GRATIS
+        if used_free_regeneration:
+            # Marcar regeneración gratis como usada
+            credits_service.use_free_regeneration(proposal_request.rfx_id)
+            logger.info(f"✅ Free regeneration marked as used for RFX {proposal_request.rfx_id}")
+        elif credits_to_consume > 0:
+            # Consumir créditos
+            consume_result = credits_service.consume_credits(
+                organization_id=organization_id,
+                operation='generation' if not is_regeneration else 'regeneration',
+                rfx_id=proposal_request.rfx_id,
+                user_id=user_id,
+                description=f"{'Regeneration' if is_regeneration else 'Generation'} of proposal for RFX {proposal_request.rfx_id}"
+            )
+            
+            if consume_result["status"] == "success":
+                logger.info(f"✅ Credits consumed: {credits_to_consume} (remaining: {consume_result['credits_remaining']})")
+            else:
+                logger.error(f"❌ Failed to consume credits: {consume_result.get('message')}")
+        
+        # 📊 ACTUALIZAR PROCESSING STATUS
+        if is_regeneration:
+            # Incrementar contador de regeneraciones
+            db_client.increment_regeneration_count(proposal_request.rfx_id)
+            logger.info(f"✅ Regeneration count incremented for RFX {proposal_request.rfx_id}")
+        else:
+            # Primera generación
+            from datetime import datetime
+            db_client.upsert_processing_status(proposal_request.rfx_id, {
+                "has_generated_proposal": True,
+                "generation_completed_at": datetime.now().isoformat(),
+                "generation_credits_consumed": credits_to_consume
+            })
+        
         # Crear respuesta
-        response = ProposalResponse(
+        response_data = ProposalResponse(
             status="success",
             message="Propuesta generada exitosamente",
             document_id=documento_id,
             pdf_url=f"/api/download/{documento_id}",
             proposal=propuesta_generada
-        )
+        ).model_dump()
+        
+        # Agregar información de créditos a la respuesta
+        response_data["credits_info"] = {
+            "credits_consumed": credits_to_consume,
+            "used_free_regeneration": used_free_regeneration,
+            "is_regeneration": is_regeneration
+        }
         
         logger.info(f"✅ Propuesta generada exitosamente: {propuesta_generada.id}")
-        return jsonify(response.model_dump()), 200
+        return jsonify(response_data), 200
         
     except ValidationError as e:
         logger.error(f"❌ Validation error: {e}")

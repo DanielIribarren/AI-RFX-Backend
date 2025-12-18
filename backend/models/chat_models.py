@@ -239,6 +239,10 @@ class ChatResponse(BaseModel):
         le=1.0,
         description="Nivel de confianza de la IA (0.0-1.0)"
     )
+    reasoning: Optional[str] = Field(
+        default=None,
+        description="Razonamiento interno del agente (Chain-of-Thought) - solo para logs"
+    )
     changes: List[RFXChange] = Field(
         default_factory=list,
         description="Lista de cambios a aplicar"

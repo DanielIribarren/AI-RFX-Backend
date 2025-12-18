@@ -10,8 +10,8 @@ Fase 2 - Sprint 1
 from langchain.tools import tool
 from typing import Dict, Any
 import logging
-import requests
-import os
+
+from backend.core.database import get_database_client
 
 logger = logging.getLogger(__name__)
 
@@ -66,69 +66,80 @@ def get_request_data_tool(data_type: str, request_id: str) -> Dict[str, Any]:
     try:
         logger.info(f"🔍 get_request_data_tool called: data_type={data_type}, request_id={request_id}")
         
-        # Base URL del backend (mismo servidor)
-        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
+        db = get_database_client()
         
         if data_type == "products":
-            # Llamar al endpoint GET /api/rfx/<rfx_id>/products
-            url = f"{base_url}/api/rfx/{request_id}/products"
-            response = requests.get(url)
+            # Obtener lista completa de productos
+            products = db.get_rfx_products(request_id)
             
-            if response.status_code == 200:
-                data = response.json()
-                logger.info(f"✅ Retrieved products for request {request_id}")
-                return data  # Retornar JSON raw del endpoint
-            else:
-                logger.error(f"❌ Error calling endpoint: {response.status_code}")
-                return {"error": f"Failed to get products: {response.text}"}
+            logger.info(f"✅ Retrieved {len(products)} products for request {request_id}")
+            
+            # Retornar JSON raw estructurado (como endpoint)
+            return {
+                "status": "success",
+                "products": products,
+                "count": len(products)
+            }
         
         elif data_type == "summary":
-            # Llamar al endpoint GET /api/rfx/<rfx_id>/products para obtener productos
-            url = f"{base_url}/api/rfx/{request_id}/products"
-            response = requests.get(url)
+            # Obtener resumen: total y cantidad
+            products = db.get_rfx_products(request_id)
             
-            if response.status_code == 200:
-                data = response.json()
-                products = data.get('products', [])
-                
-                # Calcular resumen
-                total = sum(
-                    p.get('precio', 0) * p.get('cantidad', 0) 
-                    for p in products
-                )
-                
-                summary = {
-                    "product_count": len(products),
-                    "total": total,
-                    "currency": data.get('currency', 'MXN')
-                }
-                
-                logger.info(f"✅ Summary for request {request_id}: {len(products)} products, total ${total}")
-                return summary
-            else:
-                logger.error(f"❌ Error calling endpoint: {response.status_code}")
-                return {"error": f"Failed to get summary: {response.text}"}
+            # Calcular total
+            total = sum(
+                p.get('estimated_unit_price', 0) * p.get('quantity', 0) 
+                for p in products
+            )
+            
+            logger.info(f"✅ Summary for request {request_id}: {len(products)} products, total ${total}")
+            
+            # Retornar JSON raw estructurado
+            return {
+                "status": "success",
+                "product_count": len(products),
+                "total": total,
+                "currency": "MXN"
+            }
         
         elif data_type == "details":
-            # Llamar al endpoint GET /api/rfx/<rfx_id>
-            url = f"{base_url}/api/rfx/{request_id}"
-            response = requests.get(url)
+            # Obtener detalles del request
+            rfx = db.get_rfx_by_id(request_id)
             
-            if response.status_code == 200:
-                data = response.json()
-                logger.info(f"✅ Retrieved details for request {request_id}")
-                return data  # Retornar JSON raw del endpoint
-            else:
-                logger.error(f"❌ Error calling endpoint: {response.status_code}")
-                return {"error": f"Failed to get details: {response.text}"}
+            if not rfx:
+                logger.warning(f"⚠️ Request {request_id} not found")
+                return {
+                    "status": "error",
+                    "error": f"Request {request_id} not found"
+                }
+            
+            # Retornar JSON raw estructurado
+            details = {
+                "status": "success",
+                "title": rfx.get('title'),
+                "event_date": rfx.get('project_start_date'),
+                "location": rfx.get('event_location'),
+                "city": rfx.get('event_city'),
+                "status_value": rfx.get('status'),
+                "description": rfx.get('description')
+            }
+            
+            logger.info(f"✅ Retrieved details for request {request_id}")
+            
+            return details
         
         else:
             # Tipo de dato inválido
             error_msg = f"Invalid data_type: {data_type}. Valid options: 'products', 'summary', 'details'"
             logger.error(f"❌ {error_msg}")
-            return {"error": error_msg}
+            return {
+                "status": "error",
+                "error": error_msg
+            }
     
     except Exception as e:
         error_msg = f"Error retrieving request data: {str(e)}"
         logger.error(f"❌ {error_msg}")
-        return {"error": error_msg}
+        return {
+            "status": "error",
+            "error": error_msg
+        }

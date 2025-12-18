@@ -10,8 +10,8 @@ Fase 2 - Sprint 3
 from langchain.tools import tool
 from typing import Dict, Any
 import logging
-import requests
-import os
+
+from backend.core.database import get_database_client
 
 logger = logging.getLogger(__name__)
 
@@ -65,23 +65,67 @@ def modify_request_details_tool(request_id: str, updates: Dict[str, Any]) -> Dic
     try:
         logger.info(f"🔧 modify_request_details_tool called: request_id={request_id}, updates={updates}")
         
-        # Base URL del backend (mismo servidor)
-        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
-        
-        # Llamar al endpoint PUT /api/rfx/<rfx_id>/data
-        url = f"{base_url}/api/rfx/{request_id}/data"
-        
-        response = requests.put(url, json=updates)
-        
-        if response.status_code == 200:
-            data = response.json()
-            logger.info(f"✅ Request {request_id} details updated successfully")
-            return data  # Retornar JSON raw del endpoint
-        else:
-            logger.error(f"❌ Error calling endpoint: {response.status_code}")
+        if not updates or len(updates) == 0:
+            logger.warning("⚠️ No updates provided")
             return {
                 "status": "error",
-                "message": f"Failed to update request details: {response.text}"
+                "request_id": request_id,
+                "updated_fields": [],
+                "message": "No se proporcionaron campos para actualizar"
+            }
+        
+        db = get_database_client()
+        
+        # Verificar que el request existe
+        rfx = db.get_rfx_by_id(request_id)
+        if not rfx:
+            logger.warning(f"⚠️ Request {request_id} not found")
+            return {
+                "status": "error",
+                "request_id": request_id,
+                "updated_fields": [],
+                "message": f"Request con ID {request_id} no encontrado"
+            }
+        
+        # Mapear nombres de campos (tool → BD)
+        field_mapping = {
+            "title": "title",
+            "event_date": "project_start_date",
+            "location": "event_location",
+            "city": "event_city",
+            "client_name": "client_name",
+            "delivery_date": "delivery_date",
+            "notes": "notes",
+            "status": "status"
+        }
+        
+        # Preparar datos para actualización
+        update_data = {}
+        for key, value in updates.items():
+            db_field = field_mapping.get(key, key)
+            update_data[db_field] = value
+        
+        # Actualizar en BD
+        try:
+            db.update_rfx(request_id, update_data)
+            
+            updated_fields = list(updates.keys())
+            logger.info(f"✅ Request {request_id} details updated successfully: {updated_fields}")
+            
+            return {
+                "status": "success",
+                "request_id": request_id,
+                "updated_fields": updated_fields,
+                "message": f"Detalles del request actualizados exitosamente ({', '.join(updated_fields)})"
+            }
+        
+        except Exception as e:
+            logger.error(f"❌ Error updating request {request_id}: {e}")
+            return {
+                "status": "error",
+                "request_id": request_id,
+                "updated_fields": [],
+                "message": f"Error al actualizar request: {str(e)}"
             }
     
     except Exception as e:

@@ -10,8 +10,8 @@ Fase 2 - Sprint 2
 from langchain.tools import tool
 from typing import List, Dict, Any
 import logging
-import requests
-import os
+
+from backend.core.database import get_database_client
 
 logger = logging.getLogger(__name__)
 
@@ -53,51 +53,69 @@ def add_products_tool(request_id: str, products: List[Dict[str, Any]]) -> Dict[s
     try:
         logger.info(f"🔧 add_products_tool called: request_id={request_id}, products_count={len(products)}")
         
-        # Base URL del backend (mismo servidor)
-        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
-        url = f"{base_url}/api/rfx/{request_id}/products"
-        
-        # El endpoint POST /api/rfx/<rfx_id>/products acepta UN producto a la vez
-        # Necesitamos hacer un loop para agregar múltiples productos
-        added_products = []
-        errors = []
-        
-        for product in products:
-            # Mapear campos al formato que espera el endpoint
-            payload = {
-                "nombre": product.get("name"),
-                "cantidad": product.get("quantity", 1),
-                "unidad": product.get("unit", "unidades"),
-                "precio_unitario": product.get("price_unit", 0),
-                "categoria": product.get("category"),
-                "descripcion": product.get("description"),
-                "notas": product.get("notes")
-            }
-            
-            response = requests.post(url, json=payload)
-            
-            if response.status_code == 201:
-                data = response.json()
-                added_products.append(data.get("data", {}).get("product", {}))
-                logger.info(f"✅ Product added: {product.get('name')}")
-            else:
-                error_msg = f"Failed to add {product.get('name')}: {response.text}"
-                errors.append(error_msg)
-                logger.error(f"❌ {error_msg}")
-        
-        # Retornar resultado consolidado
-        if len(added_products) > 0:
-            return {
-                "status": "success",
-                "message": f"Se agregaron {len(added_products)} producto(s) exitosamente",
-                "products": added_products,
-                "errors": errors if errors else None
-            }
-        else:
+        if not products or len(products) == 0:
+            logger.warning("⚠️ No products provided")
             return {
                 "status": "error",
-                "message": "No se pudo agregar ningún producto",
-                "errors": errors
+                "message": "No se proporcionaron productos para agregar",
+                "products_added": 0,
+                "product_ids": []
+            }
+        
+        db = get_database_client()
+        added_ids = []
+        added_products = []
+        
+        # Insertar cada producto
+        for i, product in enumerate(products, 1):
+            # Validar campos requeridos
+            if not product.get('name'):
+                logger.warning(f"⚠️ Product {i} missing 'name' field, skipping")
+                continue
+            
+            if product.get('quantity') is None or product.get('quantity') <= 0:
+                logger.warning(f"⚠️ Product {i} has invalid quantity, skipping")
+                continue
+            
+            # Preparar datos del producto
+            product_data = {
+                "product_name": product.get('name'),
+                "quantity": product.get('quantity'),
+                "estimated_unit_price": product.get('price_unit', 0),
+                "unit": product.get('unit', 'unidades'),
+                "description": product.get('description'),
+                "notes": product.get('notes')
+            }
+            
+            # Insertar en BD
+            try:
+                inserted = db.insert_rfx_products(request_id, [product_data])
+                if inserted and len(inserted) > 0:
+                    product_id = inserted[0].get('id')
+                    added_ids.append(product_id)
+                    added_products.append(inserted[0])
+                    logger.info(f"✅ Product added: {product.get('name')} (ID: {product_id})")
+            except Exception as e:
+                logger.error(f"❌ Error adding product {product.get('name')}: {e}")
+                continue
+        
+        # Retornar JSON raw estructurado
+        if len(added_ids) > 0:
+            logger.info(f"✅ Successfully added {len(added_ids)} products to request {request_id}")
+            return {
+                "status": "success",
+                "message": f"Se agregaron {len(added_ids)} producto(s) exitosamente",
+                "products_added": len(added_ids),
+                "product_ids": added_ids,
+                "products": added_products
+            }
+        else:
+            logger.warning(f"⚠️ No products were added to request {request_id}")
+            return {
+                "status": "error",
+                "message": "No se pudo agregar ningún producto (verifica los datos)",
+                "products_added": 0,
+                "product_ids": []
             }
     
     except Exception as e:

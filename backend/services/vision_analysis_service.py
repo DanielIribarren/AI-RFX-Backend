@@ -75,12 +75,23 @@ class VisionAnalysisService:
    - Tabla de productos: Columnas, colores, bordes, padding
    - Totales: Estilo, posición, formato
    - Comentarios: Si existe, su estilo
+   - Si los elementos del template se encuentran en una caja con bordes, debes tomar en cuenta esos bordes (Esto puede ser una caja para las firmas, comentarios, etc.)
+   - Si el subtotal y otros datos financieros se encuentran en la tabla de productos debes tomarlo en cuenta, o si se encuentran en otra caja debes tomarlo en cuenta.
 
 3. **LOGO DEL USUARIO (URL CLOUDINARY):**
    - DEBES reemplazar cualquier logo que veas en el template con esta variable: {{{{LOGO_URL}}}}
+   - El logo debe ir en la misma posicion que el logo original y el mismo tamaño (trata de que este centrado verticalmente en la caja donde se encuentra el logo original)
    - Usa exactamente: <img src="{{{{LOGO_URL}}}}" alt="Logo">
    - Mantén el tamaño y posición similares al logo original
    - La variable contendrá una URL pública de Cloudinary
+
+4.  **BORDES DEL PRESUPUESTO**
+   - Si el presupuesto tiene bordes, debes tomarlo en cuenta
+   - Los bordes de la tabla de productos
+   - Los bordes de la caja de totales
+   - Los bordes de la caja de comentarios
+   - Los bordes de la caja de firmas
+   - Los bordes que hayan en el presupuesto analiza que hay dentro, el grosor de los bordes, el color y el espaciado.
 
 4. **GENERA HTML COMPLETO CON:**
    - <!DOCTYPE html>, <head>, <style>, <body>

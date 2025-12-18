@@ -36,18 +36,22 @@ def jwt_required(f):
                 parts = auth_header.split()
                 if parts[0].lower() == 'bearer' and len(parts) == 2:
                     token = parts[1]
+                    logger.debug(f"🔑 JWT token received (length: {len(token)})")
                 else:
+                    logger.warning(f"❌ JWT Auth: Invalid header format - parts: {len(parts)}")
                     return jsonify({
                         "status": "error",
                         "message": "Invalid Authorization header format. Use 'Bearer <token>'"
                     }), 401
-            except Exception:
+            except Exception as e:
+                logger.warning(f"❌ JWT Auth: Header parsing error - {e}")
                 return jsonify({
                     "status": "error",
                     "message": "Invalid Authorization header"
                 }), 401
         
         if not token:
+            logger.warning(f"❌ JWT Auth: No token provided - endpoint: {request.endpoint}")
             return jsonify({
                 "status": "error",
                 "message": "Authentication required",
@@ -76,12 +80,15 @@ def jwt_required(f):
             user = user_repository.get_by_id(UUID(user_id))
             
             if not user:
+                logger.warning(f"❌ JWT Auth: User not found - user_id: {user_id}")
                 return jsonify({
                     "status": "error",
                     "message": "User not found"
                 }), 401
             
-            if user['status'] not in ['active', 'pending_verification']:
+            user_status = user.get('status', 'unknown')
+            if user_status not in ['active', 'pending_verification']:
+                logger.warning(f"❌ JWT Auth: User inactive - user_id: {user_id}, status: {user_status}")
                 return jsonify({
                     "status": "error",
                     "message": "User account is inactive"
@@ -90,7 +97,7 @@ def jwt_required(f):
             # Guardar usuario en Flask g object
             g.current_user = user
             
-            logger.debug(f"✅ Authenticated user: {user['email']} (ID: {user['id']})")
+            logger.debug(f"✅ Authenticated user: {user['email']} (ID: {user['id']}, status: {user_status})")
             
         except ValueError:
             return jsonify({
@@ -127,6 +134,20 @@ def get_current_user_id() -> Optional[str]:
     """
     user = get_current_user()
     return str(user['id']) if user else None
+
+def get_current_user_organization_id() -> Optional[str]:
+    """
+    Obtener organization_id del usuario actual
+    
+    Returns:
+        String UUID de la organización o None si no autenticado/sin org
+    """
+    user = get_current_user()
+    if not user:
+        return None
+    
+    org_id = user.get('organization_id')
+    return str(org_id) if org_id else None
 
 def optional_jwt(f):
     """

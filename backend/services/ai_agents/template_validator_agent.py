@@ -132,7 +132,7 @@ Antes de modificar, planifica sistemáticamente:
 
 ### PASO 4: TRANSFORMACIÓN PRECISA Y COMPLETA
 Modifica el html_generated aplicando TODAS las correcciones necesarias:
-- Usar EXACTAMENTE los colores del branding_config
+- **COLORES**: Si branding_config tiene colores, úsalos. Si NO tiene colores (N/A), extrae los colores del html_template y úsalos. Si el html_template tampoco tiene colores, elige colores profesionales y coherentes para un presupuesto comercial.
 - Replicar el espaciado y layout del html_template
 - Incluir TODOS los productos del request_data
 - Asegurar cálculos matemáticos correctos
@@ -141,7 +141,10 @@ Modifica el html_generated aplicando TODAS las correcciones necesarias:
 ## CRITERIOS DE VALIDACIÓN ESTRICTOS:
 
 ### ✅ COHERENCIA VISUAL ABSOLUTA:
-- Colores IDÉNTICOS al template (usar primary_color, table_header_bg, table_header_text)
+- **COLORES**: 
+  * Los colores de html_generated tienen que ser identicos al del html_template. (si son distintos o vez discrepancias tu objetivo es adaptar los colores al html_template)
+  * Si html_template es vacio entonces utiliza colores elegantes que se ajusten al contexto y estilo del presupuesto (ej: azul corporativo #2c5f7c, verde #009688, gris oscuro #333333)
+
 - Espaciado que replique exactamente la respiración visual del template  
 - Tipografía consistente (tamaños, weights, families)
 - Layout y estructura que coincidan píxel a píxel
@@ -236,9 +239,9 @@ Copy code
             "html_template": html_template,  # HTML COMPLETO - calidad > costo
             "html_generated": html_generated,  # HTML COMPLETO - no truncar
             "branding_config": {
-                "primary_color": branding_config.get('primary_color', 'N/A'),
-                "table_header_bg": branding_config.get('table_header_bg', 'N/A'),
-                "table_header_text": branding_config.get('table_header_text', 'N/A')
+                "primary_color": branding_config.get('primary_color', 'N/A') if branding_config else 'N/A',
+                "table_header_bg": branding_config.get('table_header_bg', 'N/A') if branding_config else 'N/A',
+                "table_header_text": branding_config.get('table_header_text', 'N/A') if branding_config else 'N/A'
             },
             "request_data": {
                 "client_name": request_data.get('client_name', 'N/A'),

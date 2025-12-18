@@ -41,7 +41,8 @@ from backend.services.tools import (
     add_products_tool,
     update_product_tool,
     delete_product_tool,
-    modify_request_details_tool
+    modify_request_details_tool,
+    parse_file_tool
 )
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class ChatAgent:
             update_product_tool,
             delete_product_tool,
             modify_request_details_tool,
+            parse_file_tool,
         ]
         
         # Output parser (JSON)
@@ -182,7 +184,7 @@ class ChatAgent:
                 # Capturar output final
                 if "output" in step:
                     response_message = step["output"]
-                    logger.info(f"🤖 Agent response: {response_message}")
+                    logger.info(f"🤖 Agent raw response: {response_message}")
                 
                 # Capturar intermediate steps (tools usadas)
                 if "intermediate_steps" in step:
@@ -192,26 +194,62 @@ class ChatAgent:
             if not response_message:
                 response_message = "Lo siento, no pude procesar tu solicitud."
             
-            # 7. Extraer cambios de tools usadas
-            changes = self._extract_changes_from_steps(intermediate_steps)
+            # 7. Parsear respuesta JSON del agente
+            try:
+                # El agente puede retornar JSON embebido en markdown o texto plano
+                agent_json = self._parse_agent_response(response_message)
+                
+                # Extraer campos del JSON
+                message_text = agent_json.get("message", response_message)
+                confidence = agent_json.get("confidence", 0.95)
+                reasoning = agent_json.get("reasoning", "")
+                agent_changes = agent_json.get("changes", [])
+                requires_confirmation = agent_json.get("requires_confirmation", False)
+                options = agent_json.get("options", [])
+                
+                # Log completo para observabilidad
+                logger.info(f"📊 Agent parsed response:")
+                logger.info(f"   - message: {message_text[:100]}...")
+                logger.info(f"   - confidence: {confidence}")
+                logger.info(f"   - reasoning: {reasoning[:100]}..." if reasoning else "   - reasoning: None")
+                logger.info(f"   - changes: {len(agent_changes)}")
+                logger.info(f"   - requires_confirmation: {requires_confirmation}")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Could not parse agent JSON response: {e}")
+                # Fallback: usar respuesta como texto plano
+                message_text = response_message
+                confidence = 0.95
+                reasoning = ""
+                agent_changes = []
+                requires_confirmation = False
+                options = []
             
-            # 8. Log respuesta
-            chat_log.agent_response(response_message)
-            chat_log.agent_decision(response_message, len(changes))
+            # 8. Extraer cambios de tools usadas (fallback si el agente no los incluyó)
+            if not agent_changes:
+                agent_changes = self._extract_changes_from_steps(intermediate_steps)
             
-            # 9. Construir ChatResponse
+            # 9. Log respuesta
+            chat_log.agent_response(message_text)
+            chat_log.agent_decision(message_text, len(agent_changes))
+            
+            # 10. Construir ChatResponse con TODOS los campos
             processing_time_ms = int((time.time() - start_time) * 1000)
             
             return ChatResponse(
                 status="success",
-                message=response_message,
-                confidence=1.0 if len(changes) > 0 else 0.95,
+                message=message_text,
+                confidence=confidence,
+                reasoning=reasoning,  # Campo interno para logs
                 changes=[
-                    RFXChange(**change) 
-                    for change in changes
+                    RFXChange(**change) if isinstance(change, dict) else change
+                    for change in agent_changes
                 ],
-                requires_confirmation=False,
-                options=[],
+                requires_confirmation=requires_confirmation,
+                options=[
+                    ConfirmationOption(**opt) if isinstance(opt, dict) else opt
+                    for opt in options
+                ],
                 metadata=ChatMetadata(
                     processing_time_ms=processing_time_ms,
                     model_used=self.model
@@ -225,6 +263,50 @@ class ChatAgent:
                 "Lo siento, no pude procesar tu solicitud. ¿Podrías reformularla?",
                 start_time
             )
+    
+    def _parse_agent_response(self, response: str) -> Dict[str, Any]:
+        """
+        Parsea la respuesta del agente que puede venir como:
+        1. JSON puro: {"message": "...", "confidence": 0.95, ...}
+        2. JSON en markdown: ```json\n{...}\n```
+        3. Texto plano (fallback)
+        
+        Returns:
+            Dict con campos: message, confidence, reasoning, changes, requires_confirmation, options
+        """
+        try:
+            # Caso 1: Intentar parsear directamente como JSON
+            return json.loads(response)
+        except json.JSONDecodeError:
+            pass
+        
+        # Caso 2: Buscar JSON embebido en markdown
+        import re
+        json_match = re.search(r'```(?:json)?\s*\n?(\{.*?\})\s*\n?```', response, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+        
+        # Caso 3: Buscar JSON sin markdown delimiters
+        json_match = re.search(r'(\{[^{]*"message"[^}]*\})', response, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+        
+        # Fallback: retornar como texto plano
+        logger.warning(f"⚠️ Could not parse JSON from agent response, using as plain text")
+        return {
+            "message": response,
+            "confidence": 0.95,
+            "reasoning": "",
+            "changes": [],
+            "requires_confirmation": False,
+            "options": []
+        }
     
     def _extract_changes_from_steps(self, intermediate_steps: List) -> List[Dict[str, Any]]:
         """

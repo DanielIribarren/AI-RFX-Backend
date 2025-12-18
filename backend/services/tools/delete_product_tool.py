@@ -10,8 +10,8 @@ Fase 2 - Sprint 2
 from langchain.tools import tool
 from typing import Dict, Any
 import logging
-import requests
-import os
+
+from backend.core.database import get_database_client
 
 logger = logging.getLogger(__name__)
 
@@ -51,23 +51,40 @@ def delete_product_tool(request_id: str, product_id: str) -> Dict[str, Any]:
     try:
         logger.info(f"🔧 delete_product_tool called: request_id={request_id}, product_id={product_id}")
         
-        # Base URL del backend (mismo servidor)
-        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
+        db = get_database_client()
         
-        # Llamar al endpoint DELETE /api/rfx/<rfx_id>/products/<product_id>
-        url = f"{base_url}/api/rfx/{request_id}/products/{product_id}"
+        # Verificar que el producto existe
+        products = db.get_rfx_products(request_id)
+        product = next((p for p in products if p.get('id') == product_id), None)
         
-        response = requests.delete(url)
-        
-        if response.status_code == 200:
-            data = response.json()
-            logger.info(f"✅ Product {product_id} deleted successfully")
-            return data  # Retornar JSON raw del endpoint
-        else:
-            logger.error(f"❌ Error calling endpoint: {response.status_code}")
+        if not product:
+            logger.warning(f"⚠️ Product {product_id} not found in request {request_id}")
             return {
                 "status": "error",
-                "message": f"Failed to delete product: {response.text}"
+                "product_id": product_id,
+                "message": f"Producto con ID {product_id} no encontrado"
+            }
+        
+        product_name = product.get('product_name', 'Unknown')
+        
+        # Eliminar de BD
+        try:
+            db.delete_rfx_product(request_id, product_id)
+            
+            logger.info(f"✅ Product {product_id} ({product_name}) deleted successfully")
+            
+            return {
+                "status": "success",
+                "product_id": product_id,
+                "message": f"Producto '{product_name}' eliminado exitosamente"
+            }
+        
+        except Exception as e:
+            logger.error(f"❌ Error deleting product {product_id}: {e}")
+            return {
+                "status": "error",
+                "product_id": product_id,
+                "message": f"Error al eliminar producto: {str(e)}"
             }
     
     except Exception as e:

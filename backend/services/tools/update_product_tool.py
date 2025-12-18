@@ -10,8 +10,8 @@ Fase 2 - Sprint 2
 from langchain.tools import tool
 from typing import Dict, Any
 import logging
-import requests
-import os
+
+from backend.core.database import get_database_client
 
 logger = logging.getLogger(__name__)
 
@@ -62,23 +62,52 @@ def update_product_tool(request_id: str, product_id: str, updates: Dict[str, Any
                 "message": "No se proporcionaron campos para actualizar"
             }
         
-        # Base URL del backend (mismo servidor)
-        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
+        db = get_database_client()
         
-        # Llamar al endpoint PUT /api/rfx/<rfx_id>/products/<product_id>
-        url = f"{base_url}/api/rfx/{request_id}/products/{product_id}"
+        # Mapear nombres de campos (tool → BD)
+        field_mapping = {
+            "name": "product_name",
+            "quantity": "quantity",
+            "price_unit": "estimated_unit_price",
+            "unit": "unit",
+            "description": "description",
+            "notes": "notes"
+        }
         
-        response = requests.put(url, json=updates)
+        # Convertir updates al formato de BD
+        db_updates = {}
+        for key, value in updates.items():
+            db_key = field_mapping.get(key, key)
+            db_updates[db_key] = value
         
-        if response.status_code == 200:
-            data = response.json()
-            logger.info(f"✅ Product {product_id} updated successfully")
-            return data  # Retornar JSON raw del endpoint
-        else:
-            logger.error(f"❌ Error calling endpoint: {response.status_code}")
+        # Actualizar en BD
+        try:
+            # CORRECTO: product_id primero, rfx_id segundo
+            success = db.update_rfx_product(product_id, request_id, db_updates)
+            
+            if success:
+                logger.info(f"✅ Product {product_id} updated successfully")
+                return {
+                    "status": "success",
+                    "product_id": product_id,
+                    "updated_fields": list(updates.keys()),
+                    "message": f"Producto actualizado: {', '.join(updates.keys())}"
+                }
+            else:
+                logger.error(f"❌ Failed to update product {product_id}")
+                return {
+                    "status": "error",
+                    "product_id": product_id,
+                    "updated_fields": [],
+                    "message": "No se pudo actualizar el producto"
+                }
+        except Exception as e:
+            logger.error(f"❌ Error updating product {product_id}: {e}")
             return {
                 "status": "error",
-                "message": f"Failed to update product: {response.text}"
+                "product_id": product_id,
+                "updated_fields": [],
+                "message": f"Error al actualizar: {str(e)}"
             }
     
     except Exception as e:

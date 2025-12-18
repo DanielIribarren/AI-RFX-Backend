@@ -38,10 +38,12 @@ class PDFOptimizerAgent:
             logger.info("🎨 PDF Optimizer Agent - Starting optimization")
             
             html_content = request.get("html_content", "")
-            validation_results = request.get("validation_results", {})
-            page_config = request.get("page_config", {})
-            quality_req = request.get("quality_requirements", {})
-            branding_config = request.get("branding_config", {})
+            validation_results = request.get("validation_results", {}) or {}
+            page_config = request.get("page_config", {}) or {}
+            quality_req = request.get("quality_requirements", {}) or {}
+            branding_config = request.get("branding_config", {}) or {}
+            
+            logger.info(f"🔍 DEBUG - branding_config type: {type(branding_config)}, value: {branding_config}")
             
             if not html_content:
                 return {
@@ -89,6 +91,12 @@ class PDFOptimizerAgent:
         quality_req: Dict
     ) -> Dict[str, Any]:
         """Optimización inteligente con AI"""
+        
+        # Protección defensiva: asegurar que todos los dicts no sean None
+        validation_results = validation_results or {}
+        branding_config = branding_config or {}
+        page_config = page_config or {}
+        quality_req = quality_req or {}
         
         page_size = page_config.get("size", "letter")
         max_width = "216mm" if page_size == "letter" else "210mm"  # Letter vs A4

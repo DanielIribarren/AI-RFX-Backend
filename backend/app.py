@@ -25,6 +25,8 @@ from backend.api.auth_flask import auth_bp  # ✅ Flask JWT Auth
 from backend.api.rfx_secure_patch import rfx_secure_bp  # ✅ Secure RFX endpoints  
 from backend.api.user_branding import user_branding_bp  # ✅ User branding
 from backend.api.rfx_chat import rfx_chat_bp  # ✅ RFX Chat conversacional
+from backend.api.organization import organization_bp  # ✅ Multi-tenant organizations
+from backend.api.credits import credits_bp  # ✅ Credits management
 
 from backend.models.rfx_models import RFXResponse
 
@@ -81,6 +83,8 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(rfx_secure_bp)  # ✅ /api/rfx-secure/* - Secure RFX endpoints
     app.register_blueprint(user_branding_bp)  # ✅ /api/user-branding/* - User branding
     app.register_blueprint(rfx_chat_bp)  # ✅ /api/rfx/<id>/chat - Chat conversacional
+    app.register_blueprint(organization_bp)  # ✅ /api/organization/* - Multi-tenant organizations
+    app.register_blueprint(credits_bp)  # ✅ /api/credits/* - Credits management
     
     # Original API endpoints (keeping for compatibility)
     app.register_blueprint(rfx_bp)  # ⚠️ INSECURE - use rfx_secure_bp instead

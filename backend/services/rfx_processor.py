@@ -1370,13 +1370,18 @@ TEXTO: {text[:5000]}"""
             logger.error(f"❌ Failed to create RFXProcessed object: {e}")
             raise
     
-    def _save_rfx_to_database(self, rfx_processed: RFXProcessed, user_id: str = None) -> None:
+    def _save_rfx_to_database(self, rfx_processed: RFXProcessed, user_id: str = None, organization_id: str = None) -> None:
         """Save processed RFX to database V2.0 with normalized structure"""
         try:
             if user_id:
                 logger.info(f"💾 Saving RFX with user_id: {user_id}")
             else:
                 logger.warning(f"⚠️ Saving RFX without user_id - will be NULL in database")
+            
+            if organization_id:
+                logger.info(f"💾 Saving RFX with organization_id: {organization_id}")
+            else:
+                logger.warning(f"⚠️ Saving RFX without organization_id - will be NULL in database")
             # Extract company and requester information from metadata
             metadata = rfx_processed.metadata_json or {}
             
@@ -1444,6 +1449,13 @@ TEXTO: {text[:5000]}"""
                 logger.info(f"✅ Added user_id to rfx_data: {user_id}")
             else:
                 logger.warning(f"⚠️ No user_id provided - rfx_data will not have user_id field")
+            
+            # 🆕 CRITICAL: Add organization_id if provided
+            if organization_id:
+                rfx_data["organization_id"] = organization_id
+                logger.info(f"✅ Added organization_id to rfx_data: {organization_id}")
+            else:
+                logger.warning(f"⚠️ No organization_id provided - rfx_data will not have organization_id field")
             
             # 4. Insert RFX data
             rfx_record = self.db_client.insert_rfx(rfx_data)
@@ -1815,13 +1827,18 @@ TEXTO: {text[:5000]}"""
         }
 
     # NEW: Multi-file processing
-    def process_rfx_case(self, rfx_input: RFXInput, blobs: List[Dict[str, Any]], user_id: str = None) -> RFXProcessed:
+    def process_rfx_case(self, rfx_input: RFXInput, blobs: List[Dict[str, Any]], user_id: str = None, organization_id: str = None) -> RFXProcessed:
         """Multi-file processing pipeline with OCR and spreadsheet support"""
         logger.info(f"📦 process_rfx_case start: {rfx_input.id} with {len(blobs)} file(s)")
         if user_id:
             logger.info(f"✅ user_id provided for RFX: {user_id}")
         else:
             logger.warning(f"⚠️ No user_id provided for RFX: {rfx_input.id}")
+        
+        if organization_id:
+            logger.info(f"✅ organization_id provided for RFX: {organization_id}")
+        else:
+            logger.warning(f"⚠️ No organization_id provided for RFX: {rfx_input.id}")
         
         # 🔍 DEBUG: Detailed file logging
         for i, b in enumerate(blobs):
@@ -1988,7 +2005,7 @@ TEXTO: {text[:5000]}"""
         
         evaluation_metadata = self._evaluate_rfx_intelligently(validated_data, rfx_input.id)
         rfx_processed = self._create_rfx_processed(validated_data, rfx_input, evaluation_metadata)
-        self._save_rfx_to_database(rfx_processed, user_id=user_id)
+        self._save_rfx_to_database(rfx_processed, user_id=user_id, organization_id=organization_id)
         logger.info(f"✅ process_rfx_case done: {rfx_input.id}")
         return rfx_processed
 
