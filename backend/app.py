@@ -6,6 +6,7 @@ import os
 import logging
 from flask import Flask, jsonify
 from flask_cors import CORS
+from flask_mail import Mail
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -27,6 +28,7 @@ from backend.api.user_branding import user_branding_bp  # ✅ User branding
 from backend.api.rfx_chat import rfx_chat_bp  # ✅ RFX Chat conversacional
 from backend.api.organization import organization_bp  # ✅ Multi-tenant organizations
 from backend.api.credits import credits_bp  # ✅ Credits management
+from backend.api.contact import contact_bp  # ✅ Contact request emails
 
 from backend.models.rfx_models import RFXResponse
 
@@ -48,6 +50,17 @@ def create_app(config_name: str = None) -> Flask:
     # Configure Flask app
     app.config['SECRET_KEY'] = config.secret_key
     app.config['MAX_CONTENT_LENGTH'] = config.file_upload.max_file_size
+    
+    # Configure Flask-Mail for email notifications
+    app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+    app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
+    app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True').lower() == 'true'
+    app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
+    app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
+    app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', 'noreply@budyai.com')
+    
+    # Initialize Flask-Mail
+    mail = Mail(app)
     
     # Configure CORS - Temporary fix for production
     server_config = get_server_config()
@@ -85,6 +98,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(rfx_chat_bp)  # ✅ /api/rfx/<id>/chat - Chat conversacional
     app.register_blueprint(organization_bp)  # ✅ /api/organization/* - Multi-tenant organizations
     app.register_blueprint(credits_bp)  # ✅ /api/credits/* - Credits management
+    app.register_blueprint(contact_bp)  # ✅ /api/contact-request - Email notifications
     
     # Original API endpoints (keeping for compatibility)
     app.register_blueprint(rfx_bp)  # ⚠️ INSECURE - use rfx_secure_bp instead
