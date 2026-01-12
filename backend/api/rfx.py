@@ -1002,9 +1002,6 @@ def update_rfx_data(rfx_id: str):
                 "error": "Missing field name"
             }), 400
         
-        from ..core.database import get_database_client
-        db_client = get_database_client()
-        
         logger.info(f"🔄 DEBUG: Database client obtained, checking if RFX exists: {rfx_id}")
         
         # Verificar que el RFX existe
@@ -1237,9 +1234,6 @@ def update_product_costs(rfx_id: str):
                 "message": "product_costs array is required",
                 "error": "Invalid product costs data"
             }), 400
-        
-        from ..core.database import get_database_client
-        db_client = get_database_client()
         
         # Verificar que el RFX existe
         rfx_record = db_client.get_rfx_by_id(rfx_id)
@@ -1681,9 +1675,6 @@ def update_rfx_product(rfx_id: str, product_id: str):
                 "message": "field name is required"
             }), 400
         
-        from ..core.database import get_database_client
-        db_client = get_database_client()
-        
         # Verificar que el RFX existe
         rfx_record = db_client.get_rfx_by_id(rfx_id)
         if not rfx_record:
@@ -1741,14 +1732,15 @@ def update_rfx_product(rfx_id: str, product_id: str):
                 }), 400
         
         # Mapear campos de productos (frontend → backend)
+        # SOLO columnas que existen en rfx_products: 
+        # created_at, description, estimated_unit_price, id, notes, product_name, quantity, rfx_id, unit, unit_cost
         product_field_mapping = {
             # Nombres en español (frontend) → Nombres en inglés (BD)
             "nombre": "product_name",                    # Nombre del producto
             "cantidad": "quantity",                      # Cantidad
             "unidad": "unit",                           # Unidad de medida
             "precio_unitario": "estimated_unit_price",   # Precio unitario
-            "costo_unitario": "unit_cost",               # Costo unitario ⭐ NUEVO
-            "subtotal": "total_estimated_cost",         # Costo total
+            "costo_unitario": "unit_cost",               # Costo unitario
             "descripcion": "description",               # Descripción
             "notas": "notes",                          # Notas
             
@@ -1757,8 +1749,7 @@ def update_rfx_product(rfx_id: str, product_id: str):
             "quantity": "quantity", 
             "unit": "unit",
             "estimated_unit_price": "estimated_unit_price",
-            "unit_cost": "unit_cost",                   # ⭐ NUEVO
-            "total_estimated_cost": "total_estimated_cost",
+            "unit_cost": "unit_cost",
             "description": "description",
             "notes": "notes"
         }
@@ -1776,8 +1767,8 @@ def update_rfx_product(rfx_id: str, product_id: str):
             if db_field in ["quantity"]:
                 # Campos numéricos enteros
                 processed_value = int(field_value) if field_value is not None else 0
-            elif db_field in ["estimated_unit_price", "total_estimated_cost", "unit_cost"]:
-                # Campos numéricos decimales (incluyendo unit_cost ⭐ NUEVO)
+            elif db_field in ["estimated_unit_price", "unit_cost"]:
+                # Campos numéricos decimales
                 processed_value = float(field_value) if field_value is not None else None
             # Los demás campos (text) no necesitan conversión
         except (ValueError, TypeError) as e:

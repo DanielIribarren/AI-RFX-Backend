@@ -304,8 +304,21 @@ async def login(data: LoginRequest):
     - Retorna JWT token de acceso
     """
     try:
-        # Obtener usuario por email
-        user = user_repository.get_by_email(data.email)
+        # Obtener usuario por email - CON MANEJO DE ERRORES DE CONEXIÓN
+        try:
+            user = user_repository.get_by_email(data.email)
+        except Exception as db_error:
+            logger.error(f"❌ Database connection error during login: {db_error}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "message": "Database connection failed",
+                    "error": "database_unavailable",
+                    "technical_details": str(db_error),
+                    "suggestion": "Please check database configuration and network connectivity"
+                }
+            )
+        
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -333,10 +346,22 @@ async def login(data: LoginRequest):
         # Verificar si tiene branding configurado
         has_branding = user_repository.has_branding_configured(UUID(user['id']))
         
-        # Crear JWT token
-        token_data = {"sub": str(user['id'])}
-        access_token = auth_service.create_access_token(token_data)
-        refresh_token = auth_service.create_refresh_token(str(user['id']))
+        # Crear JWT token - CON MANEJO DE ERRORES ESPECÍFICO
+        try:
+            token_data = {"sub": str(user['id'])}
+            access_token = auth_service.create_access_token(token_data)
+            refresh_token = auth_service.create_refresh_token(str(user['id']))
+        except Exception as token_error:
+            logger.error(f"❌ JWT Token generation failed: {token_error}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={
+                    "message": "Failed to generate authentication token",
+                    "error": "token_generation_failed",
+                    "technical_details": str(token_error),
+                    "suggestion": "Please check server configuration (JWT_SECRET_KEY, network connectivity)"
+                }
+            )
         
         logger.info(f"✅ User logged in successfully: {user['email']}")
         
@@ -361,7 +386,11 @@ async def login(data: LoginRequest):
         logger.error(f"❌ Error during login: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error during login"
+            detail={
+                "message": "Internal server error during login",
+                "error": "login_failed",
+                "technical_details": str(e)
+            }
         )
 
 @auth_app.get("/me", response_model=UserResponse)

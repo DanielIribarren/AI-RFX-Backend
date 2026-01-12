@@ -127,7 +127,9 @@ class AuthServiceFixed:
             
         except Exception as e:
             logger.error(f"❌ Error creating access token: {e}")
-            raise
+            logger.error(f"❌ Token data: {user_data}")
+            logger.error(f"❌ Secret key configured: {bool(self.secret_key)}")
+            raise Exception(f"JWT token generation failed: {str(e)}")
     
     def create_refresh_token(self, user_id: str) -> str:
         """Crear JWT refresh token (válido por más tiempo)"""
@@ -144,7 +146,9 @@ class AuthServiceFixed:
             
         except Exception as e:
             logger.error(f"❌ Error creating refresh token: {e}")
-            raise
+            logger.error(f"❌ User ID: {user_id}")
+            logger.error(f"❌ Secret key configured: {bool(self.secret_key)}")
+            raise Exception(f"JWT refresh token generation failed: {str(e)}")
     
     def decode_token(self, token: str) -> Optional[Dict[str, Any]]:
         """Decodificar y validar JWT token"""
