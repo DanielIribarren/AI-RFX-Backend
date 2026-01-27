@@ -729,10 +729,12 @@ def get_rfx_products(rfx_id: str):
 
             # 🧮 CÁLCULOS DE GANANCIAS
             unit_profit = unit_price - unit_cost
-            unit_margin = (unit_profit / unit_cost * 100) if unit_cost > 0 else 0
+            # Margen Bruto = % de ganancia respecto al precio de venta
+            unit_margin = ((unit_price - unit_cost) / unit_price * 100) if unit_price > 0 else 0
             total_cost_product = unit_cost * quantity
             total_sales_product = unit_price * quantity
             total_profit_product = unit_profit * quantity
+            # Margen Bruto Total = % de ganancia total respecto a ventas totales
             profit_margin_product = (total_profit_product / total_sales_product * 100) if total_sales_product > 0 else 0
 
             product_data = {
@@ -782,7 +784,8 @@ def get_rfx_products(rfx_id: str):
                     "total_cost": round(total_cost, 2),
                     "total_sales": round(total_sales, 2),
                     "total_profit": round(total_profit, 2),
-                    "average_margin": round((total_profit / total_sales * 100) if total_sales > 0 else 0, 2),
+                    # Margen promedio = % del costo total respecto a las ventas totales
+                    "average_margin": round((total_cost / total_sales * 100) if total_sales > 0 else 0, 2),
                     "products_with_profit": sum(1 for p in products_response if p["unit_profit"] > 0),
                     "products_without_cost": sum(1 for p in products_response if p["unit_cost"] == 0),
                     "currency": rfx_currency

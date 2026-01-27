@@ -4,6 +4,8 @@ KISS: Solo hace lo necesario - subir logos y retornar URLs públicas
 """
 import os
 import logging
+import time
+import requests
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -40,13 +42,14 @@ def _configure_cloudinary():
         raise
 
 
-def upload_logo(user_id: str, logo_file) -> str:
+def upload_logo(user_id: str, logo_file, max_retries: int = 3) -> str:
     """
-    Sube logo a Cloudinary y retorna URL pública
+    Sube logo a Cloudinary y retorna URL pública con retry logic
     
     Args:
         user_id: ID del usuario (para organizar en folders)
         logo_file: Archivo del logo (FileStorage o file path)
+        max_retries: Número máximo de reintentos en caso de fallo
         
     Returns:
         str: URL pública HTTPS del logo en Cloudinary
@@ -57,37 +60,54 @@ def upload_logo(user_id: str, logo_file) -> str:
     """
     _configure_cloudinary()
     
-    try:
-        import cloudinary.uploader
-        
-        logger.info(f"☁️ Uploading logo to Cloudinary for user: {user_id}")
-        
-        # Upload a Cloudinary con configuración optimizada
-        result = cloudinary.uploader.upload(
-            logo_file,
-            folder=f"logos/{user_id}",      # Organizar por usuario
-            public_id="logo",                # Nombre fijo (sobrescribe si existe)
-            overwrite=True,                  # Reemplazar logo anterior
-            resource_type="image",           # Tipo de recurso
-            invalidate=True,                 # Invalidar cache del CDN
-            transformation=[                 # Optimizaciones automáticas
-                {'width': 500, 'crop': 'limit'},  # Max 500px ancho
-                {'quality': 'auto'},              # Calidad automática
-                {'fetch_format': 'auto'}          # Formato automático (WebP si soporta)
-            ]
-        )
-        
-        # Extraer URL pública segura (HTTPS)
-        public_url = result['secure_url']
-        
-        logger.info(f"✅ Logo uploaded successfully to Cloudinary")
-        logger.info(f"📍 Public URL: {public_url}")
-        
-        return public_url
-        
-    except Exception as e:
-        logger.error(f"❌ Error uploading logo to Cloudinary: {e}")
-        raise Exception(f"Failed to upload logo to Cloudinary: {e}")
+    for attempt in range(max_retries):
+        try:
+            import cloudinary.uploader
+            
+            logger.info(f"☁️ Uploading logo to Cloudinary for user: {user_id} (attempt {attempt + 1}/{max_retries})")
+            
+            # Upload a Cloudinary con configuración optimizada y timeout
+            result = cloudinary.uploader.upload(
+                logo_file,
+                folder=f"logos/{user_id}",      # Organizar por usuario
+                public_id="logo",                # Nombre fijo (sobrescribe si existe)
+                overwrite=True,                  # Reemplazar logo anterior
+                resource_type="image",           # Tipo de recurso
+                invalidate=True,                 # Invalidar cache del CDN
+                timeout=30,                      # Timeout de 30 segundos
+                transformation=[                 # Optimizaciones automáticas
+                    {'width': 500, 'crop': 'limit'},  # Max 500px ancho
+                    {'quality': 'auto'},              # Calidad automática
+                    {'fetch_format': 'auto'}          # Formato automático (WebP si soporta)
+                ]
+            )
+            
+            # Extraer URL pública segura (HTTPS)
+            public_url = result.get('secure_url')
+            
+            if not public_url:
+                raise ValueError("Cloudinary did not return a secure_url")
+            
+            # Validar que la URL sea accesible
+            if not _validate_cloudinary_url(public_url):
+                raise ValueError(f"Cloudinary URL is not accessible: {public_url}")
+            
+            logger.info(f"✅ Logo uploaded successfully to Cloudinary")
+            logger.info(f"📍 Public URL: {public_url}")
+            logger.info(f"🔍 Cloudinary response: asset_id={result.get('asset_id')}, version={result.get('version')}")
+            
+            return public_url
+            
+        except Exception as e:
+            logger.error(f"❌ Error uploading logo to Cloudinary (attempt {attempt + 1}/{max_retries}): {e}")
+            
+            if attempt < max_retries - 1:
+                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                logger.info(f"⏳ Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"❌ All {max_retries} attempts failed for Cloudinary upload")
+                raise Exception(f"Failed to upload logo to Cloudinary after {max_retries} attempts: {e}")
 
 
 def delete_logo(user_id: str) -> bool:
@@ -123,15 +143,16 @@ def delete_logo(user_id: str) -> bool:
         return False
 
 
-def get_logo_url(user_id: str) -> Optional[str]:
+def get_logo_url(user_id: str, validate: bool = True) -> Optional[str]:
     """
     Obtiene URL pública del logo sin subirlo (útil para verificación)
     
     Args:
         user_id: ID del usuario
+        validate: Si True, valida que la URL sea accesible
         
     Returns:
-        str: URL pública del logo o None si no existe
+        str: URL pública del logo o None si no existe o no es accesible
     """
     _configure_cloudinary()
     
@@ -150,8 +171,49 @@ def get_logo_url(user_id: str) -> Optional[str]:
             ]
         )
         
+        logger.info(f"🔗 Generated Cloudinary URL for user {user_id}: {url}")
+        
+        # Validar que la URL sea accesible si se solicita
+        if validate and not _validate_cloudinary_url(url):
+            logger.warning(f"⚠️ Cloudinary URL exists but is not accessible: {url}")
+            return None
+        
         return url
         
     except Exception as e:
         logger.error(f"❌ Error getting logo URL: {e}")
         return None
+
+
+def _validate_cloudinary_url(url: str, timeout: int = 10) -> bool:
+    """
+    Valida que una URL de Cloudinary sea accesible
+    
+    Args:
+        url: URL de Cloudinary a validar
+        timeout: Timeout en segundos para la validación
+        
+    Returns:
+        bool: True si la URL es accesible, False en caso contrario
+    """
+    try:
+        logger.debug(f"🔍 Validating Cloudinary URL: {url}")
+        
+        response = requests.head(url, timeout=timeout, allow_redirects=True)
+        
+        if response.status_code == 200:
+            logger.debug(f"✅ Cloudinary URL is accessible (status: {response.status_code})")
+            return True
+        else:
+            logger.warning(f"⚠️ Cloudinary URL returned status {response.status_code}: {url}")
+            return False
+            
+    except requests.Timeout:
+        logger.error(f"⏱️ Timeout validating Cloudinary URL: {url}")
+        return False
+    except requests.RequestException as e:
+        logger.error(f"❌ Error validating Cloudinary URL: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Unexpected error validating Cloudinary URL: {e}")
+        return False

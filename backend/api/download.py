@@ -75,32 +75,50 @@ def convert_with_playwright(html_content: str, client_name: str, document_id: st
     optimized_html = optimize_html_for_pdf(html_content)
     
     with sync_playwright() as p:
-        # Lanzar navegador
-        browser = p.chromium.launch(headless=True)
+        # Lanzar navegador - headless=True usa automáticamente el modo nuevo
+        # NO especificar --headless manualmente para evitar conflictos
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu'
+            ]
+        )
         
         try:
+            # Configurar timeout más largo para evitar cierres prematuros
             page = browser.new_page()
+            page.set_default_timeout(30000)  # 30 segundos timeout
             
             # Configurar viewport para renderizado consistente
             page.set_viewport_size({"width": 1200, "height": 1600})
             
+            logger.info("🌐 Loading HTML content into browser...")
+            
             # Cargar HTML y esperar renderizado completo
             # 'load' espera a que todas las imágenes (incluidas base64) estén cargadas
-            page.set_content(optimized_html, wait_until='load')
+            page.set_content(optimized_html, wait_until='load', timeout=30000)
+            
+            logger.info("🖼️ Waiting for all images to load (including base64)...")
             
             # Esperar a que todas las imágenes estén completamente cargadas
             # Esto es crítico para imágenes base64
-            page.evaluate("""
-                () => {
-                    return Promise.all(
-                        Array.from(document.images)
-                            .filter(img => !img.complete)
-                            .map(img => new Promise(resolve => {
-                                img.onload = img.onerror = resolve;
-                            }))
-                    );
-                }
-            """)
+            try:
+                page.evaluate("""
+                    () => {
+                        return Promise.all(
+                            Array.from(document.images)
+                                .filter(img => !img.complete)
+                                .map(img => new Promise(resolve => {
+                                    img.onload = img.onerror = resolve;
+                                }))
+                        );
+                    }
+                """)
+            except Exception as img_error:
+                logger.warning(f"⚠️ Image loading check failed (continuing anyway): {img_error}")
             
             # Esperar un momento adicional para asegurar renderizado completo
             page.wait_for_timeout(1500)
@@ -121,12 +139,19 @@ def convert_with_playwright(html_content: str, client_name: str, document_id: st
                 display_header_footer=False
             )
             
-            logger.info(f"✅ PDF generated - Size: {len(pdf_bytes)} bytes")
+            logger.info(f"✅ PDF generated successfully - Size: {len(pdf_bytes)} bytes")
             
             return create_pdf_response(pdf_bytes, client_name, document_id)
             
+        except Exception as e:
+            logger.error(f"❌ Error during PDF generation: {e}")
+            raise
         finally:
-            browser.close()
+            try:
+                browser.close()
+                logger.info("🔒 Browser closed successfully")
+            except Exception as close_error:
+                logger.warning(f"⚠️ Error closing browser (non-critical): {close_error}")
 
 
 def optimize_html_for_pdf(html_content: str) -> str:

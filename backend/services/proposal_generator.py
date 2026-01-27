@@ -447,6 +447,25 @@ class ProposalGenerationService:
         # Validar que sea URL pública (debe empezar con http/https)
         if logo_endpoint and logo_endpoint.startswith('http'):
             logger.info(f"☁️ Using Cloudinary logo URL: {logo_endpoint}")
+            
+            # Validar que la URL de Cloudinary sea accesible
+            try:
+                import requests
+                response = requests.head(logo_endpoint, timeout=5, allow_redirects=True)
+                if response.status_code != 200:
+                    logger.error(f"❌ Cloudinary URL returned status {response.status_code}: {logo_endpoint}")
+                    logger.warning(f"⚠️ Falling back to local endpoint due to Cloudinary intermittency")
+                    logo_endpoint = f"/api/branding/files/{user_id}/logo"
+                else:
+                    logger.info(f"✅ Cloudinary URL validated successfully (status: {response.status_code})")
+            except requests.Timeout:
+                logger.error(f"⏱️ Timeout validating Cloudinary URL: {logo_endpoint}")
+                logger.warning(f"⚠️ Falling back to local endpoint due to Cloudinary timeout")
+                logo_endpoint = f"/api/branding/files/{user_id}/logo"
+            except Exception as e:
+                logger.error(f"❌ Error validating Cloudinary URL: {e}")
+                logger.warning(f"⚠️ Falling back to local endpoint due to validation error")
+                logo_endpoint = f"/api/branding/files/{user_id}/logo"
         else:
             # Fallback: usar endpoint local si no hay URL de Cloudinary
             logo_endpoint = f"/api/branding/files/{user_id}/logo"

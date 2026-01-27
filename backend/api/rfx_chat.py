@@ -6,6 +6,7 @@ Sin lógica de negocio en los endpoints.
 """
 
 from flask import Blueprint, request, jsonify
+from typing import List
 import logging
 import uuid
 import asyncio
@@ -22,6 +23,62 @@ logger = logging.getLogger(__name__)
 
 # Crear blueprint
 rfx_chat_bp = Blueprint('rfx_chat', __name__, url_prefix='/api/rfx')
+
+
+def _determine_refresh_needs(changes: List) -> tuple[bool, str]:
+    """
+    Determina si se necesita refresh y el alcance del mismo.
+    
+    Returns:
+        tuple: (needs_refresh: bool, scope: str)
+        scope puede ser: 'none', 'products', 'details', 'full'
+    """
+    if not changes:
+        return False, 'none'
+    
+    change_types = {change.type for change in changes}
+    
+    # Cambios en productos requieren refresh de productos (para recalcular ganancias)
+    product_changes = {'add_product', 'update_product', 'delete_product'}
+    if change_types & product_changes:
+        return True, 'products'
+    
+    # Cambios en detalles del RFX solo requieren refresh de detalles
+    if 'update_field' in change_types:
+        return True, 'details'
+    
+    return False, 'none'
+
+
+def _get_components_to_refresh(changes: List) -> List[str]:
+    """
+    Retorna lista específica de componentes que necesitan refresh.
+    
+    Returns:
+        List[str]: Lista de componentes a refrescar
+        Ejemplos: ['products', 'pricing', 'totals', 'details', 'header']
+    """
+    if not changes:
+        return []
+    
+    components = set()
+    
+    for change in changes:
+        if change.type in ['add_product', 'update_product', 'delete_product']:
+            components.add('products')
+            components.add('pricing')  # Recalcular pricing
+            components.add('totals')   # Recalcular totales
+        elif change.type == 'update_field':
+            # Determinar qué campo se actualizó
+            field = change.target
+            if field in ['fechaEntrega', 'lugarEntrega']:
+                components.add('details')
+            elif field in ['clienteNombre', 'clienteEmail']:
+                components.add('header')
+            else:
+                components.add('details')
+    
+    return sorted(list(components))
 
 
 @rfx_chat_bp.route('/<rfx_id>/chat', methods=['POST'])
@@ -226,10 +283,21 @@ def send_chat_message(rfx_id):
             f"changes={len(response.changes)}, correlation_id={correlation_id}"
         )
         
-        # 4. Retornar respuesta (solo campos necesarios para frontend)
+        # 4. Determinar qué componentes necesitan refresh
+        needs_refresh, refresh_scope = _determine_refresh_needs(response.changes)
+        
+        # 5. Retornar respuesta completa con metadata de refresh
         return jsonify({
+            'status': 'success',
             'message': response.message,
-            'confidence': response.confidence
+            'confidence': response.confidence,
+            'changes': [change.dict() for change in response.changes],
+            'requires_confirmation': response.requires_confirmation,
+            'refresh': {
+                'needs_refresh': needs_refresh,
+                'scope': refresh_scope,
+                'components': _get_components_to_refresh(response.changes)
+            }
         }), 200
         
     except Exception as e:
@@ -262,7 +330,7 @@ def get_chat_history(rfx_id):
     KISS: Query simple, sin paginación compleja.
     """
     try:
-        limit = request.args.get('limit', 50, type=int)
+        limit = request.args.get('limit', 20, type=int)  # Default 20 mensajes (10 turnos)
         
         chat_service = RFXChatService()
         

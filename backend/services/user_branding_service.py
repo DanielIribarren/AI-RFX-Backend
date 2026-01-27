@@ -202,10 +202,16 @@ class UserBrandingService:
         try:
             from backend.services.cloudinary_service import upload_logo
             
-            # Subir a Cloudinary y obtener URL pública
+            logger.info(f"☁️ Attempting to upload logo to Cloudinary for user: {user_id}")
+            
+            # Subir a Cloudinary y obtener URL pública (con retry automático)
             cloudinary_url = upload_logo(user_id, logo_file)
             
-            logger.info(f"☁️ Logo uploaded to Cloudinary: {cloudinary_url}")
+            if not cloudinary_url:
+                raise ValueError("Cloudinary upload returned empty URL")
+            
+            logger.info(f"✅ Logo uploaded to Cloudinary successfully: {cloudinary_url}")
+            logger.info(f"🔍 Cloudinary URL validation passed during upload")
             
             return {
                 "logo_filename": "logo",
@@ -215,6 +221,7 @@ class UserBrandingService:
             
         except Exception as e:
             logger.error(f"❌ Error uploading logo to Cloudinary: {e}")
+            logger.error(f"📊 Error type: {type(e).__name__}")
             logger.warning("⚠️ Falling back to local filesystem storage")
             
             # Fallback: Guardar localmente si Cloudinary falla

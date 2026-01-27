@@ -91,12 +91,16 @@ def modify_request_details_tool(request_id: str, updates: Dict[str, Any]) -> Dic
         field_mapping = {
             "title": "title",
             "event_date": "project_start_date",
-            "location": "event_location",
-            "city": "event_city",
+            "location": "location",  # Campo correcto en BD
+            "city": "city",
             "client_name": "client_name",
             "delivery_date": "delivery_date",
             "notes": "notes",
-            "status": "status"
+            "status": "status",
+            "description": "description",
+            "requirements": "requirements",
+            "estimated_budget": "estimated_budget",
+            "priority": "priority"
         }
         
         # Preparar datos para actualización
@@ -107,7 +111,7 @@ def modify_request_details_tool(request_id: str, updates: Dict[str, Any]) -> Dic
         
         # Actualizar en BD
         try:
-            db.update_rfx(request_id, update_data)
+            db.update_rfx_data(request_id, update_data)
             
             updated_fields = list(updates.keys())
             logger.info(f"✅ Request {request_id} details updated successfully: {updated_fields}")

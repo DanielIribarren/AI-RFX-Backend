@@ -196,6 +196,35 @@ class ConfirmationOption(BaseModel):
         }
 
 
+class RefreshMetadata(BaseModel):
+    """
+    Metadata de refresh para indicar al frontend qué componentes actualizar.
+    
+    Permite actualizaciones optimistas sin recargar toda la página.
+    """
+    needs_refresh: bool = Field(
+        default=False,
+        description="Indica si se necesita refrescar algún componente"
+    )
+    scope: str = Field(
+        default="none",
+        description="Alcance del refresh: 'none', 'products', 'details', 'full'"
+    )
+    components: List[str] = Field(
+        default_factory=list,
+        description="Lista específica de componentes a refrescar: ['products', 'pricing', 'totals', 'details', 'header']"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "needs_refresh": True,
+                "scope": "products",
+                "components": ["products", "pricing", "totals"]
+            }
+        }
+
+
 class ChatMetadata(BaseModel):
     """Metadata adicional de la respuesta del chat."""
     tokens_used: Optional[int] = Field(
@@ -359,6 +388,7 @@ __all__ = [
     "ChatRequest",
     "RFXChange",
     "ConfirmationOption",
+    "RefreshMetadata",
     "ChatMetadata",
     "ChatResponse",
     "ConfirmRequest",
