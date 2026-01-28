@@ -102,6 +102,10 @@ class ProposalGenerationService:
                 proposal_request.rfx_id, subtotal
             )
             
+            # 3.5. Obtener configuraciones detalladas de pricing para el agente
+            pricing_config = unified_budget_service.get_rfx_effective_config(proposal_request.rfx_id)
+            logger.info(f"📋 Pricing config retrieved for RFX {proposal_request.rfx_id}")
+            
             # 4. Obtener configuración y moneda
             unified_config = unified_budget_service.get_user_unified_config(user_id)
             currency = self._get_currency(rfx_data, unified_config)
@@ -600,11 +604,37 @@ class ProposalGenerationService:
             companies = rfx_data.get('companies', {})
             client_name = companies.get('name', 'N/A') if isinstance(companies, dict) else 'N/A'
             
+            # Extraer configuraciones detalladas de pricing
+            pricing_detailed_config = {}
+            if pricing_config and pricing_config.get('config'):
+                pricing_settings = pricing_config['config'].get('pricing', {})
+                pricing_detailed_config = {
+                    'coordination_enabled': pricing_settings.get('coordination_enabled', False),
+                    'coordination_rate': pricing_settings.get('coordination_rate', 0.18),
+                    'taxes_enabled': pricing_settings.get('taxes_enabled', False),
+                    'tax_rate': pricing_settings.get('tax_rate', 0.16),
+                    'cost_per_person_enabled': pricing_settings.get('cost_per_person_enabled', False),
+                    'headcount': pricing_settings.get('headcount', 50)
+                }
+                logger.info(f"✅ Pricing detailed config: coordination={pricing_detailed_config['coordination_enabled']}, taxes={pricing_detailed_config['taxes_enabled']}, cost_per_person={pricing_detailed_config['cost_per_person_enabled']}")
+            else:
+                logger.warning(f"⚠️ No detailed pricing config found, using defaults from calculation")
+                # Fallback: usar flags del pricing_calculation
+                pricing_detailed_config = {
+                    'coordination_enabled': getattr(pricing_calculation, 'coordination_enabled', False),
+                    'coordination_rate': getattr(pricing_calculation, 'coordination_rate', 0.18),
+                    'taxes_enabled': getattr(pricing_calculation, 'taxes_enabled', False),
+                    'tax_rate': getattr(pricing_calculation, 'tax_rate', 0.16),
+                    'cost_per_person_enabled': getattr(pricing_calculation, 'cost_per_person_enabled', False),
+                    'headcount': getattr(pricing_calculation, 'headcount', 50)
+                }
+            
             rfx_agent_data = {
                 "client_name": client_name,
                 "solicitud": rfx_data.get('title', 'N/A'),
                 "products": products_info,
-                "pricing": self._format_pricing_data(pricing_calculation, currency, proposal_request.rfx_id)
+                "pricing": self._format_pricing_data(pricing_calculation, currency, proposal_request.rfx_id),
+                "pricing_config": pricing_detailed_config  # ✅ NUEVO: Configuraciones detalladas
             }
             
             # 4. Llamar al orquestador de agentes

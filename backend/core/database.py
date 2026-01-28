@@ -1736,6 +1736,19 @@ class DatabaseClient:
             logger.error(f"❌ Failed to get user: {e}")
             return None
     
+    def get_user_by_id(self, user_id: Union[str, UUID]) -> Optional[Dict]:
+        """
+        Alias for get_user method - for API compatibility.
+        Get user information by ID.
+        
+        Args:
+            user_id: UUID of the user
+        
+        Returns:
+            Dictionary with user information or None if not found
+        """
+        return self.get_user(user_id)
+    
     # ========================
     # RFX PROCESSING STATUS (Tabla Normalizada)
     # ========================

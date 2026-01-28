@@ -156,6 +156,41 @@ Modifica el html_generated aplicando TODAS las correcciones necesarias:
 - Fechas actuales y de validez correctas
 - Cálculos matemáticos exactos (subtotales, impuestos, total)
 
+### 🚨 CONFIGURACIONES DE PRICING CONDICIONAL (CRÍTICO):
+**REGLA FUNDAMENTAL:** Solo mostrar filas de pricing si están ACTIVAS en la configuración.
+
+El request_data.pricing contiene flags que indican qué mostrar:
+- **show_coordination**: Si True → Mostrar fila "Coordinación y Logística"
+- **show_tax**: Si True → Mostrar fila "Impuestos"  
+- **show_cost_per_person**: Si True → Mostrar fila "Costo por persona"
+
+**VALIDACIÓN OBLIGATORIA:**
+1. Si show_coordination = False → NO debe existir fila de coordinación en el HTML
+2. Si show_tax = False → NO debe existir fila de impuestos en el HTML
+3. Si show_cost_per_person = False → NO debe existir fila de costo por persona en el HTML
+
+**CORRECCIÓN AUTOMÁTICA:**
+- Si encuentras una fila de coordinación pero show_coordination = False → ELIMINAR la fila
+- Si encuentras una fila de impuestos pero show_tax = False → ELIMINAR la fila
+- Si encuentras una fila de costo por persona pero show_cost_per_person = False → ELIMINAR la fila
+
+**EJEMPLO DE CORRECCIÓN:**
+```html
+<!-- ANTES (INCORRECTO - show_coordination = False pero la fila existe) -->
+<tr>
+  <td>Coordinación y Logística</td>
+  <td>$150.00</td>
+</tr>
+
+<!-- DESPUÉS (CORRECTO - fila eliminada porque show_coordination = False) -->
+<!-- Coordinación omitida (no activa en configuración) -->
+```
+
+**⚠️ NUNCA AGREGUES FILAS DE PRICING QUE NO ESTÉN ACTIVAS**
+- NO inventes valores de coordinación si show_coordination = False
+- NO agregues impuestos si show_tax = False
+- NO incluyas costo por persona si show_cost_per_person = False
+
 ### ✅ ESTRUCTURA HTML PROFESIONAL:
 - HTML válido y bien formado
 - CSS inline optimizado para conversión PDF
@@ -232,7 +267,7 @@ Copy code
 3. **Sé útil**: Ayuda a identificar el problema original
 4. **Sé completo**: Lista TODAS las correcciones, no resumas
 
-⚠️ IMPORTANTE: Tus correcciones serán leídas por humanos para debugging. Hazlas útiles y específicas."""
+⚠️ IMPORTANTE: Tus correcciones serán leídas por humanos para debugging. Hazlas útiles y específicas. Tratar de Hacer correcciones lo mas rapido posible"""
         
         # User prompt: Datos estructurados para validación (SIN truncar HTML)
         validation_payload = {
@@ -258,7 +293,7 @@ Copy code
             # Ejecutar llamada síncrona en thread separado para no bloquear
             response = await asyncio.to_thread(
                 self.client.chat.completions.create,
-                model=self.openai_config.model,
+                model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}

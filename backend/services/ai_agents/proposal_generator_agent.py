@@ -80,17 +80,21 @@ class ProposalGeneratorAgent:
         solicitud = data.get('solicitud', 'N/A')
         products = data.get('products', [])
         pricing = data.get('pricing', {})
+        pricing_config = data.get('pricing_config', {})  # ✅ NUEVO: Configuraciones detalladas
         
         mapped = {
             'client_name': client_name,
             'solicitud': solicitud,
             'products': products,
             'pricing': pricing,
+            'pricing_config': pricing_config,  # ✅ NUEVO: Pasar configuraciones
             'current_date': current_date,
             'validity_date': validity_date
         }
         
         logger.info(f"📋 Data mapped - Client: {client_name}, Products: {len(products)}, Total: {pricing.get('total_formatted', '$0.00')}")
+        if pricing_config:
+            logger.info(f"⚙️ Pricing config - Coordination: {pricing_config.get('coordination_enabled', False)}, Taxes: {pricing_config.get('taxes_enabled', False)}, Cost per person: {pricing_config.get('cost_per_person_enabled', False)}")
         
         return mapped
     
@@ -142,13 +146,51 @@ class ProposalGeneratorAgent:
         html = html.replace("{{VIGENCIA}}", validity_date)
         html = html.replace("{{VALIDITY}}", validity_date)
         
-        # Totales y pricing
+        # Totales y pricing con flags condicionales
         pricing = mapped_data.get('pricing', {})
+        pricing_config = mapped_data.get('pricing_config', {})  # ✅ NUEVO: Configuraciones detalladas
+        
+        # ✅ PRICING CONDICIONAL: Usar flags de configuración detallada si están disponibles
+        # Prioridad 1: Usar pricing_config (configuraciones de BD)
+        # Prioridad 2: Fallback a show_* flags del pricing calculation
+        if pricing_config:
+            show_coordination = pricing_config.get('coordination_enabled', False)
+            show_tax = pricing_config.get('taxes_enabled', False)
+            show_cost_per_person = pricing_config.get('cost_per_person_enabled', False)
+            logger.info(f"✅ Using pricing_config flags - Coordination: {show_coordination}, Tax: {show_tax}, Cost per person: {show_cost_per_person}")
+        else:
+            # Fallback a flags del pricing calculation
+            show_coordination = pricing.get('show_coordination', False)
+            show_tax = pricing.get('show_tax', False)
+            show_cost_per_person = pricing.get('show_cost_per_person', False)
+            logger.info(f"⚠️ Using fallback pricing flags - Coordination: {show_coordination}, Tax: {show_tax}, Cost per person: {show_cost_per_person}")
+        
+        # Reemplazos básicos (siempre)
         html = html.replace("{{TOTAL}}", pricing.get('total_formatted', '$0.00'))
         html = html.replace("{{TOTAL_AMOUNT}}", pricing.get('total_formatted', '$0.00'))
         html = html.replace("{{SUBTOTAL}}", pricing.get('subtotal_formatted', '$0.00'))
-        html = html.replace("{{TAX}}", pricing.get('tax_formatted', '$0.00'))
-        html = html.replace("{{COORDINATION}}", pricing.get('coordination_formatted', '$0.00'))
+        
+        # Reemplazos condicionales (solo si están activos)
+        if show_coordination:
+            html = html.replace("{{COORDINATION}}", pricing.get('coordination_formatted', '$0.00'))
+            logger.info(f"✅ Coordination enabled: {pricing.get('coordination_formatted', '$0.00')}")
+        else:
+            html = html.replace("{{COORDINATION}}", "")
+            logger.info("⚠️ Coordination disabled - omitting from template")
+        
+        if show_tax:
+            html = html.replace("{{TAX}}", pricing.get('tax_formatted', '$0.00'))
+            logger.info(f"✅ Tax enabled: {pricing.get('tax_formatted', '$0.00')}")
+        else:
+            html = html.replace("{{TAX}}", "")
+            logger.info("⚠️ Tax disabled - omitting from template")
+        
+        if show_cost_per_person:
+            html = html.replace("{{COST_PER_PERSON}}", pricing.get('cost_per_person_formatted', '$0.00'))
+            logger.info(f"✅ Cost per person enabled: {pricing.get('cost_per_person_formatted', '$0.00')}")
+        else:
+            html = html.replace("{{COST_PER_PERSON}}", "")
+            logger.info("⚠️ Cost per person disabled - omitting from template")
         
         # Generar filas de productos
         products = mapped_data.get('products', [])

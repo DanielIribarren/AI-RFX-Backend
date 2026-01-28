@@ -438,13 +438,59 @@ def delete_my_rfx(rfx_id: str):
         
         db_client = get_database_client()
         
-        # CRÍTICO: Solo eliminar si soy dueño
-        db_client.execute("""
-            DELETE FROM rfx_v2 
-            WHERE id = %s AND user_id = %s
-        """, (rfx_id, current_user_id))
+        # PASO 1: Obtener pricing_config_id del RFX
+        pricing_configs = db_client.client.table("rfx_pricing_configurations")\
+            .select("id")\
+            .eq("rfx_id", rfx_id)\
+            .execute()
         
-        logger.info(f"✅ RFX {rfx_id} deleted by user {current_user_id}")
+        # PASO 2: Eliminar configuraciones hijas (coordination, cost_per_person, tax)
+        if pricing_configs.data:
+            pricing_config_ids = [pc["id"] for pc in pricing_configs.data]
+            
+            # Eliminar coordination_configurations
+            db_client.client.table("coordination_configurations")\
+                .delete()\
+                .in_("pricing_config_id", pricing_config_ids)\
+                .execute()
+            
+            # Eliminar cost_per_person_configurations
+            db_client.client.table("cost_per_person_configurations")\
+                .delete()\
+                .in_("pricing_config_id", pricing_config_ids)\
+                .execute()
+            
+            # Eliminar tax_configurations
+            db_client.client.table("tax_configurations")\
+                .delete()\
+                .in_("pricing_config_id", pricing_config_ids)\
+                .execute()
+            
+            logger.info(f"🗑️ Deleted pricing sub-configurations for RFX {rfx_id}")
+        
+        # PASO 3: Eliminar rfx_pricing_configurations
+        db_client.client.table("rfx_pricing_configurations")\
+            .delete()\
+            .eq("rfx_id", rfx_id)\
+            .execute()
+        
+        # PASO 4: Eliminar productos del RFX
+        db_client.client.table("rfx_products")\
+            .delete()\
+            .eq("rfx_id", rfx_id)\
+            .execute()
+        
+        # PASO 5: Finalmente eliminar el RFX (solo si soy dueño)
+        delete_response = db_client.client.table("rfx_v2")\
+            .delete()\
+            .eq("id", rfx_id)\
+            .eq("user_id", current_user_id)\
+            .execute()
+        
+        if not delete_response.data and delete_response.data != []:
+            logger.warning(f"⚠️ RFX {rfx_id} deletion returned no data - may not exist")
+        
+        logger.info(f"✅ RFX {rfx_id} and all related data deleted by user {current_user_id}")
         
         return jsonify({
             "status": "success",

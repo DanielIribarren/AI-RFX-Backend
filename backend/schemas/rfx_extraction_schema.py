@@ -532,7 +532,7 @@ class RFXFunctionResult(BaseModel):
     # Presupuesto
     budget_range_min: Optional[float] = Field(None, ge=0)
     budget_range_max: Optional[float] = Field(None, ge=0)
-    currency: str = "USD"
+    currency: Optional[str] = "USD"  # ✅ FIX: Opcional para evitar error cuando LLM retorna None
     
     # Ubicación
     event_location: Optional[str] = None
@@ -560,9 +560,13 @@ class RFXFunctionResult(BaseModel):
     # Metadatos adicionales
     additional_metadata: Optional[AdditionalMetadata] = None
     
-    @validator('currency')
+    @validator('currency', pre=True, always=True)
     def validate_currency_code(cls, v):
-        """Validar código de moneda"""
+        """Validar código de moneda y manejar None"""
+        # ✅ FIX: Si el LLM retorna None, usar USD por defecto
+        if v is None or v == "":
+            return "USD"
+        
         valid_currencies = ["USD", "EUR", "GBP", "JPY", "CAD", "AUD", "MXN", "BRL", "ARS", "COP", "PEN", "CLP", "CHF", "VES", "VED"]
         if v not in valid_currencies:
             return "USD"  # Default fallback

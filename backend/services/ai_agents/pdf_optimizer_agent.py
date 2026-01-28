@@ -130,6 +130,34 @@ img { max-width: 100%; page-break-inside: avoid; }
 - Colores del branding
 - Contenido completo
 
+### 4. 🚨 CONFIGURACIONES DE PRICING CONDICIONAL (CRÍTICO - NO MODIFICAR):
+**REGLA FUNDAMENTAL:** NO agregar ni eliminar filas de pricing. Solo optimizar las que YA existen.
+
+El HTML que recibes ya tiene las filas de pricing correctas según la configuración:
+- Si hay fila de "Coordinación y Logística" → Está activa, NO eliminar
+- Si NO hay fila de coordinación → NO está activa, NO agregar
+- Si hay fila de "Impuestos" → Está activa, NO eliminar
+- Si NO hay fila de impuestos → NO está activa, NO agregar
+- Si hay fila de "Costo por persona" → Está activa, NO eliminar
+- Si NO hay fila de costo por persona → NO está activa, NO agregar
+
+**TU RESPONSABILIDAD:**
+- Solo optimizar el CSS y paginación de las filas existentes
+- NO agregar filas de pricing que no existen
+- NO eliminar filas de pricing que existen
+- NO modificar valores de pricing
+- NO inventar configuraciones
+
+**EJEMPLO:**
+```html
+<!-- Si el HTML tiene esto: -->
+<tr><td>Subtotal</td><td>$1,000.00</td></tr>
+<tr><td>TOTAL</td><td>$1,000.00</td></tr>
+
+<!-- NO agregues coordinación ni impuestos -->
+<!-- Solo optimiza el CSS de las filas existentes -->
+```
+
 ## FORMATO DE RESPUESTA JSON OBLIGATORIO:
 
 {
@@ -168,7 +196,7 @@ img { max-width: 100%; page-break-inside: avoid; }
 4. **Sé completo**: Lista TODOS los ajustes, no resumas
 
 ⚠️ IMPORTANTE: Tus ajustes serán leídos por humanos para debugging. Hazlos técnicos, específicos y útiles.
-⚠️ NO truncar HTML. Retornar contenido completo."""
+⚠️ NO truncar HTML. Retornar contenido completo. ASEGURATE DE HACERLO LO MAS RAPIDO POSIBLE Y DIRECTO Y SIMPLE SIN PERDER CALIDAD"""
         
         # User prompt: HTML COMPLETO sin truncar (calidad > costo)
         optimization_payload = {
@@ -208,15 +236,17 @@ img { max-width: 100%; page-break-inside: avoid; }
             logger.info("⏳ Calling OpenAI API...")
             
             # Ejecutar llamada síncrona en thread separado para no bloquear
+            # ✅ OPTIMIZACIÓN: GPT-4o-mini (60% más rápido, 60% más barato)
             response = await asyncio.to_thread(
                 self.client.chat.completions.create,
-                model=self.openai_config.model,
+                model="gpt-4o-mini",  # Modelo optimizado para PDF optimization
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2,  # Baja temperatura para optimización precisa y consistente
-                # SIN max_tokens - dejar que el modelo genere HTML completo (calidad > costo)
+                temperature=0.2,
+                max_tokens=12000,  # Suficiente para HTML optimizado
+                timeout=60,  # Timeout optimizado (1 minuto)
                 response_format={"type": "json_object"}
             )
             
