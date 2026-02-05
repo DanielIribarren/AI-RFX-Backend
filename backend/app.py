@@ -20,6 +20,7 @@ from backend.api.proposals import proposals_bp
 from backend.api.download import download_bp
 from backend.api.pricing import pricing_bp
 from backend.api.branding import branding_bp  # 🆕 Branding API
+from backend.api.catalog_sync import catalog_bp  # 🛒 Product Catalog API (SYNC)
 
 # 🔐 V3.0 Authentication & Security Blueprints
 from backend.api.auth_flask import auth_bp  # ✅ Flask JWT Auth
@@ -106,6 +107,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(download_bp)
     app.register_blueprint(pricing_bp)
     app.register_blueprint(branding_bp)  # ⚠️ OLD - use user_branding_bp instead
+    app.register_blueprint(catalog_bp)  # 🛒 Product Catalog Management
     
     # Legacy compatibility routes
     _register_legacy_routes(app)

@@ -454,9 +454,9 @@ class ProductItem(BaseModel):
     """Modelo para productos individuales"""
     product_name: str
     description: Optional[str] = None
-    category: ProductCategory
+    category: str  # ✅ FLEXIBLE: Acepta cualquier categoría que AI determine
     quantity: float = Field(ge=1)
-    unit_of_measure: UnitOfMeasure
+    unit_of_measure: str  # ✅ FLEXIBLE: Acepta cualquier unidad que AI determine
     costo_unitario: Optional[float] = Field(default=0.0, ge=0)
     specifications: Optional[str] = None
     is_mandatory: bool = True
@@ -591,7 +591,7 @@ class RFXFunctionResult(BaseModel):
         """Configuración del modelo"""
         use_enum_values = True
         validate_assignment = True
-        extra = "forbid"  # No permitir campos adicionales
+        extra = "ignore"  # ✅ Ignorar campos adicionales que AI agregue
 
 # ============================================================================
 # FUNCIÓN DE UTILIDAD PARA CONVERSIÓN
@@ -653,10 +653,10 @@ def function_result_to_db_dict(result: RFXFunctionResult) -> Dict[str, Any]:
         products_data.append({
             "product_name": product.product_name,
             "description": product.description,
-            "category": product.category.value,  # 🔧 FIX: Convertir enum a string
+            "category": product.category,  # ✅ Ya es string directo
             "quantity": int(product.quantity),
             "unit_cost": product.costo_unitario if product.costo_unitario and product.costo_unitario > 0 else 0.0,  # ✅ Mapear costo_unitario a unit_cost
-            "unit_of_measure": product.unit_of_measure.value,  # 🔧 FIX: Convertir enum a string
+            "unit_of_measure": product.unit_of_measure,  # ✅ Ya es string directo
             "specifications": {"details": product.specifications} if product.specifications else None,
             "is_mandatory": product.is_mandatory,
             "priority_order": product.priority_order,

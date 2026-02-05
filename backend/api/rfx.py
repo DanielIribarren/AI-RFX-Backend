@@ -204,7 +204,16 @@ def process_rfx():
         context = "organization" if organization_id else "personal"
         logger.info(f"✅ Credits verified ({context}): {available} available")
 
-        processor_service = RFXProcessorService()
+        # 🛒 Inicializar servicio de catálogo (opcional)
+        catalog_service = None
+        try:
+            from backend.services.catalog_helpers import get_catalog_search_service_for_rfx
+            catalog_service = get_catalog_search_service_for_rfx()
+            logger.info("🛒 Catalog service initialized - products will be enriched")
+        except Exception as e:
+            logger.warning(f"⚠️ Catalog service not available: {e}")
+        
+        processor_service = RFXProcessorService(catalog_search_service=catalog_service)
         # 🔒 PIPELINE FLEXIBLE con USER_ID y ORGANIZATION_ID: Procesa archivos Y/O texto
         # IMPORTANTE: process_rfx_case() guarda el RFX en BD internamente
         rfx_processed = processor_service.process_rfx_case(

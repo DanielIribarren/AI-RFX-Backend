@@ -41,6 +41,7 @@ from backend.core.database import get_database_client
 from backend.utils.text_utils import clean_json_string
 from backend.core.feature_flags import FeatureFlags
 from backend.services.function_calling_extractor import FunctionCallingRFXExtractor
+from backend.services.catalog_search_service_sync import CatalogSearchServiceSync
 
 import logging
 
@@ -380,12 +381,19 @@ class EventExtractor(BaseExtractor):
 class RFXProcessorService:
     """Service for processing RFX documents from PDF to structured data"""
     
-    def __init__(self):
+    def __init__(self, catalog_search_service: Optional[CatalogSearchServiceSync] = None):
         self.openai_config = get_openai_config()
         self.openai_client = OpenAI(api_key=self.openai_config.api_key)
         self.db_client = get_database_client()
         
         self.debug_mode = False  # Simplificado - sin feature flags
+        
+        # 🛒 CATALOG SEARCH SERVICE SYNC (opcional - para enriquecimiento de productos)
+        self.catalog_search = catalog_search_service
+        if self.catalog_search:
+            logger.info("🛒 Catalog Search Service (SYNC) enabled - products will be enriched with catalog prices")
+        else:
+            logger.info("⚠️ Catalog Search Service not provided - using AI predictions only")
         
         # 🚀 FUNCTION CALLING EXTRACTOR (siempre habilitado)
         self.function_calling_extractor = None
@@ -405,7 +413,9 @@ class RFXProcessorService:
             'total_documents_processed': 0,
             'chunks_processed': 0,
             'average_confidence': 0.0,
-            'fallback_usage_count': 0
+            'fallback_usage_count': 0,
+            'catalog_matches': 0,
+            'catalog_misses': 0
         }
         
         logger.info(f"🚀 RFXProcessorService inicializado - Debug: {self.debug_mode}")
@@ -1427,7 +1437,7 @@ TEXTO: {text[:5000]}"""
                 "company_id": company_record.get("id"),
                 "requester_id": requester_record.get("id"),
                 "rfx_type": rfx_processed.rfx_type.value if hasattr(rfx_processed.rfx_type, 'value') else str(rfx_processed.rfx_type),
-                "title": f"RFX Request - {rfx_processed.rfx_type}",
+                "title": rfx_processed.title or f"{rfx_processed.company_name}",
                 "location": rfx_processed.location,
                 "delivery_date": rfx_processed.delivery_date.isoformat() if rfx_processed.delivery_date else None,
                 "delivery_time": rfx_processed.delivery_time.isoformat() if rfx_processed.delivery_time else None,
@@ -1464,27 +1474,58 @@ TEXTO: {text[:5000]}"""
             if rfx_processed.products:
                 structured_products = []
                 for product in rfx_processed.products:
-                    # Map costo_unitario from extraction to unit_cost for DB
-                    costo = getattr(product, 'costo_unitario', None) or getattr(product, 'unit_cost', None)
+                    # ✅ FIX: Productos enriquecidos son DICT, no objetos - usar .get() en vez de getattr()
+                    # Intentar múltiples nombres de campo para compatibilidad
+                    if isinstance(product, dict):
+                        # Producto es diccionario (enriquecido con catálogo)
+                        # 🔍 DEBUG: Log del producto completo para ver qué campos tiene
+                        logger.debug(f"   📦 Product dict keys: {list(product.keys())}")
+                        
+                        # Intentar obtener costo con fallback
+                        costo = product.get('costo_unitario')
+                        if costo is None:
+                            costo = product.get('unit_cost')
+                        
+                        # Intentar obtener precio con fallback
+                        precio = product.get('precio_unitario')
+                        if precio is None:
+                            precio = product.get('unit_price')
+                        
+                        # 🔍 DEBUG: Log de valores extraídos
+                        logger.debug(f"   💰 Extracted - costo_unitario: {product.get('costo_unitario')}, unit_cost: {product.get('unit_cost')}")
+                        logger.debug(f"   💰 Extracted - precio_unitario: {product.get('precio_unitario')}, unit_price: {product.get('unit_price')}")
+                        logger.debug(f"   💰 Final values - costo: {costo}, precio: {precio}")
+                        
+                        product_name = product.get('product_name') or product.get('nombre')
+                        quantity = product.get('quantity') or product.get('cantidad')
+                        unit = product.get('unit') or product.get('unidad')
+                    else:
+                        # Producto es objeto (legacy)
+                        costo = getattr(product, 'costo_unitario', None) or getattr(product, 'unit_cost', None)
+                        precio = getattr(product, 'precio_unitario', None) or getattr(product, 'unit_price', None)
+                        product_name = product.product_name if hasattr(product, 'product_name') else product.nombre
+                        quantity = product.quantity if hasattr(product, 'quantity') else product.cantidad
+                        unit = product.unit if hasattr(product, 'unit') else product.unidad
                     
                     product_data = {
-                        "product_name": product.product_name if hasattr(product, 'product_name') else product.nombre,
-                        "quantity": product.quantity if hasattr(product, 'quantity') else product.cantidad,
-                        "unit": product.unit if hasattr(product, 'unit') else product.unidad,
-                        "unit_cost": costo if costo is not None and costo > 0 else 0.0,  # ← CRÍTICO: Guardar 0.0 en lugar de None
+                        "product_name": product_name,
+                        "quantity": quantity,
+                        "unit": unit,
+                        "estimated_unit_price": precio if precio is not None and precio > 0 else None,
+                        "unit_cost": costo if costo is not None and costo > 0 else None,  # ✅ AGREGADO: Guardar costo también
                         "notes": f"Extracted from RFX processing"
                     }
                     structured_products.append(product_data)
                     
-                    # 🔍 DEBUG: Log each product's unit_cost
-                    logger.debug(f"   💰 Saving product: {product_data['product_name']} - unit_cost: ${product_data['unit_cost']:.2f}")
+                    # 🔍 DEBUG: Log each product's pricing
+                    logger.debug(f"   💰 Saving product: {product_data['product_name']} - cost: ${costo or 0:.2f}, price: ${precio or 0:.2f}")
                 
                 self.db_client.insert_rfx_products(rfx_record["id"], structured_products)
                 logger.info(f"✅ {len(structured_products)} structured products saved")
                 
-                # 🔍 DEBUG: Log summary of unit costs
-                total_with_cost = sum(1 for p in structured_products if p['unit_cost'] > 0)
-                logger.info(f"   💰 Products with unit_cost > 0: {total_with_cost}/{len(structured_products)}")
+                # 🔍 DEBUG: Log summary of pricing
+                total_with_price = sum(1 for p in structured_products if p.get('estimated_unit_price') and p['estimated_unit_price'] > 0)
+                logger.info(f"   💰 Products with estimated_unit_price > 0: {total_with_price}/{len(structured_products)}")
             
             # 6. Create history event
             history_event = {
@@ -2001,6 +2042,24 @@ TEXTO: {text[:5000]}"""
         else:
             logger.info(f"📊 USING AI extracted products: {ai_products_count} items")
 
+        # 🛒 ENRIQUECER PRODUCTOS CON CATÁLOGO (si está disponible)
+        if self.catalog_search and organization_id and raw_data.get("productos"):
+            logger.info(f"🛒 Enriching {len(raw_data['productos'])} products with catalog prices...")
+            
+            # Preparar contexto del RFX para selección inteligente de variantes
+            rfx_context = {
+                'rfx_type': raw_data.get('tipo_evento', 'catering'),
+                'description': raw_data.get('descripcion', ''),
+                'location': raw_data.get('ubicacion', ''),
+                'event_type': raw_data.get('tipo_evento', '')
+            }
+            
+            raw_data["productos"] = self._enrich_products_with_catalog(
+                raw_data["productos"], 
+                organization_id,
+                rfx_context=rfx_context
+            )
+
         validated_data = self._validate_and_clean_data(raw_data, rfx_input.id)
         
         evaluation_metadata = self._evaluate_rfx_intelligently(validated_data, rfx_input.id)
@@ -2346,6 +2405,177 @@ TEXTO: {text[:5000]}"""
         
         # Fallback
         return "12:00"
+
+    def _enrich_products_with_catalog(
+        self, 
+        products: List[Dict[str, Any]], 
+        organization_id: str,
+        rfx_context: Dict[str, Any] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Enriquece productos con precios del catálogo usando búsqueda híbrida (SYNC)
+        
+        Estrategia MEJORADA con selección inteligente de variantes:
+        1. Buscar variantes del producto en catálogo (exact → fuzzy → semantic)
+        2. Si hay múltiples variantes, usar AI para seleccionar la más apropiada
+        3. Si match con confidence >= 0.75, usar precios del catálogo
+        4. Si no match, mantener producto original (AI prediction)
+        5. Agregar metadata de matching para trazabilidad
+        
+        Args:
+            products: Lista de productos extraídos
+            organization_id: ID de la organización
+            rfx_context: Contexto del RFX para selección inteligente
+        
+        Returns:
+            Lista de productos enriquecidos con precios de catálogo
+        """
+        
+        if not self.catalog_search:
+            logger.warning("⚠️ Catalog search not available, skipping enrichment")
+            return products
+        
+        enriched_products = []
+        matches = 0
+        misses = 0
+        ai_selections = 0
+        
+        for product in products:
+            product_name = product.get('nombre', '')
+            
+            if not product_name:
+                enriched_products.append(product)
+                continue
+            
+            try:
+                # 1. Buscar variantes en catálogo (retorna múltiples matches)
+                variants = self.catalog_search.search_product_variants(
+                    product_name, 
+                    organization_id,
+                    max_variants=5
+                )
+                
+                # 2. Seleccionar la mejor variante
+                if variants:
+                    if len(variants) > 1:
+                        # Múltiples variantes - usar AI selector
+                        logger.info(f"🤖 Found {len(variants)} variants for '{product_name}', using AI to select best match")
+                        
+                        from backend.services.ai_product_selector import AIProductSelector
+                        from backend.core.ai_config import get_openai_client
+                        
+                        selector = AIProductSelector(get_openai_client())
+                        catalog_match = selector.select_best_variant(
+                            query=product_name,
+                            variants=variants,
+                            rfx_context=rfx_context
+                        )
+                        ai_selections += 1
+                    else:
+                        # Solo 1 variante
+                        catalog_match = variants[0]
+                else:
+                    # No se encontraron variantes
+                    catalog_match = None
+                
+                if catalog_match and catalog_match.get('confidence', 0) >= 0.75:
+                    # MATCH ENCONTRADO - usar precios del catálogo
+                    matches += 1
+                    
+                    # Preservar cantidad y unidad del RFX original
+                    enriched_product = {
+                        **product,
+                        'costo_unitario': catalog_match.get('unit_cost'),
+                        'precio_unitario': catalog_match.get('unit_price'),
+                        
+                        # Metadata de matching
+                        'catalog_match': True,
+                        'catalog_product_name': catalog_match.get('product_name'),
+                        'catalog_match_type': catalog_match.get('match_type'),
+                        'catalog_confidence': catalog_match.get('confidence'),
+                        'pricing_source': 'catalog',
+                        
+                        # Metadata de selección AI (si aplica)
+                        'selection_method': catalog_match.get('selection_method', 'single_match'),
+                        'ai_reasoning': catalog_match.get('ai_reasoning'),
+                        'variants_count': len(variants) if variants else 0
+                    }
+                    
+                    # Log detallado según método de selección
+                    selection_method = catalog_match.get('selection_method', 'single_match')
+                    if selection_method == 'ai_intelligent':
+                        logger.info(
+                            f"✅ AI-selected match: '{product_name}' → "
+                            f"'{catalog_match['product_name']}' "
+                            f"({len(variants)} variants, confidence={catalog_match['confidence']:.2f}) "
+                            f"[cost=${catalog_match.get('unit_cost')}, price=${catalog_match.get('unit_price')}] "
+                            f"Reason: {catalog_match.get('ai_reasoning', 'N/A')}"
+                        )
+                    elif selection_method == 'average_pricing':
+                        logger.info(
+                            f"✅ Average pricing: '{product_name}' → "
+                            f"avg of {len(variants)} variants "
+                            f"[cost=${catalog_match.get('unit_cost')}, price=${catalog_match.get('unit_price')}]"
+                        )
+                    else:
+                        logger.info(
+                            f"✅ Catalog match: '{product_name}' → "
+                            f"'{catalog_match['product_name']}' "
+                            f"({catalog_match['match_type']}, confidence={catalog_match['confidence']:.2f}) "
+                            f"[cost=${catalog_match.get('unit_cost')}, price=${catalog_match.get('unit_price')}]"
+                        )
+                    
+                    enriched_products.append(enriched_product)
+                else:
+                    # NO MATCH - mantener producto original
+                    misses += 1
+                    
+                    enriched_product = {
+                        **product,
+                        'catalog_match': False,
+                        'catalog_confidence': catalog_match.get('confidence', 0) if catalog_match else 0,
+                        'pricing_source': 'ai_prediction'
+                    }
+                    
+                    logger.info(
+                        f"⚠️ No catalog match for: '{product_name}' "
+                        f"(confidence={catalog_match.get('confidence', 0):.2f if catalog_match else 0})"
+                    )
+                    
+                    enriched_products.append(enriched_product)
+                    
+            except Exception as e:
+                # Error en búsqueda - mantener producto original
+                logger.error(f"❌ Catalog search error for '{product_name}': {e}")
+                misses += 1
+                
+                enriched_product = {
+                    **product,
+                    'catalog_match': False,
+                    'catalog_error': str(e),
+                    'pricing_source': 'ai_prediction'
+                }
+                
+                enriched_products.append(enriched_product)
+        
+        # Actualizar estadísticas
+        self.processing_stats['catalog_matches'] += matches
+        self.processing_stats['catalog_misses'] += misses
+        
+        # Log resumen
+        total = len(products)
+        match_rate = (matches / total * 100) if total > 0 else 0
+        
+        logger.info(
+            f"🛒 CATALOG ENRICHMENT SUMMARY: "
+            f"{matches}/{total} matches ({match_rate:.1f}%), "
+            f"{misses} misses"
+        )
+        
+        if ai_selections > 0:
+            logger.info(f"🤖 AI intelligent selections: {ai_selections}/{matches} matches")
+        
+        return enriched_products
 
     def _parse_spreadsheet_items(self, filename: str, content: bytes) -> Dict[str, Any]:
         """Lee XLSX/CSV y devuelve {'items': [...], 'text': 'csv-like'} con mapeo:

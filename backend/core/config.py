@@ -86,6 +86,18 @@ class FileUploadConfig:
         os.makedirs(self.upload_folder, exist_ok=True)
 
 
+@dataclass
+class RedisConfig:
+    """Redis configuration for caching"""
+    url: str = "redis://localhost:6379/0"
+    ttl: int = 86400  # 24 hours default TTL
+    
+    @property
+    def is_available(self) -> bool:
+        """Check if Redis URL is configured"""
+        return bool(self.url and self.url != "redis://localhost:6379/0")
+
+
 class Config:
     """Main configuration class with environment-specific settings"""
     
@@ -98,6 +110,7 @@ class Config:
         self.openai = self._load_openai_config()
         self.server = self._load_server_config()
         self.file_upload = self._load_file_upload_config()
+        self.redis = self._load_redis_config()
         
         # Validate configuration
         self._validate_config()
@@ -151,6 +164,13 @@ class Config:
         return FileUploadConfig(
             max_file_size=int(os.getenv("MAX_FILE_SIZE", str(16 * 1024 * 1024))),
             upload_folder=os.getenv("UPLOAD_FOLDER", "/tmp/rfx_uploads")
+        )
+    
+    def _load_redis_config(self) -> RedisConfig:
+        """Load Redis configuration from environment"""
+        return RedisConfig(
+            url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+            ttl=int(os.getenv("REDIS_TTL", "86400"))  # 24 hours default
         )
     
     def _get_required_env(self, key: str) -> str:

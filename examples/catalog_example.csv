@@ -1,0 +1,52 @@
+Nombre del Producto,Código,Costo Unitario,Precio Unitario,Unidad
+Tequeños de queso,TEQ-001,0.45,0.68,unidad
+Empanadas de carne,EMP-001,0.50,0.75,unidad
+Empanadas de pollo,EMP-002,0.48,0.72,unidad
+Canapés variados,CAN-001,0.60,0.85,unidad
+Mini hamburguesas,HAM-001,1.20,1.80,unidad
+Deditos de queso,DED-001,0.40,0.65,unidad
+Pasapalos fríos,PAS-001,0.55,0.80,unidad
+Pasapalos calientes,PAS-002,0.65,0.95,unidad
+Brochetas de pollo,BRO-001,1.50,2.25,unidad
+Brochetas de carne,BRO-002,1.80,2.70,unidad
+Sushi variado,SUS-001,2.00,3.00,unidad
+Ceviche de camarón,CEV-001,3.50,5.25,porción
+Ensalada César,ENS-001,2.50,3.75,porción
+Ensalada mixta,ENS-002,2.00,3.00,porción
+Pasta alfredo,PAS-003,3.00,4.50,porción
+Pasta bolognesa,PAS-004,3.20,4.80,porción
+Arroz con pollo,ARR-001,4.00,6.00,porción
+Pabellón criollo,PAB-001,5.00,7.50,porción
+Asado negro,ASA-001,6.00,9.00,porción
+Pollo guisado,POL-001,4.50,6.75,porción
+Pescado al horno,PES-001,7.00,10.50,porción
+Lomo saltado,LOM-001,6.50,9.75,porción
+Cachapas con queso,CAC-001,3.00,4.50,unidad
+Arepas rellenas,ARE-001,2.50,3.75,unidad
+Hallacas,HAL-001,4.00,6.00,unidad
+Torta de chocolate,TOR-001,15.00,22.50,kg
+Torta de vainilla,TOR-002,14.00,21.00,kg
+Quesillo,QUE-001,12.00,18.00,kg
+Tres leches,TRE-001,16.00,24.00,kg
+Marquesa,MAR-001,14.00,21.00,kg
+Jugo natural,JUG-001,1.00,1.50,litro
+Refresco,REF-001,0.80,1.20,litro
+Agua mineral,AGU-001,0.50,0.75,litro
+Café,CAF-001,0.30,0.45,taza
+Té,TE-001,0.25,0.40,taza
+Chicha,CHI-001,1.20,1.80,litro
+Sangría,SAN-001,2.00,3.00,litro
+Vino tinto,VIN-001,8.00,12.00,botella
+Vino blanco,VIN-002,7.50,11.25,botella
+Cerveza nacional,CER-001,1.50,2.25,unidad
+Cerveza importada,CER-002,2.50,3.75,unidad
+Whisky,WHI-001,25.00,37.50,botella
+Ron,RON-001,15.00,22.50,botella
+Vodka,VOD-001,18.00,27.00,botella
+Tequila,TEQ-002,20.00,30.00,botella
+Coctelería básica,COC-001,5.00,7.50,servicio
+Coctelería premium,COC-002,8.00,12.00,servicio
+Servicio de meseros,MES-001,15.00,22.50,hora
+Servicio de bartender,BAR-001,20.00,30.00,hora
+Alquiler de vajilla,VAJ-001,2.00,3.00,persona
+Alquiler de mantelería,MAN-001,5.00,7.50,mesa

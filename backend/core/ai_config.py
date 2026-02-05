@@ -142,5 +142,11 @@ class AIConfig:
     LANGCHAIN_API_KEY: Final[str] = os.getenv("LANGCHAIN_API_KEY", "")  # Opcional: LangSmith
 
 
+def get_openai_client():
+    """Inicializa y retorna cliente de OpenAI"""
+    from openai import OpenAI
+    return OpenAI(api_key=AIConfig.OPENAI_API_KEY)
+
+
 # Exportar
-__all__ = ["AIConfig"]
+__all__ = ["AIConfig", "get_openai_client"]

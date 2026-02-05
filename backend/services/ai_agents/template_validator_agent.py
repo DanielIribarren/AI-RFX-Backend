@@ -160,7 +160,8 @@ Modifica el html_generated aplicando TODAS las correcciones necesarias:
 **REGLA FUNDAMENTAL:** Solo mostrar filas de pricing si están ACTIVAS en la configuración.
 
 El request_data.pricing contiene flags que indican qué mostrar:
-- **show_coordination**: Si True → Mostrar fila "Coordinación y Logística"
+Si alguna de estas configuraciones estan en el RFX deben ir en la en la tabla como un producto, pero sin las columnas de cantidad y unidad.
+- **show_coordination**: Si True → Mostrar fila "Coordinación y Logística" 
 - **show_tax**: Si True → Mostrar fila "Impuestos"  
 - **show_cost_per_person**: Si True → Mostrar fila "Costo por persona"
 
