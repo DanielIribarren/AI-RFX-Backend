@@ -18,6 +18,7 @@ from backend.models.rfx_models import (
     TipoRFX
 )
 from backend.services.rfx_processor import RFXProcessorService
+from backend.services.rfx.rfx_service import rfx_service
 from backend.services.credits_service import get_credits_service
 from backend.core.config import get_file_upload_config
 from backend.core.database import get_database_client
@@ -204,24 +205,56 @@ def process_rfx():
         context = "organization" if organization_id else "personal"
         logger.info(f"✅ Credits verified ({context}): {available} available")
 
-        # 🛒 Inicializar servicio de catálogo (opcional)
-        catalog_service = None
+        # 🚀 NUEVO: Usar rfx_service simplificado (AI-FIRST)
+        # El servicio maneja: extracción de texto → AI extraction → guardado en BD
         try:
-            from backend.services.catalog_helpers import get_catalog_search_service_for_rfx
-            catalog_service = get_catalog_search_service_for_rfx()
-            logger.info("🛒 Catalog service initialized - products will be enriched")
+            logger.info("🚀 Using new RFXService (AI-FIRST approach)")
+            rfx_result = rfx_service.process(valid_files, current_user_id)
+            
+            # Convertir resultado a formato legacy para compatibilidad
+            from backend.models.rfx_models import RFXProcessed, RFXProductRequest
+            rfx_processed = RFXProcessed(
+                id=rfx_result['id'],
+                rfx_type=RFXType(rfx_result.get('rfx_type', 'rfq')),
+                email=rfx_result.get('email'),
+                nombre_solicitante=rfx_result.get('nombre_solicitante'),
+                nombre_empresa=rfx_result.get('nombre_empresa'),
+                fecha=rfx_result.get('fecha'),
+                hora_entrega=rfx_result.get('hora_entrega'),
+                lugar=rfx_result.get('lugar'),
+                productos=[
+                    RFXProductRequest(
+                        nombre=p.get('nombre', p.get('product_name', '')),
+                        cantidad=p.get('cantidad', p.get('quantity', 0)),
+                        unidad=p.get('unidad', p.get('unit', 'unidades'))
+                    ) for p in rfx_result.get('productos', [])
+                ],
+                status='pending'
+            )
+            logger.info(f"✅ New RFXService completed successfully")
+            
         except Exception as e:
-            logger.warning(f"⚠️ Catalog service not available: {e}")
-        
-        processor_service = RFXProcessorService(catalog_search_service=catalog_service)
-        # 🔒 PIPELINE FLEXIBLE con USER_ID y ORGANIZATION_ID: Procesa archivos Y/O texto
-        # IMPORTANTE: process_rfx_case() guarda el RFX en BD internamente
-        rfx_processed = processor_service.process_rfx_case(
-            rfx_input, 
-            valid_files, 
-            user_id=current_user_id,
-            organization_id=organization_id  # ← CRÍTICO: Pasar organization_id
-        )
+            # Fallback al servicio legacy si el nuevo falla
+            logger.warning(f"⚠️ New RFXService failed, falling back to legacy: {e}")
+            
+            # 🛒 Inicializar servicio de catálogo (opcional)
+            catalog_service = None
+            try:
+                from backend.services.catalog_helpers import get_catalog_search_service_for_rfx
+                catalog_service = get_catalog_search_service_for_rfx()
+                logger.info("🛒 Catalog service initialized - products will be enriched")
+            except Exception as e:
+                logger.warning(f"⚠️ Catalog service not available: {e}")
+            
+            processor_service = RFXProcessorService(catalog_search_service=catalog_service)
+            # 🔒 PIPELINE FLEXIBLE con USER_ID y ORGANIZATION_ID: Procesa archivos Y/O texto
+            # IMPORTANTE: process_rfx_case() guarda el RFX en BD internamente
+            rfx_processed = processor_service.process_rfx_case(
+                rfx_input, 
+                valid_files, 
+                user_id=current_user_id,
+                organization_id=organization_id  # ← CRÍTICO: Pasar organization_id
+            )
         
         # ✅ AHORA el RFX existe en BD, usar su ID real (no el generado al inicio)
         actual_rfx_id = str(rfx_processed.id)
