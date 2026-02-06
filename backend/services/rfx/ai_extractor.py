@@ -43,7 +43,7 @@ class AIExtractor:
         
         logger.info(f"🤖 AIExtractor initialized with model: {model}")
     
-    @retry_on_failure(max_retries=2, delay=2.0)
+    @retry_on_failure(max_retries=2, initial_delay=2.0)
     def extract(self, text: str) -> Dict[str, Any]:
         """
         Extrae datos estructurados del texto usando Function Calling.
