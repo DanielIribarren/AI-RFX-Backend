@@ -1,13 +1,26 @@
 """
-⚙️ Pricing Configuration Service - Servicio de configuración de pricing
+⚠️ DEPRECATED: Este servicio está deprecado desde Febrero 2026.
+Usar pricing_config_service_v2.py en su lugar.
+
+Este archivo se mantendrá temporalmente para compatibilidad pero será eliminado en Marzo 2026.
+
+⚙️ Pricing Configuration Service - Servicio de configuración de pricing (LEGACY)
 Se integra con la estructura existente de base de datos para manejar configuraciones
 de coordinación, costo por persona y otras opciones de pricing
 """
+import warnings
 import json
 import uuid
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+
+# Emitir warning de deprecación
+warnings.warn(
+    "pricing_config_service está deprecado. Usar pricing_config_service_v2 en su lugar.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 from backend.models.pricing_models import (
     PricingConfig, PricingConfigType, RFXPricingConfiguration, 

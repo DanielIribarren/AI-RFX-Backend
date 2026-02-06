@@ -32,7 +32,7 @@ from backend.models.chat_models import (
     ConfirmationOption,
     ChatMetadata
 )
-from backend.core.ai_config import AIConfig
+from backend.core.config import get_openai_config
 from backend.services.chat_history import RFXMessageHistory
 from backend.services.rfx_processor import RFXProcessorService
 from backend.utils.chat_logger import get_chat_logger
@@ -67,12 +67,13 @@ class ChatAgent:
     def __init__(self):
         """Inicializa el agente con LangChain + Tools"""
         # LangChain LLM (reemplaza AsyncOpenAI)
+        openai_config = get_openai_config()
         self.llm = ChatOpenAI(
-            model=AIConfig.MODEL,
-            temperature=AIConfig.TEMPERATURE,
-            max_tokens=AIConfig.MAX_TOKENS,
-            timeout=AIConfig.TIMEOUT,
-            api_key=AIConfig.OPENAI_API_KEY
+            model=openai_config.chat_model,
+            temperature=openai_config.chat_temperature,
+            max_tokens=openai_config.chat_max_tokens,
+            timeout=openai_config.timeout,
+            api_key=openai_config.api_key
         )
         
         # ✅ REUTILIZAR: Parser de archivos existente
@@ -114,7 +115,7 @@ class ChatAgent:
             return_intermediate_steps=False
         )
         
-        self.model = AIConfig.MODEL
+        self.model = openai_config.chat_model
         
         logger.info(f"🦜 ChatAgent initialized with LangChain + {len(self.tools)} tools")
     

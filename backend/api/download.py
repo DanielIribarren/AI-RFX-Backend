@@ -10,6 +10,8 @@ import re
 from datetime import datetime
 
 from backend.core.database import get_database_client
+from backend.utils.retry_decorator import retry_on_failure
+from backend.exceptions import ExternalServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +66,17 @@ def convert_html_to_pdf():
         }), 500
 
 
+@retry_on_failure(max_retries=2, initial_delay=2.0, backoff_factor=2.0)
 def convert_with_playwright(html_content: str, client_name: str, document_id: str):
     """
     Conversión usando Playwright - Máxima fidelidad visual
     Soporta imágenes base64 embebidas
+    Incluye retry automático para fallos transitorios
     """
-    from playwright.sync_api import sync_playwright
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        raise ExternalServiceError("Playwright", "Playwright not installed", original_error=e)
     
     # Optimizar HTML para PDF
     optimized_html = optimize_html_for_pdf(html_content)

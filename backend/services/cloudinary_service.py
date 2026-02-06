@@ -8,6 +8,8 @@ import time
 import requests
 from typing import Optional
 
+from backend.utils.retry_decorator import retry_on_failure
+
 logger = logging.getLogger(__name__)
 
 # Lazy import de cloudinary para no romper si no está instalado
@@ -42,14 +44,53 @@ def _configure_cloudinary():
         raise
 
 
-def upload_logo(user_id: str, logo_file, max_retries: int = 3) -> str:
+@retry_on_failure(max_retries=3, initial_delay=1.0, backoff_factor=2.0)
+def _upload_to_cloudinary(user_id: str, logo_file):
+    """Helper function para upload con retry automático"""
+    import cloudinary.uploader
+    
+    logger.info(f"☁️ Uploading logo to Cloudinary for user: {user_id}")
+    
+    # Upload a Cloudinary con configuración optimizada y timeout
+    result = cloudinary.uploader.upload(
+        logo_file,
+        folder=f"logos/{user_id}",      # Organizar por usuario
+        public_id="logo",                # Nombre fijo (sobrescribe si existe)
+        overwrite=True,                  # Reemplazar logo anterior
+        resource_type="image",           # Tipo de recurso
+        invalidate=True,                 # Invalidar cache del CDN
+        timeout=30,                      # Timeout de 30 segundos
+        transformation=[                 # Optimizaciones automáticas
+            {'width': 500, 'crop': 'limit'},  # Max 500px ancho
+            {'quality': 'auto'},              # Calidad automática
+            {'fetch_format': 'auto'}          # Formato automático (WebP si soporta)
+        ]
+    )
+    
+    # Extraer URL pública segura (HTTPS)
+    public_url = result.get('secure_url')
+    
+    if not public_url:
+        raise ValueError("Cloudinary did not return a secure_url")
+    
+    # Validar que la URL sea accesible
+    if not _validate_cloudinary_url(public_url):
+        raise ValueError(f"Cloudinary URL is not accessible: {public_url}")
+    
+    logger.info(f"✅ Logo uploaded successfully to Cloudinary")
+    logger.info(f"📍 Public URL: {public_url}")
+    logger.info(f"🔍 Cloudinary response: asset_id={result.get('asset_id')}, version={result.get('version')}")
+    
+    return public_url
+
+
+def upload_logo(user_id: str, logo_file) -> str:
     """
-    Sube logo a Cloudinary y retorna URL pública con retry logic
+    Sube logo a Cloudinary y retorna URL pública con retry automático
     
     Args:
         user_id: ID del usuario (para organizar en folders)
         logo_file: Archivo del logo (FileStorage o file path)
-        max_retries: Número máximo de reintentos en caso de fallo
         
     Returns:
         str: URL pública HTTPS del logo en Cloudinary
@@ -59,55 +100,7 @@ def upload_logo(user_id: str, logo_file, max_retries: int = 3) -> str:
         # Returns: https://res.cloudinary.com/dffys3mxv/image/upload/v123/logos/user-123/logo.png
     """
     _configure_cloudinary()
-    
-    for attempt in range(max_retries):
-        try:
-            import cloudinary.uploader
-            
-            logger.info(f"☁️ Uploading logo to Cloudinary for user: {user_id} (attempt {attempt + 1}/{max_retries})")
-            
-            # Upload a Cloudinary con configuración optimizada y timeout
-            result = cloudinary.uploader.upload(
-                logo_file,
-                folder=f"logos/{user_id}",      # Organizar por usuario
-                public_id="logo",                # Nombre fijo (sobrescribe si existe)
-                overwrite=True,                  # Reemplazar logo anterior
-                resource_type="image",           # Tipo de recurso
-                invalidate=True,                 # Invalidar cache del CDN
-                timeout=30,                      # Timeout de 30 segundos
-                transformation=[                 # Optimizaciones automáticas
-                    {'width': 500, 'crop': 'limit'},  # Max 500px ancho
-                    {'quality': 'auto'},              # Calidad automática
-                    {'fetch_format': 'auto'}          # Formato automático (WebP si soporta)
-                ]
-            )
-            
-            # Extraer URL pública segura (HTTPS)
-            public_url = result.get('secure_url')
-            
-            if not public_url:
-                raise ValueError("Cloudinary did not return a secure_url")
-            
-            # Validar que la URL sea accesible
-            if not _validate_cloudinary_url(public_url):
-                raise ValueError(f"Cloudinary URL is not accessible: {public_url}")
-            
-            logger.info(f"✅ Logo uploaded successfully to Cloudinary")
-            logger.info(f"📍 Public URL: {public_url}")
-            logger.info(f"🔍 Cloudinary response: asset_id={result.get('asset_id')}, version={result.get('version')}")
-            
-            return public_url
-            
-        except Exception as e:
-            logger.error(f"❌ Error uploading logo to Cloudinary (attempt {attempt + 1}/{max_retries}): {e}")
-            
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                logger.info(f"⏳ Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                logger.error(f"❌ All {max_retries} attempts failed for Cloudinary upload")
-                raise Exception(f"Failed to upload logo to Cloudinary after {max_retries} attempts: {e}")
+    return _upload_to_cloudinary(user_id, logo_file)
 
 
 def delete_logo(user_id: str) -> bool:

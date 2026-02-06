@@ -34,19 +34,117 @@ class DatabaseConfig:
 
 @dataclass
 class OpenAIConfig:
-    """OpenAI API configuration - Optimized for GPT-4o with extended context"""
+    """
+    Unified OpenAI API configuration.
+    Consolidates all OpenAI-related settings from config.py and ai_config.py.
+    """
     api_key: str
-    model: str = "gpt-4o"  # 🚀 UPGRADED: GPT-4o with 128k context window
-    max_tokens: int = 4096  # 🚀 UPGRADED: 4096 tokens response (from 1500)  
+    
+    # ==================== Model Configuration ====================
+    # Default model for general use (extraction, analysis)
+    model: str = "gpt-4o"  # 🚀 GPT-4o with 128k context window
+    max_tokens: int = 4096  # 🚀 4096 tokens response
     temperature: float = 0.1
-    timeout: int = 60  # 🚀 UPGRADED: 60s timeout (from 30s)
-    context_window: int = 128000  # 🚀 NEW: 128k context limit for chunking logic
+    timeout: int = 60  # 🚀 60s timeout
+    context_window: int = 128000  # 🚀 128k context limit
+    
+    # Chat model (more economical for conversational use)
+    chat_model: str = "gpt-4o-mini"
+    chat_max_tokens: int = 2000
+    chat_temperature: float = 0.3
+    
+    # ==================== Límites y Restricciones ====================
+    max_retries: int = 3
+    max_file_size_mb: int = 10
+    max_context_products: int = 100
+    max_message_length: int = 2000
+    
+    # ==================== Costos (USD por 1M tokens) ====================
+    # Precios de gpt-4o-mini (más económico)
+    cost_input_per_1m_gpt4o_mini: float = 0.15
+    cost_output_per_1m_gpt4o_mini: float = 0.60
+    
+    # Precios de gpt-4o (más potente)
+    cost_input_per_1m_gpt4o: float = 2.50
+    cost_output_per_1m_gpt4o: float = 10.00
+    
+    # ==================== Umbrales de Decisión ====================
+    # Confidence thresholds
+    min_confidence_for_auto_apply: float = 0.85
+    min_confidence_for_suggestion: float = 0.70
+    
+    # Similarity thresholds
+    product_similarity_threshold: float = 0.80
+    
+    # Confirmation thresholds
+    max_price_for_auto_delete: float = 100.00
+    max_products_for_auto_delete: int = 1
+    min_quantity_for_confirmation: int = 1000
+    
+    # ==================== Timeouts ====================
+    confirmation_expiry_hours: int = 1
+    chat_history_retention_days: int = 90
+    
+    # ==================== Feature Flags ====================
+    enable_file_attachments: bool = True
+    enable_duplicate_detection: bool = True
+    enable_auto_pricing: bool = True
+    enable_confidence_scores: bool = True
     
     def validate(self) -> bool:
         """Validate OpenAI configuration"""
         if not self.api_key or not self.api_key.startswith("sk-"):
             raise ValueError("Invalid OpenAI API key format")
+        
+        if self.max_tokens < 100:
+            raise ValueError(f"max_tokens ({self.max_tokens}) is too low. Must be at least 100.")
+        
+        if not 0 <= self.temperature <= 2:
+            raise ValueError(f"temperature ({self.temperature}) must be between 0 and 2.")
+        
         return True
+    
+    def get_cost_per_token(self, model: str, token_type: str = "input") -> float:
+        """
+        Calcula el costo por token para un modelo específico.
+        
+        Args:
+            model: Nombre del modelo (ej: "gpt-4o", "gpt-4o-mini")
+            token_type: "input" o "output"
+            
+        Returns:
+            Costo en USD por token
+        """
+        if "gpt-4o-mini" in model:
+            cost_per_1m = (
+                self.cost_input_per_1m_gpt4o_mini 
+                if token_type == "input" 
+                else self.cost_output_per_1m_gpt4o_mini
+            )
+        else:  # gpt-4o
+            cost_per_1m = (
+                self.cost_input_per_1m_gpt4o 
+                if token_type == "input" 
+                else self.cost_output_per_1m_gpt4o
+            )
+        
+        return cost_per_1m / 1_000_000
+    
+    def calculate_cost(self, input_tokens: int, output_tokens: int, model: str) -> float:
+        """
+        Calcula el costo total de una llamada a la API.
+        
+        Args:
+            input_tokens: Número de tokens de entrada
+            output_tokens: Número de tokens de salida
+            model: Nombre del modelo usado
+            
+        Returns:
+            Costo total en USD
+        """
+        input_cost = input_tokens * self.get_cost_per_token(model, "input")
+        output_cost = output_tokens * self.get_cost_per_token(model, "output")
+        return input_cost + output_cost
 
 
 @dataclass
@@ -251,24 +349,8 @@ def get_file_upload_config() -> FileUploadConfig:
 
 
 # 🌍 MULTI-AMBIENTE: Funciones de conveniencia para migración
-def get_database_client():
-    """Obtener cliente de Supabase según ambiente actual"""
-    try:
-        from supabase import create_client, Client
-        
-        db_config = get_database_config()
-        if not db_config.url or not db_config.anon_key:
-            raise ValueError(f"Credenciales Supabase faltantes para ambiente: {config.environment}")
-        
-        client: Client = create_client(db_config.url, db_config.anon_key)
-        print(f"✅ Cliente Supabase conectado ({config.environment})")
-        return client
-        
-    except ImportError:
-        raise ImportError("Supabase client no instalado: pip install supabase")
-    except Exception as e:
-        print(f"❌ Error conectando a Supabase ({config.environment}): {str(e)}")
-        raise
+# NOTE: get_database_client() moved to backend.core.database (singleton pattern)
+# Use: from backend.core.database import get_database_client
 
 
 def get_environment() -> str:

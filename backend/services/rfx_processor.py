@@ -42,6 +42,8 @@ from backend.utils.text_utils import clean_json_string
 from backend.core.feature_flags import FeatureFlags
 from backend.services.function_calling_extractor import FunctionCallingRFXExtractor
 from backend.services.catalog_search_service_sync import CatalogSearchServiceSync
+from backend.utils.retry_decorator import retry_on_failure
+from backend.exceptions import ExternalServiceError
 
 import logging
 
@@ -1339,7 +1341,6 @@ TEXTO: {text[:5000]}"""
                 original_pdf_text=rfx_input.extracted_content,
                 requested_products=[p.dict() for p in productos] if productos else [],
                 metadata_json=metadata,
-                received_at=datetime.now(),
                 
                 # Legacy/extracted fields for compatibility
                 email=validated_data["email"],
@@ -1444,7 +1445,6 @@ TEXTO: {text[:5000]}"""
                 "status": rfx_processed.status.value if hasattr(rfx_processed.status, 'value') else str(rfx_processed.status),
                 "original_pdf_text": rfx_processed.original_pdf_text,
                 "requested_products": rfx_processed.requested_products or [],
-                "received_at": rfx_processed.received_at.isoformat() if rfx_processed.received_at else None,
                 "metadata_json": rfx_processed.metadata_json,
                 "currency": rfx_processed.metadata_json.get('validated_currency', 'USD') if rfx_processed.metadata_json else 'USD',
                 
@@ -1625,7 +1625,6 @@ TEXTO: {text[:5000]}"""
                 # ✅ Información adicional
                 "id": str(rfx_data_raw.get("id", "")),
                 "title": rfx_data_raw.get("title", ""),
-                "received_at": rfx_data_raw.get("received_at", ""),
                 "texto_original_relevante": metadata.get("texto_original_relevante", "")
             }
             
@@ -1649,24 +1648,17 @@ TEXTO: {text[:5000]}"""
     # REMOVED: _log_proposal_generation_event and _log_proposal_generation_error
     # Estas funciones ya no se necesitan porque la generación de propuestas es manual
 
-    def _call_openai_with_retry(self, max_retries: int = 3, **kwargs) -> Any:
-        """Call OpenAI API with exponential backoff retry logic"""
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"🔄 OpenAI API call attempt {attempt + 1}/{max_retries}")
-                response = self.openai_client.chat.completions.create(**kwargs)
-                logger.info(f"✅ OpenAI API call successful on attempt {attempt + 1}")
-                return response
-            except Exception as e:
-                wait_time = (2 ** attempt) + 1  # Exponential backoff: 2s, 3s, 5s
-                logger.warning(f"⚠️ OpenAI API call failed on attempt {attempt + 1}: {e}")
-                
-                if attempt < max_retries - 1:
-                    logger.info(f"🔄 Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                else:
-                    logger.error(f"❌ OpenAI API call failed after {max_retries} attempts")
-                    raise
+    @retry_on_failure(max_retries=3, initial_delay=1.0, backoff_factor=2.0)
+    def _call_openai_with_retry(self, **kwargs) -> Any:
+        """
+        Call OpenAI API with automatic retry logic.
+        Uses unified retry decorator with exponential backoff.
+        """
+        try:
+            return self.openai_client.chat.completions.create(**kwargs)
+        except Exception as e:
+            logger.error(f"OpenAI API call failed: {e}")
+            raise ExternalServiceError("OpenAI", str(e), original_error=e)
 
     def _evaluate_rfx_intelligently(self, validated_data: Dict[str, Any], rfx_id: str) -> Dict[str, Any]:
         """
@@ -2462,9 +2454,12 @@ TEXTO: {text[:5000]}"""
                         logger.info(f"🤖 Found {len(variants)} variants for '{product_name}', using AI to select best match")
                         
                         from backend.services.ai_product_selector import AIProductSelector
-                        from backend.core.ai_config import get_openai_client
+                        from openai import OpenAI
+                        from backend.core.config import get_openai_config
                         
-                        selector = AIProductSelector(get_openai_client())
+                        openai_config = get_openai_config()
+                        openai_client = OpenAI(api_key=openai_config.api_key)
+                        selector = AIProductSelector(openai_client)
                         catalog_match = selector.select_best_variant(
                             query=product_name,
                             variants=variants,

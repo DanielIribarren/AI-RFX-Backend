@@ -58,13 +58,14 @@ def import_catalog():
         
         # Importar servicio AI-First
         from backend.services.catalog_import_service import CatalogImportService
-        from backend.core.ai_config import get_openai_client
+        from openai import OpenAI
+        from backend.core.config import config, get_openai_config
         import redis
-        from backend.core.config import config
         
         # Inicializar servicio AI-First
         db = get_database_client()
-        openai_client = get_openai_client()
+        openai_config = get_openai_config()
+        openai_client = OpenAI(api_key=openai_config.api_key)
         
         # Redis es opcional
         try:

@@ -224,7 +224,6 @@ class RFXProcessed(BaseModel):
     requirements_confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="AI confidence score for requirements extraction")
     
     # Timestamps
-    received_at: Optional[datetime] = Field(default_factory=datetime.now)
     deadline: Optional[date] = None
     created_at: Optional[datetime] = Field(default_factory=datetime.now)
     updated_at: Optional[datetime] = Field(default_factory=datetime.now)
@@ -289,7 +288,6 @@ class RFXHistoryItem(BaseModel):
     priority: PriorityLevel = PriorityLevel.MEDIUM
     estimated_budget: Optional[float] = None
     actual_cost: Optional[float] = None
-    received_at: Optional[datetime] = None
     delivery_date: Optional[date] = None
     location: Optional[str] = None
     product_count: int = 0
@@ -460,6 +458,6 @@ LEGACY_FIELD_MAPPING = {
     'hora_entrega': 'delivery_time',
     'lugar': 'location',
     'productos': 'products',
-    'fecha_recepcion': 'received_at',
+    'fecha_recepcion': 'created_at',
     'metadatos': 'metadata_json'
 }

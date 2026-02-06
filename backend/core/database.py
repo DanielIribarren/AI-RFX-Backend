@@ -8,6 +8,7 @@ from backend.core.config import get_database_config
 from uuid import UUID, uuid4
 import logging
 import time
+import threading
 from functools import wraps
 
 logger = logging.getLogger(__name__)
@@ -306,7 +307,7 @@ class DatabaseClient:
                 logger.info(f"🔍 Filtering RFX by user (personal): {user_id}")
                 query = query.eq("user_id", user_id).is_("organization_id", "null")
             
-            response = query.order("received_at", desc=True)\
+            response = query.order("created_at", desc=True)\
                 .range(offset, offset + limit - 1)\
                 .execute()
             
@@ -335,7 +336,6 @@ class DatabaseClient:
             offset: Offset para paginación
         """
         try:
-            # Use created_at as primary sort, fallback to received_at if needed
             query = self.client.table("rfx_v2")\
                 .select("*, companies(*), requesters(*)")
             
@@ -353,26 +353,8 @@ class DatabaseClient:
             logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} latest RFX (offset: {offset}, limit: {limit})")
             return response.data or []
         except Exception as e:
-            # Fallback to received_at if created_at doesn't work
-            logger.warning(f"⚠️ Primary query failed, trying fallback: {e}")
-            try:
-                query = self.client.table("rfx_v2")\
-                    .select("*, companies(*), requesters(*)")
-                
-                if organization_id:
-                    query = query.eq("organization_id", organization_id)
-                else:
-                    query = query.eq("user_id", user_id).is_("organization_id", "null")
-                
-                response = query.order("received_at", desc=True)\
-                    .range(offset, offset + limit - 1)\
-                    .execute()
-                
-                logger.info(f"✅ Retrieved {len(response.data) if response.data else 0} latest RFX via fallback")
-                return response.data or []
-            except Exception as fallback_error:
-                logger.error(f"❌ Both queries failed: {fallback_error}")
-                raise
+            logger.error(f"❌ Failed to get latest RFX: {e}")
+            raise
     
     def update_rfx_status(self, rfx_id: Union[str, UUID], status: str) -> bool:
         """Update RFX status"""
@@ -1906,15 +1888,33 @@ class DatabaseClient:
             return False
 
 
-# Global database client instance
+# Global database client instance (thread-safe singleton)
 _db_client: Optional[DatabaseClient] = None
+_db_lock = threading.Lock()
 
 
 def get_database_client() -> DatabaseClient:
-    """Get global database client instance"""
+    """
+    Get global database client instance (thread-safe singleton).
+    
+    Uses double-checked locking pattern to ensure thread safety
+    while minimizing lock contention.
+    
+    Returns:
+        DatabaseClient: Singleton instance of database client
+    """
     global _db_client
+    
+    # First check (without lock) - fast path for already initialized client
     if _db_client is None:
-        _db_client = DatabaseClient()
+        # Acquire lock for initialization
+        with _db_lock:
+            # Second check (with lock) - ensure only one thread initializes
+            if _db_client is None:
+                logger.info("🔌 Initializing database client singleton...")
+                _db_client = DatabaseClient()
+                logger.info("✅ Database client singleton initialized")
+    
     return _db_client
 
 

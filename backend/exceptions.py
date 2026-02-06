@@ -154,3 +154,69 @@ class RFXNotFoundError(RFXException):
             "message": self.message,
             "rfx_id": self.rfx_id
         }
+
+
+# ==================== EXCEPCIONES TÉCNICAS (Servicios Externos) ====================
+
+class ExternalServiceError(RFXException):
+    """
+    Excepción base para errores de servicios externos.
+    Usar cuando OpenAI, Cloudinary, etc. fallan después de reintentos.
+    """
+    def __init__(self, service_name: str, message: str, original_error: Exception = None):
+        self.service_name = service_name
+        self.original_error = original_error
+        full_message = f"{service_name} error: {message}"
+        super().__init__(full_message, status_code=503)  # 503 Service Unavailable
+    
+    def to_dict(self) -> dict:
+        return {
+            "status": "error",
+            "error_type": "external_service_error",
+            "message": self.message,
+            "service": self.service_name,
+            "suggestion": f"The {self.service_name} service is temporarily unavailable. Please try again."
+        }
+
+
+class DatabaseError(RFXException):
+    """
+    Excepción para errores de base de datos.
+    Usar cuando Supabase falla después de reintentos.
+    """
+    def __init__(self, message: str, operation: str = None):
+        self.operation = operation
+        super().__init__(message, status_code=500)
+    
+    def to_dict(self) -> dict:
+        result = {
+            "status": "error",
+            "error_type": "database_error",
+            "message": self.message
+        }
+        if self.operation:
+            result["operation"] = self.operation
+        return result
+
+
+class ValidationError(RFXException):
+    """
+    Excepción para errores de validación de datos.
+    Usar cuando los datos de entrada son inválidos.
+    """
+    def __init__(self, message: str, field: str = None, value: any = None):
+        self.field = field
+        self.value = value
+        super().__init__(message, status_code=400)
+    
+    def to_dict(self) -> dict:
+        result = {
+            "status": "error",
+            "error_type": "validation_error",
+            "message": self.message
+        }
+        if self.field:
+            result["field"] = self.field
+        if self.value is not None:
+            result["invalid_value"] = str(self.value)
+        return result

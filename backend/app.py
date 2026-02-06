@@ -30,6 +30,7 @@ from backend.api.rfx_chat import rfx_chat_bp  # ✅ RFX Chat conversacional
 from backend.api.organization import organization_bp  # ✅ Multi-tenant organizations
 from backend.api.credits import credits_bp  # ✅ Credits management
 from backend.api.contact import contact_bp  # ✅ Contact request emails
+from backend.api.health import health_bp  # ✅ Health checks and monitoring
 
 from backend.models.rfx_models import RFXResponse
 
@@ -100,6 +101,7 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(organization_bp)  # ✅ /api/organization/* - Multi-tenant organizations
     app.register_blueprint(credits_bp)  # ✅ /api/credits/* - Credits management
     app.register_blueprint(contact_bp)  # ✅ /api/contact-request - Email notifications
+    app.register_blueprint(health_bp)  # ✅ /api/health/* - Health checks and monitoring
     
     # Original API endpoints (keeping for compatibility)
     app.register_blueprint(rfx_bp)  # ⚠️ INSECURE - use rfx_secure_bp instead

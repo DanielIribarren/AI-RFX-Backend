@@ -330,7 +330,7 @@ def get_recent_rfx():
                 "id": record["id"],
                 "title": record.get("title", f"RFX: {company_name}"),
                 "client": requester_name,
-                "date": record["received_at"],
+                "date": record.get("created_at"),
                 "status": status,
                 "rfxId": record["id"],
                 # Additional fields for consistency with history
@@ -444,7 +444,7 @@ def get_rfx_history():
                 "status": rfx_status,
                 "location": record.get("location", ""),
                 "delivery_date": record.get("delivery_date"),
-                "received_at": record.get("received_at"),
+                "created_at": record.get("created_at"),
                 "estimated_budget": record.get("estimated_budget"),
                 "actual_cost": record.get("actual_cost"),
                 
@@ -452,7 +452,7 @@ def get_rfx_history():
                 "cliente_id": record.get("requester_id"),  # Map for backwards compatibility
                 "nombre_solicitante": requester_data.get("name", "Unknown Requester"),
                 "tipo": record.get("rfx_type", "catering"),
-                "fecha_recepcion": record.get("received_at"),
+                "fecha_recepcion": record.get("created_at"),
                 "costo_total": record.get("actual_cost", 0.0),
                 "pdf_url": "",  # TODO: Add PDF URL if available
                 "estado": legacy_status,
@@ -471,7 +471,7 @@ def get_rfx_history():
                 
                 # Additional fields for frontend consistency
                 "client": requester_data.get("name", "Unknown Requester"),
-                "date": record.get("received_at"),
+                "date": record.get("created_at"),
                 "rfxId": record["id"]
             }
             history_items.append(history_item)
@@ -637,7 +637,7 @@ def get_rfx_by_id(rfx_id: str):
             "currency": rfx_record.get("currency", "USD"),  # ✅ Exponer moneda del RFX
             "estimated_budget": rfx_record.get("estimated_budget"),
             "actual_cost": rfx_record.get("actual_cost"),
-            "received_at": rfx_record.get("received_at"),
+            "created_at": rfx_record.get("created_at"),
             "original_pdf_text": rfx_record.get("original_pdf_text", ""),
             "requested_products": rfx_record.get("requested_products", []),
             "metadata_json": metadata,
@@ -651,7 +651,7 @@ def get_rfx_by_id(rfx_id: str):
             "lugar": rfx_record.get("location", ""),
             "tipo": rfx_record.get("rfx_type", "catering"),
             "estado": estado,
-            "fecha_recepcion": rfx_record.get("received_at"),
+            "fecha_recepcion": rfx_record.get("created_at"),
             "metadatos": metadata,
             
             # Company and requester information
@@ -2113,7 +2113,6 @@ def get_latest_rfx():
                 # Dates
                 "date": record.get("created_at"),
                 "created_at": record.get("created_at"),
-                "received_at": record.get("received_at"),
                 "delivery_date": record.get("delivery_date"),
                 "submission_deadline": record.get("submission_deadline"),
                 
@@ -2273,7 +2272,6 @@ def load_more_rfx():
                 # Dates
                 "date": record.get("created_at"),
                 "created_at": record.get("created_at"),
-                "received_at": record.get("received_at"),
                 "delivery_date": record.get("delivery_date"),
                 "submission_deadline": record.get("submission_deadline"),
                 
