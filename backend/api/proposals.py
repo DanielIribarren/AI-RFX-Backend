@@ -204,7 +204,10 @@ def generate_proposal():
         
         # Generar propuesta usando el servicio (lazy import para evitar fallas en startup)
         try:
-            from backend.services.proposal_generator import ProposalGenerationService
+            from backend.services.proposal_generator import ProposalGenerationService  # Legacy fallback
+        except ImportError:
+            # Usar nuevo servicio si legacy no está disponible
+            from backend.services.proposals.proposal_service import ProposalService as ProposalGenerationService
         except Exception as import_error:
             import traceback
             logger.error(f"❌ Import error loading ProposalGenerationService: {import_error}\n{traceback.format_exc()}")

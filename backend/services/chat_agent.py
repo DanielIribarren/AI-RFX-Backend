@@ -34,7 +34,7 @@ from backend.models.chat_models import (
 )
 from backend.core.config import get_openai_config
 from backend.services.chat_history import RFXMessageHistory
-from backend.services.rfx_processor import RFXProcessorService
+from backend.services.rfx_processor import RFXProcessorService  # Legacy import - mantener para compatibilidad
 from backend.utils.chat_logger import get_chat_logger
 from backend.services.tools import (
     get_request_data_tool,
