@@ -95,11 +95,11 @@ class ProposalPrompts:
     
     @staticmethod
     def get_prompt_with_branding(
-        rfx_data: Dict[str, Any],
-        products_info: List[Dict],
-        pricing_calculation: Dict,
-        currency: str,
         user_id: str,
+        logo_endpoint: str,
+        company_info: Dict[str, Any],
+        rfx_data: Dict[str, Any],
+        pricing_data: Dict,
         branding_config: Dict[str, Any] = None
     ) -> str:
         """
@@ -107,25 +107,36 @@ class ProposalPrompts:
         El AI debe analizar el template y replicarlo EXACTAMENTE
         """
         
+        # Extraer información del cliente
         client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
         
-        # Construir URL del logo
-        base_url = os.getenv('BASE_URL', 'http://localhost:5001')
-        logo_endpoint = f"{base_url}/api/branding/files/{user_id}/logo"
+        # Extraer productos
+        products_info = rfx_data.get("products", [])
         
         # Formatear productos
         products_formatted = ProposalPrompts._format_products(products_info)
         
-        # Obtener símbolo de moneda
-        currency_symbol = ProposalPrompts._get_currency_symbol(currency)
+        # Extraer datos de pricing
+        subtotal = pricing_data.get('subtotal', 0)
+        subtotal_formatted = pricing_data.get('subtotal_formatted', f'${subtotal:.2f}')
+        coordination = pricing_data.get('coordination', 0)
+        coordination_formatted = pricing_data.get('coordination_formatted', f'${coordination:.2f}')
+        coordination_pct = pricing_data.get('coordination_percentage', '18.0')
+        show_coordination = pricing_data.get('show_coordination', False)
+        tax = pricing_data.get('tax', 0)
+        tax_formatted = pricing_data.get('tax_formatted', f'${tax:.2f}')
+        tax_pct = pricing_data.get('tax_percentage', '16.0')
+        show_tax = pricing_data.get('show_tax', False)
+        total = pricing_data.get('total', 0)
+        total_formatted = pricing_data.get('total_formatted', f'${total:.2f}')
         
-        # Formatear pricing
-        subtotal = pricing_calculation.get('subtotal', 0)
-        coordination = pricing_calculation.get('coordination_amount', 0)
-        coordination_pct = pricing_calculation.get('coordination_rate', 0) * 100
-        tax = pricing_calculation.get('tax_amount', 0)
-        tax_pct = pricing_calculation.get('tax_rate', 0) * 100
-        total = pricing_calculation.get('total', 0)
+        # Extraer colores del branding
+        primary_color = branding_config.get('primary_color', '#0e2541') if branding_config else '#0e2541'
+        table_header_bg = branding_config.get('table_header_bg', '#0e2541') if branding_config else '#0e2541'
+        table_header_text = branding_config.get('table_header_text', '#ffffff') if branding_config else '#ffffff'
+        
+        # Extraer cliente
+        client_name = rfx_data.get('client_name', 'Cliente')
         
         prompt = f"""<?xml version="1.0" encoding="UTF-8"?>
 <proposal_generation_prompt>
@@ -146,19 +157,14 @@ del cliente usando su logo real, colores corporativos y estilo de diseño.
     
     <logo_configuration>
         <logo_url>{logo_endpoint}</logo_url>
-        <logo_position>{logo_analysis.get('recommended_position', 'top-left')}</logo_position>
         <logo_size>80-120px altura (bien visible y profesional)</logo_size>
     </logo_configuration>
     
     <color_scheme>
         <primary_color>{primary_color}</primary_color>
-        <secondary_color>{secondary_color}</secondary_color>
+        <table_header_bg>{table_header_bg}</table_header_bg>
+        <table_header_text>{table_header_text}</table_header_text>
     </color_scheme>
-    
-    <design_configuration>
-        <layout_structure>{layout_structure}</layout_structure>
-        <design_style>{design_style}</design_style>
-    </design_configuration>
     
     <branding_rules>
         <rule>LOGO: Usar imagen con altura entre 80-120px, bien visible</rule>
@@ -170,28 +176,42 @@ del cliente usando su logo real, colores corporativos y estilo de diseño.
     </branding_rules>
 </branding_configuration>
 
+<company_info>
+    <name>{company_info.get('name', 'Sabra Corporation')}</name>
+    <address>{company_info.get('address', 'Dirección de la empresa')}</address>
+    <phone>{company_info.get('phone', '+1 (555) 123-4567')}</phone>
+    <email>{company_info.get('email', 'contacto@sabracorp.com')}</email>
+</company_info>
+
 <rfx_data>
     <client_info>
-        <client_name>{client_info.get('name', 'Cliente')}</client_name>
-        <client_email>{client_info.get('email', '')}</client_email>
-        <delivery_location>{rfx_data.get('location', 'Por definir')}</delivery_location>
-        <delivery_date>{rfx_data.get('delivery_date', 'Por definir')}</delivery_date>
+        <client_name>{client_name}</client_name>
+        <solicitud>{rfx_data.get('solicitud', 'Solicitud de presupuesto')}</solicitud>
+        <current_date>{rfx_data.get('current_date', datetime.now().strftime('%Y-%m-%d'))}</current_date>
+        <validity_date>{rfx_data.get('validity_date', '')}</validity_date>
     </client_info>
     
     <products_data>
-        {json.dumps(products_info, ensure_ascii=False, indent=2)}
+{products_formatted}
     </products_data>
     
     <pricing_configuration>
-        {pricing_instructions}
+        <subtotal>{subtotal_formatted}</subtotal>
+        <coordination enabled="{show_coordination}">
+            <amount>{coordination_formatted}</amount>
+            <percentage>{coordination_pct}%</percentage>
+        </coordination>
+        <tax enabled="{show_tax}">
+            <amount>{tax_formatted}</amount>
+            <percentage>{tax_pct}%</percentage>
+        </tax>
+        <total>{total_formatted}</total>
     </pricing_configuration>
-    
-    <current_date>{datetime.now().strftime('%d/%m/%Y')}</current_date>
 </rfx_data>
 
 <instructions>
     <step number="1">Aplicar branding profesional con logo {logo_endpoint}</step>
-    <step number="2">Usar colores: {primary_color} (primario), {secondary_color} (secundario)</step>
+    <step number="2">Usar colores: {primary_color} (primario), tabla header {table_header_bg}</step>
     <step number="3">Logo altura: 80-120px, NO duplicar nombre empresa</step>
     <step number="4">Espaciado: 30px entre secciones, márgenes amplios</step>
     <step number="5">Tabla profesional con TODOS los productos de products_data</step>

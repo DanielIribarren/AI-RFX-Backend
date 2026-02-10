@@ -32,6 +32,57 @@ class ProposalService:
         self.validator = HTMLValidator()
         logger.info("📄 ProposalService initialized")
     
+    async def generate_proposal(
+        self, 
+        rfx_data: Dict[str, Any],
+        proposal_request: Any
+    ) -> Any:
+        """
+        Genera propuesta - Método de compatibilidad con API endpoint.
+        
+        Args:
+            rfx_data: Datos del RFX mapeados
+            proposal_request: Request de propuesta con costos y configuración
+            
+        Returns:
+            Propuesta generada
+        """
+        # Extraer datos del request
+        rfx_id = proposal_request.rfx_id
+        user_id = rfx_data.get('user_id')
+        
+        # Mapear productos con costos
+        products_with_costs = []
+        products = rfx_data.get('productos', [])
+        costs = proposal_request.costs
+        
+        for i, product in enumerate(products):
+            product_with_cost = product.copy()
+            if i < len(costs):
+                product_with_cost['costo_unitario'] = costs[i]
+            products_with_costs.append(product_with_cost)
+        
+        # Obtener configuración de pricing si existe
+        pricing_config = None
+        if hasattr(proposal_request, 'pricing_config'):
+            pricing_config = proposal_request.pricing_config
+        
+        # Llamar al método principal
+        result = await self.generate(
+            rfx_id=rfx_id,
+            user_id=user_id,
+            products_with_costs=products_with_costs,
+            pricing_config=pricing_config
+        )
+        
+        # Convertir resultado a formato esperado por el endpoint
+        from backend.models.proposal_models import PropuestaGenerada
+        return PropuestaGenerada(
+            id=result['proposal_id'],
+            html_content=result['html_content'],
+            processing_time_seconds=result['processing_time_seconds']
+        )
+    
     async def generate(
         self, 
         rfx_id: str, 
@@ -72,8 +123,17 @@ class ProposalService:
             # PASO 5: Construir prompt según branding
             if branding:
                 logger.info("🎨 Using custom branding")
+                logger.info(f"🔍 DEBUG - rfx_data type: {type(rfx_data)}, keys: {list(rfx_data.keys()) if isinstance(rfx_data, dict) else 'NOT A DICT'}")
+                logger.info(f"🔍 DEBUG - products_formatted type: {type(products_formatted)}, length: {len(products_formatted) if isinstance(products_formatted, str) else 'NOT A STRING'}")
+                logger.info(f"🔍 DEBUG - pricing_data type: {type(pricing_data)}, keys: {list(pricing_data.keys()) if isinstance(pricing_data, dict) else 'NOT A DICT'}")
+                logger.info(f"🔍 DEBUG - branding type: {type(branding)}, keys: {list(branding.keys()) if isinstance(branding, dict) else 'NOT A DICT'}")
+                logger.info(f"🔍 DEBUG - user_id type: {type(user_id)}, value: {user_id}")
                 prompt = self._build_prompt_with_branding(
-                    rfx_data, products_formatted, pricing_data, branding, user_id
+                    rfx_data=rfx_data,
+                    products_formatted=products_formatted,
+                    pricing_data=pricing_data,
+                    branding=branding,
+                    user_id=user_id
                 )
             else:
                 logger.info("🎨 Using default branding")
@@ -85,9 +145,10 @@ class ProposalService:
             html = await self._generate_html_with_retry(prompt, max_retries=2)
             
             # PASO 7: Validar HTML
-            validation = self.validator.validate(html)
+            validation = self.validator.validate_proposal_html(html)
             if not validation['is_valid']:
                 logger.warning(f"⚠️ HTML validation warnings: {validation['errors']}")
+            logger.info(f"📊 Validation score: {validation['score']}/{validation['max_score']} ({validation['percentage']:.1f}%)")
             
             # PASO 8: Guardar propuesta
             proposal_id = self._save_proposal(rfx_id, user_id, html)
@@ -105,7 +166,9 @@ class ProposalService:
             }
             
         except Exception as e:
+            import traceback
             logger.error(f"❌ Proposal generation failed: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
     def _get_rfx_data(self, rfx_id: str) -> Optional[Dict[str, Any]]:
@@ -252,13 +315,58 @@ class ProposalService:
             'email': 'contacto@sabracorp.com'
         }
         
-        # Extraer configuración de branding
+        # Parse JSON strings si es necesario
+        import json
+        logo_analysis = branding.get('logo_analysis', {})
+        logger.info(f"🔍 logo_analysis type BEFORE parsing: {type(logo_analysis)}")
+        
+        if isinstance(logo_analysis, str):
+            try:
+                logo_analysis = json.loads(logo_analysis)
+                logger.info(f"✅ logo_analysis parsed successfully, type: {type(logo_analysis)}")
+            except Exception as e:
+                logger.error(f"❌ Failed to parse logo_analysis: {e}")
+                logo_analysis = {}
+        
+        template_analysis = branding.get('template_analysis', {})
+        logger.info(f"🔍 template_analysis type BEFORE parsing: {type(template_analysis)}")
+        
+        if isinstance(template_analysis, str):
+            try:
+                template_analysis = json.loads(template_analysis)
+                logger.info(f"✅ template_analysis parsed successfully, type: {type(template_analysis)}")
+            except Exception as e:
+                logger.error(f"❌ Failed to parse template_analysis: {e}")
+                template_analysis = {}
+        
+        # Extraer configuración de branding con valores parseados de forma segura
+        primary_color = '#0e2541'  # Default
+        if isinstance(logo_analysis, dict):
+            dominant_colors = logo_analysis.get('dominant_colors', [])
+            if dominant_colors and len(dominant_colors) > 0:
+                first_color = dominant_colors[0]
+                if isinstance(first_color, dict):
+                    primary_color = first_color.get('hex', '#0e2541')
+        
+        table_header_bg = '#0e2541'  # Default
+        table_header_text = '#ffffff'  # Default
+        table_border = '#000000'  # Default
+        
+        if isinstance(template_analysis, dict):
+            table_style = template_analysis.get('table_style', {})
+            if isinstance(table_style, dict):
+                table_header_bg = table_style.get('header_bg', '#0e2541')
+                table_header_text = table_style.get('header_text', '#ffffff')
+                table_border = table_style.get('border_color', '#000000')
+        
         branding_config = {
-            'primary_color': branding.get('logo_analysis', {}).get('dominant_colors', [{}])[0].get('hex', '#0e2541'),
-            'table_header_bg': branding.get('template_analysis', {}).get('table_style', {}).get('header_bg', '#0e2541'),
-            'table_header_text': branding.get('template_analysis', {}).get('table_style', {}).get('header_text', '#ffffff'),
-            'table_border': branding.get('template_analysis', {}).get('table_style', {}).get('border_color', '#000000')
+            'primary_color': primary_color,
+            'table_header_bg': table_header_bg,
+            'table_header_text': table_header_text,
+            'table_border': table_border
         }
+        
+        logger.info(f"🎨 Branding config extracted: {branding_config}")
         
         return ProposalPrompts.get_prompt_with_branding(
             user_id=user_id,

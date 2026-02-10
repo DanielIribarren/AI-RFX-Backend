@@ -197,9 +197,72 @@ class ProposalGeneratorAgent:
         products_html = self._generate_product_rows(products)
         html = html.replace("{{PRODUCT_ROWS}}", products_html)
         
+        # ========================================
+        # 🚨 INSERTAR FILAS DE PRICING DINÁMICAMENTE
+        # ========================================
+        # El template puede no tener placeholders {{COORDINATION}}, {{TAX}}, etc.
+        # Necesitamos insertar las filas dinámicamente en la tabla
+        html = self._insert_pricing_rows(html, pricing, show_coordination, show_tax, show_cost_per_person)
+        
         logger.info(f"✅ Data inserted - {len(products)} products, {html.count('{{')//2} remaining placeholders")
         
         return html
+    
+    def _insert_pricing_rows(self, html: str, pricing: Dict, show_coordination: bool, show_tax: bool, show_cost_per_person: bool) -> str:
+        """
+        Inserta filas de pricing dinámicamente en la tabla HTML
+        Busca la fila del TOTAL y agrega las filas de pricing ANTES de ella
+        """
+        import re
+        
+        # Buscar la fila del TOTAL en el HTML
+        # Patrones posibles: <tr>...<td>TOTAL</td>...<td>$XXX.XX</td>...</tr>
+        total_pattern = r'(<tr[^>]*>.*?<td[^>]*>.*?TOTAL.*?</td>.*?</tr>)'
+        total_match = re.search(total_pattern, html, re.IGNORECASE | re.DOTALL)
+        
+        if not total_match:
+            logger.warning("⚠️ No se encontró la fila del TOTAL en el HTML - no se pueden insertar filas de pricing")
+            return html
+        
+        total_row = total_match.group(1)
+        total_row_start = total_match.start(1)
+        
+        # Construir filas de pricing para insertar
+        pricing_rows = []
+        
+        # Subtotal (siempre presente)
+        subtotal = pricing.get('subtotal_formatted', '$0.00')
+        subtotal_row = f'        <tr>\n            <td colspan="4" style="text-align: right; font-weight: bold;">Subtotal:</td>\n            <td style="text-align: right;">{subtotal}</td>\n        </tr>'
+        pricing_rows.append(subtotal_row)
+        
+        # Coordinación (condicional)
+        if show_coordination:
+            coordination = pricing.get('coordination_formatted', '$0.00')
+            coordination_row = f'        <tr>\n            <td colspan="4" style="text-align: right;">Coordinación y Logística:</td>\n            <td style="text-align: right;">{coordination}</td>\n        </tr>'
+            pricing_rows.append(coordination_row)
+            logger.info(f"✅ Inserted Coordination row: {coordination}")
+        
+        # Impuestos (condicional)
+        if show_tax:
+            tax = pricing.get('tax_formatted', '$0.00')
+            tax_row = f'        <tr>\n            <td colspan="4" style="text-align: right;">Impuestos:</td>\n            <td style="text-align: right;">{tax}</td>\n        </tr>'
+            pricing_rows.append(tax_row)
+            logger.info(f"✅ Inserted Tax row: {tax}")
+        
+        # Costo por persona (condicional)
+        if show_cost_per_person:
+            cost_per_person = pricing.get('cost_per_person_formatted', '$0.00')
+            cost_per_person_row = f'        <tr>\n            <td colspan="4" style="text-align: right;">Costo por persona:</td>\n            <td style="text-align: right;">{cost_per_person}</td>\n        </tr>'
+            pricing_rows.append(cost_per_person_row)
+            logger.info(f"✅ Inserted Cost per person row: {cost_per_person}")
+        
+        # Insertar filas ANTES de la fila del TOTAL
+        pricing_html = "\n".join(pricing_rows) + "\n        "
+        html_with_pricing = html[:total_row_start] + pricing_html + html[total_row_start:]
+        
+        logger.info(f"✅ Inserted {len(pricing_rows)} pricing rows before TOTAL")
+        
+        return html_with_pricing
     
     def _generate_product_rows(self, products: List[Dict]) -> str:
         """

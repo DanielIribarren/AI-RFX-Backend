@@ -84,6 +84,21 @@ class AgentOrchestrator:
             request_data = generator_response.get("metadata", {})
             
             # ========================================
+            # 🚨 AGREGAR INFORMACIÓN COMPLETA DE PRICING AL REQUEST_DATA
+            # ========================================
+            # El Validator y Optimizer necesitan los flags de pricing para insertar filas correctamente
+            if 'pricing' in request_data and 'pricing_config' in request_data:
+                pricing = request_data['pricing']
+                pricing_config = request_data['pricing_config']
+                
+                # Agregar flags al pricing para que el Validator los vea
+                pricing['show_coordination'] = pricing_config.get('coordination_enabled', False)
+                pricing['show_tax'] = pricing_config.get('taxes_enabled', False)
+                pricing['show_cost_per_person'] = pricing_config.get('cost_per_person_enabled', False)
+                
+                logger.info(f"✅ Pricing flags added to request_data - Coordination: {pricing['show_coordination']}, Tax: {pricing['show_tax']}, Cost per person: {pricing['show_cost_per_person']}")
+            
+            # ========================================
             # PASO 2: VALIDAR + AUTO-CORREGIR CON AGENTE 2
             # ========================================
             logger.info("✅ Step 2/4: Validating + Auto-fixing with Validator Agent")
@@ -92,7 +107,7 @@ class AgentOrchestrator:
                 "html_generated": html_generated,
                 "html_template": html_template,
                 "branding_config": branding_config,
-                "request_data": request_data  # Datos que deberían estar en el HTML
+                "request_data": request_data  # Ahora incluye pricing con flags
             }
             
             validator_response = await template_validator_agent.validate(validator_request)

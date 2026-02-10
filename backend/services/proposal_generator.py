@@ -117,7 +117,7 @@ class ProposalGenerationService:
             if USE_AI_AGENTS and has_branding:
                 logger.info("🤖 Using AI Agents System (3-Agent Architecture)")
                 proposal = await self._generate_with_ai_agents(
-                    rfx_data, products_info, pricing_calculation, currency, user_id, proposal_request
+                    rfx_data, products_info, pricing_calculation, currency, user_id, proposal_request, pricing_config
                 )
                 
                 # 🔧 FIX: Guardar en BD antes de retornar
@@ -550,7 +550,7 @@ class ProposalGenerationService:
     async def _generate_with_ai_agents(
         self, rfx_data: Dict, products_info: List[Dict], 
         pricing_calculation: Dict, currency: str, user_id: str,
-        proposal_request: ProposalRequest
+        proposal_request: ProposalRequest, pricing_config: Dict = None
     ) -> GeneratedProposal:
         """
         🤖 Genera propuesta usando el sistema de 3 agentes AI

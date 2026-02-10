@@ -202,21 +202,8 @@ def generate_proposal():
             context = "organization" if organization_id else "personal"
             logger.info(f"✅ Credits verified ({context}): {available} available, {credits_to_consume} required")
         
-        # Generar propuesta usando el servicio (lazy import para evitar fallas en startup)
-        try:
-            from backend.services.proposal_generator import ProposalGenerationService  # Legacy fallback
-        except ImportError:
-            # Usar nuevo servicio si legacy no está disponible
-            from backend.services.proposals.proposal_service import ProposalService as ProposalGenerationService
-        except Exception as import_error:
-            import traceback
-            logger.error(f"❌ Import error loading ProposalGenerationService: {import_error}\n{traceback.format_exc()}")
-            return jsonify({
-                "status": "error",
-                "message": "Internal server error - service unavailable",
-                "error": str(import_error)
-            }), 500
-
+        # Generar propuesta usando el servicio completo
+        from backend.services.proposal_generator import ProposalGenerationService
         proposal_generator = ProposalGenerationService()
         
         # Ejecutar generación asíncrona

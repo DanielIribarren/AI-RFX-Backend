@@ -1281,10 +1281,19 @@ TEXTO: {text[:5000]}"""
                     product_name=p["nombre"],
                     quantity=p["cantidad"],
                     unit=p["unidad"],
-                    costo_unitario=p.get("costo_unitario", 0.0)  # ← CRÍTICO: Incluir costo
+                    costo_unitario=p.get("costo_unitario", 0.0),  # ✅ Costo del catálogo
+                    precio_unitario=p.get("precio_unitario", 0.0)  # ✅ FIX: Incluir precio del catálogo
                 )
                 for p in validated_data["productos"]
             ]
+            
+            # 🔍 DEBUG: Log productos creados con precios
+            logger.info(f"🔨 Created {len(productos)} ProductoRFX objects")
+            if productos:
+                first = productos[0]
+                logger.info(f"   📦 First product: {first.product_name}")
+                logger.info(f"   💰 costo_unitario: {first.costo_unitario}")
+                logger.info(f"   💰 precio_unitario: {first.precio_unitario}")
             
             # Prepare enhanced metadata including empresa data
             metadata = {
@@ -1479,7 +1488,8 @@ TEXTO: {text[:5000]}"""
                     if isinstance(product, dict):
                         # Producto es diccionario (enriquecido con catálogo)
                         # 🔍 DEBUG: Log del producto completo para ver qué campos tiene
-                        logger.debug(f"   📦 Product dict keys: {list(product.keys())}")
+                        logger.info(f"   📦 Product dict keys: {list(product.keys())}")
+                        logger.info(f"   📦 Full product data: {product}")
                         
                         # Intentar obtener costo con fallback
                         costo = product.get('costo_unitario')
@@ -1492,9 +1502,10 @@ TEXTO: {text[:5000]}"""
                             precio = product.get('unit_price')
                         
                         # 🔍 DEBUG: Log de valores extraídos
-                        logger.debug(f"   💰 Extracted - costo_unitario: {product.get('costo_unitario')}, unit_cost: {product.get('unit_cost')}")
-                        logger.debug(f"   💰 Extracted - precio_unitario: {product.get('precio_unitario')}, unit_price: {product.get('unit_price')}")
-                        logger.debug(f"   💰 Final values - costo: {costo}, precio: {precio}")
+                        logger.info(f"   💰 Extracted - costo_unitario: {product.get('costo_unitario')}, unit_cost: {product.get('unit_cost')}")
+                        logger.info(f"   💰 Extracted - precio_unitario: {product.get('precio_unitario')}, unit_price: {product.get('unit_price')}")
+                        logger.info(f"   💰 Final values - costo: {costo}, precio: {precio}")
+                        logger.info(f"   📊 Catalog match: {product.get('catalog_match')}, pricing_source: {product.get('pricing_source')}")
                         
                         product_name = product.get('product_name') or product.get('nombre')
                         quantity = product.get('quantity') or product.get('cantidad')
@@ -1511,14 +1522,14 @@ TEXTO: {text[:5000]}"""
                         "product_name": product_name,
                         "quantity": quantity,
                         "unit": unit,
-                        "estimated_unit_price": precio if precio is not None and precio > 0 else None,
-                        "unit_cost": costo if costo is not None and costo > 0 else None,  # ✅ AGREGADO: Guardar costo también
+                        "estimated_unit_price": precio if precio is not None else None,  # ✅ FIX: Permitir 0 como valor válido
+                        "unit_cost": costo if costo is not None else None,  # ✅ FIX: Permitir 0 como valor válido
                         "notes": f"Extracted from RFX processing"
                     }
                     structured_products.append(product_data)
                     
                     # 🔍 DEBUG: Log each product's pricing
-                    logger.debug(f"   💰 Saving product: {product_data['product_name']} - cost: ${costo or 0:.2f}, price: ${precio or 0:.2f}")
+                    logger.info(f"   💰 Saving product: {product_data['product_name']} - cost: ${costo if costo is not None else 'None'}, price: ${precio if precio is not None else 'None'}")
                 
                 self.db_client.insert_rfx_products(rfx_record["id"], structured_products)
                 logger.info(f"✅ {len(structured_products)} structured products saved")
@@ -2051,6 +2062,16 @@ TEXTO: {text[:5000]}"""
                 organization_id,
                 rfx_context=rfx_context
             )
+            
+            # 🔍 DEBUG: Verificar que los productos enriquecidos tienen precios
+            logger.info(f"🔍 AFTER ENRICHMENT - Checking first product:")
+            if raw_data["productos"]:
+                first_product = raw_data["productos"][0]
+                logger.info(f"   📦 Product keys: {list(first_product.keys())}")
+                logger.info(f"   💰 costo_unitario: {first_product.get('costo_unitario')}")
+                logger.info(f"   💰 precio_unitario: {first_product.get('precio_unitario')}")
+                logger.info(f"   💰 unit_cost: {first_product.get('unit_cost')}")
+                logger.info(f"   💰 unit_price: {first_product.get('unit_price')}")
 
         validated_data = self._validate_and_clean_data(raw_data, rfx_input.id)
         

@@ -100,10 +100,59 @@ class TemplateValidatorAgent:
         """Validación + Auto-corrección con AI - Valida Y corrige automáticamente"""
         
         # System prompt: Validador ESTRICTO que CORRIGE automáticamente
-        system_prompt = """Eres un EXPERTO VALIDADOR Y CORRECTOR de documentos HTML profesionales con capacidad de ANÁLISIS VISUAL COMPARATIVO AVANZADO.
+        system_prompt = """Eres un EXPERTO en DISEÑO DE PROPUESTAS COMERCIALES PROFESIONALES con capacidad de crear documentos que CONVENZAN al cliente final.
+
+## 🎯 OBJETIVO PRINCIPAL:
+Crear una propuesta comercial VISUALMENTE EXCELENTE, PROFESIONAL y PERSUASIVA que el cliente final quiera ACEPTAR inmediatamente.
+
+## 📋 PRINCIPIOS DE DISEÑO PROFESIONAL:
+
+### 1. ESTRUCTURA DE FACTURA PROFESIONAL:
+Una propuesta comercial es como una FACTURA PROFESIONAL. Debe tener:
+- **Header:** Logo + Información de la empresa + Fecha
+- **Cliente:** Nombre del cliente + Descripción de la solicitud
+- **Tabla de productos:** TODOS los productos con sus precios
+- **Sección de totales:** DENTRO DE LA MISMA TABLA (no fuera)
+  * Subtotal
+  * Coordinación y Logística (si aplica)
+  * Impuestos (si aplica)
+  * Costo por persona (si aplica)
+  * **TOTAL FINAL** (destacado)
+- **Footer:** Términos y condiciones + Información de contacto
+
+### 2. REGLA CRÍTICA - PRICING DENTRO DE LA TABLA:
+⚠️ **NUNCA coloques Subtotal, Coordinación, Impuestos o TOTAL fuera de la tabla de productos.**
+
+❌ **INCORRECTO** (pricing fuera de la tabla):
+```html
+</table>
+<div>Subtotal: $688.70</div>
+<div>Coordinación: $123.97</div>
+<div>TOTAL: $812.67</div>
+```
+
+✅ **CORRECTO** (pricing dentro de la tabla):
+```html
+        <tr><td>10</td><td>Agua Clásico 24pz</td><td>30 unidades</td><td>$4.12</td><td>$123.60</td></tr>
+        <tr><td colspan="4" style="text-align: right; font-weight: bold; padding-top: 20px;">Subtotal:</td><td style="padding-top: 20px;">$688.71</td></tr>
+        <tr><td colspan="4" style="text-align: right;">Coordinación y Logística:</td><td>$123.97</td></tr>
+        <tr><td colspan="4" style="text-align: right; font-weight: bold; font-size: 16px; padding-top: 10px;">TOTAL:</td><td style="font-weight: bold; font-size: 16px; padding-top: 10px;">$812.67</td></tr>
+    </table>
+```
+
+### 3. DISEÑO VISUAL PROFESIONAL:
+- **Espaciado:** Padding generoso (20px arriba del subtotal, 10px arriba del total)
+- **Jerarquía visual:** Subtotal y TOTAL en negrita, TOTAL más grande (16px)
+- **Alineación:** Descripciones a la derecha, montos a la derecha
+- **Colspan:** Usar `colspan="4"` para que las filas de pricing ocupen el ancho correcto
+- **Separación visual:** Padding-top para separar productos de totales
 
 ## MISIÓN CRÍTICA:
-Recibirás un validation_payload con html_template (objetivo) y html_generated (actual). Tu responsabilidad es transformar el html_generated para que coincida EXACTAMENTE con el estilo visual y contenido del html_template.
+Transformar el html_generated en una propuesta comercial PROFESIONAL que:
+1. Tenga TODO el pricing DENTRO de la tabla de productos
+2. Sea visualmente atractiva y fácil de leer
+3. Convenza al cliente final de aceptar la propuesta
+4. Siga el formato de factura profesional
 
 ## PROCESO DE TRANSFORMACIÓN INTELIGENTE (Chain-of-Thought):
 
@@ -156,14 +205,113 @@ Modifica el html_generated aplicando TODAS las correcciones necesarias:
 - Fechas actuales y de validez correctas
 - Cálculos matemáticos exactos (subtotales, impuestos, total)
 
-### 🚨 CONFIGURACIONES DE PRICING CONDICIONAL (CRÍTICO):
-**REGLA FUNDAMENTAL:** Solo mostrar filas de pricing si están ACTIVAS en la configuración.
+### 🎯 VALIDACIÓN CRÍTICA PARA CLIENTE FINAL (OBLIGATORIO):
 
-El request_data.pricing contiene flags que indican qué mostrar:
-Si alguna de estas configuraciones estan en el RFX deben ir en la en la tabla como un producto, pero sin las columnas de cantidad y unidad.
-- **show_coordination**: Si True → Mostrar fila "Coordinación y Logística" 
-- **show_tax**: Si True → Mostrar fila "Impuestos"  
-- **show_cost_per_person**: Si True → Mostrar fila "Costo por persona"
+**1. NOMBRE DEL CLIENTE (CRÍTICO - NO NEGOCIABLE):**
+- ✅ **SIEMPRE debe haber un nombre de cliente visible**
+- Buscar en request_data.client_name (prioridad 1)
+- Si está vacío, buscar en request_data.solicitud o descripción
+- Si encuentras placeholders como {{CLIENT_NAME}}, {{CLIENTE}}, [Cliente], "N/A", "Cliente" → **REEMPLAZAR con el nombre real del cliente**
+- Si no hay nombre disponible en ningún lado → Usar "Cliente Estimado" como último recurso
+- **NUNCA dejar placeholders vacíos o genéricos en el documento final**
+
+**2. VERIFICACIÓN DE CAMPOS COMPLETOS:**
+- ❌ **PROHIBIDO:** Dejar campos con {{VARIABLE}}, [PLACEHOLDER], "N/A", "Por definir"
+- ✅ **OBLIGATORIO:** Todos los campos deben tener información real y coherente
+- Si falta información del cliente → Usar datos genéricos profesionales
+- Si falta fecha → Usar fecha actual
+- Si falta descripción → Usar "Solicitud de presupuesto" o similar
+
+**3. CONTENIDO APTO PARA ENVÍO DIRECTO:**
+- El documento debe estar 100% listo para enviar al cliente
+- Sin errores de formato, sin placeholders, sin datos faltantes
+- Información coherente y profesional en todos los campos
+- Nombres, fechas, montos y descripciones completos
+
+### 🚨 INSERCIÓN DE FILAS DE PRICING (CRÍTICO):
+
+**DATOS DISPONIBLES EN request_data.pricing:**
+- `subtotal_formatted`: Subtotal de productos (ej: "$688.71")
+- `coordination_formatted`: Coordinación y logística (ej: "$123.97")
+- `tax_formatted`: Impuestos (ej: "$50.00")
+- `cost_per_person_formatted`: Costo por persona (ej: "$6.77")
+- `total_formatted`: Total final (ej: "$812.67")
+- `show_coordination`: Boolean - Si True, insertar fila de coordinación
+- `show_tax`: Boolean - Si True, insertar fila de impuestos
+- `show_cost_per_person`: Boolean - Si True, insertar fila de costo por persona
+
+**PROCESO DE INSERCIÓN (PASO A PASO):**
+
+1. **Localizar la última fila de productos** en la tabla (antes de `</table>`)
+2. **DESPUÉS de la última fila de productos**, insertar las siguientes filas **DENTRO de la tabla**:
+   - **Subtotal** (siempre) con `padding-top: 20px` para separación visual
+   - **Coordinación** (solo si `show_coordination = True`)
+   - **Impuestos** (solo si `show_tax = True`)
+   - **Costo por persona** (solo si `show_cost_per_person = True`)
+   - **TOTAL** (siempre) con `font-weight: bold; font-size: 16px; padding-top: 10px`
+3. **DESPUÉS de insertar todas las filas**, cerrar la tabla con `</table>`
+
+**FORMATO EXACTO DE CADA FILA:**
+```html
+<!-- Subtotal (siempre) -->
+<tr>
+    <td colspan="4" style="text-align: right; font-weight: bold; padding-top: 20px; border-top: 2px solid #ddd;">Subtotal:</td>
+    <td style="text-align: right; padding-top: 20px; border-top: 2px solid #ddd;">{subtotal_formatted}</td>
+</tr>
+
+<!-- Coordinación (solo si show_coordination = True) -->
+<tr>
+    <td colspan="4" style="text-align: right;">Coordinación y Logística:</td>
+    <td style="text-align: right;">{coordination_formatted}</td>
+</tr>
+
+<!-- Impuestos (solo si show_tax = True) -->
+<tr>
+    <td colspan="4" style="text-align: right;">Impuestos:</td>
+    <td style="text-align: right;">{tax_formatted}</td>
+</tr>
+
+<!-- TOTAL (siempre) -->
+<tr>
+    <td colspan="4" style="text-align: right; font-weight: bold; font-size: 16px; padding-top: 10px; border-top: 2px solid #333;">TOTAL:</td>
+    <td style="text-align: right; font-weight: bold; font-size: 16px; padding-top: 10px; border-top: 2px solid #333;">{total_formatted}</td>
+</tr>
+```
+
+**EJEMPLO COMPLETO:**
+```html
+<!-- Última fila de productos -->
+<tr><td>10</td><td>Agua Clásico 24pz</td><td>30 unidades</td><td>$4.12</td><td>$123.60</td></tr>
+
+<!-- Filas de pricing DENTRO de la tabla -->
+<tr><td colspan="4" style="text-align: right; font-weight: bold; padding-top: 20px; border-top: 2px solid #ddd;">Subtotal:</td><td style="text-align: right; padding-top: 20px; border-top: 2px solid #ddd;">$688.71</td></tr>
+<tr><td colspan="4" style="text-align: right;">Coordinación y Logística:</td><td style="text-align: right;">$123.97</td></tr>
+<tr><td colspan="4" style="text-align: right; font-weight: bold; font-size: 16px; padding-top: 10px; border-top: 2px solid #333;">TOTAL:</td><td style="text-align: right; font-weight: bold; font-size: 16px; padding-top: 10px; border-top: 2px solid #333;">$812.67</td></tr>
+
+<!-- Cerrar tabla -->
+</table>
+```
+
+**⚠️ REGLAS CRÍTICAS:**
+- ✅ Filas de pricing SIEMPRE dentro de `<table>...</table>`
+- ✅ Usar `colspan="4"` para que ocupen el ancho correcto
+- ✅ Subtotal con borde superior para separación visual
+- ✅ TOTAL destacado (negrita, más grande, borde superior)
+- ❌ NUNCA colocar pricing fuera de la tabla
+- ❌ NUNCA usar `<div>` para pricing
+- ❌ **ELIMINAR cualquier TOTAL duplicado fuera de la tabla** (solo debe existir dentro de la tabla)
+
+**🚨 REGLA ANTI-DUPLICACIÓN:**
+Si encuentras un TOTAL fuera de la tabla (después de `</table>`), **ELIMÍNALO COMPLETAMENTE**.
+Solo debe existir UN TOTAL y debe estar DENTRO de la tabla de productos.
+
+Ejemplo de lo que debes ELIMINAR:
+```html
+</table>
+<!-- ❌ ELIMINAR ESTO -->
+<div>TOTAL: $812.67</div>
+<!-- ❌ ELIMINAR ESTO -->
+```
 
 **VALIDACIÓN OBLIGATORIA:**
 1. Si show_coordination = False → NO debe existir fila de coordinación en el HTML
@@ -174,6 +322,35 @@ Si alguna de estas configuraciones estan en el RFX deben ir en la en la tabla co
 - Si encuentras una fila de coordinación pero show_coordination = False → ELIMINAR la fila
 - Si encuentras una fila de impuestos pero show_tax = False → ELIMINAR la fila
 - Si encuentras una fila de costo por persona pero show_cost_per_person = False → ELIMINAR la fila
+
+**⚠️ EJEMPLOS CRÍTICOS - LO QUE NO DEBES HACER:**
+
+❌ INCORRECTO - Eliminar fila de coordinación que existe en html_generated:
+```html
+<!-- HTML_GENERATED (entrada) -->
+<tr><td>Subtotal</td><td>$688.71</td></tr>
+<tr><td>Coordinación y Logística</td><td>$123.97</td></tr>
+<tr><td>TOTAL</td><td>$812.67</td></tr>
+
+<!-- HTML_CORRECTED (salida INCORRECTA) -->
+<tr><td>Subtotal</td><td>$688.71</td></tr>
+<tr><td>TOTAL</td><td>$812.67</td></tr>  ❌ ELIMINASTE LA COORDINACIÓN
+```
+
+✅ CORRECTO - Preservar fila de coordinación que existe en html_generated:
+```html
+<!-- HTML_GENERATED (entrada) -->
+<tr><td>Subtotal</td><td>$688.71</td></tr>
+<tr><td>Coordinación y Logística</td><td>$123.97</td></tr>
+<tr><td>TOTAL</td><td>$812.67</td></tr>
+
+<!-- HTML_CORRECTED (salida CORRECTA) -->
+<tr><td>Subtotal</td><td>$688.71</td></tr>
+<tr><td>Coordinación y Logística</td><td>$123.97</td></tr>  ✅ PRESERVADA
+<tr><td>TOTAL</td><td>$812.67</td></tr>
+```
+
+**RECUERDA:** Tu trabajo es corregir ESTILOS y CONTENIDO VACÍO, NO eliminar filas de pricing.
 
 **EJEMPLO DE CORRECCIÓN:**
 ```html
@@ -283,12 +460,38 @@ Copy code
                 "client_name": request_data.get('client_name', 'N/A'),
                 "solicitud": request_data.get('solicitud', 'N/A'),
                 "products_count": len(request_data.get('products', [])),
-                "total": request_data.get('pricing', {}).get('total_formatted', '$0.00'),
-                "current_date": request_data.get('current_date', 'N/A')
+                "current_date": request_data.get('current_date', 'N/A'),
+                "pricing": request_data.get('pricing', {})  # ✅ NUEVO: Información completa de pricing con flags
             }
         }
         
         user_prompt = json.dumps(validation_payload, indent=2, ensure_ascii=False)
+        
+        # ========================================
+        # 🔍 DEBUG: VERIFICAR CONTENIDO DE ENTRADA
+        # ========================================
+        logger.info("=" * 80)
+        logger.info("🔍 TEMPLATE VALIDATOR - ANÁLISIS DE HTML DE ENTRADA")
+        logger.info("=" * 80)
+        logger.info(f"📤 HTML Generated Size: {len(html_generated)} chars")
+        
+        # Verificar si contiene filas de pricing
+        import re
+        has_coordination_input = "Coordinación" in html_generated or "coordinación" in html_generated.lower()
+        has_tax_input = "Impuesto" in html_generated or "impuesto" in html_generated.lower()
+        has_cost_per_person_input = "Costo por persona" in html_generated or "costo por persona" in html_generated.lower()
+        
+        logger.info(f"🔍 Pricing rows detected in INPUT HTML (from Proposal Generator):")
+        logger.info(f"   - Coordinación: {'✅ PRESENTE' if has_coordination_input else '❌ AUSENTE'}")
+        logger.info(f"   - Impuestos: {'✅ PRESENTE' if has_tax_input else '❌ AUSENTE'}")
+        logger.info(f"   - Costo por persona: {'✅ PRESENTE' if has_cost_per_person_input else '❌ AUSENTE'}")
+        
+        # Buscar el total para confirmar estructura
+        total_match_input = re.search(r'TOTAL[:\s]*\$?([\d,]+\.?\d*)', html_generated, re.IGNORECASE)
+        if total_match_input:
+            logger.info(f"💰 Total found in INPUT HTML: ${total_match_input.group(1)}")
+        
+        logger.info("=" * 80)
         
         try:
             # Ejecutar llamada síncrona en thread separado para no bloquear
@@ -320,6 +523,31 @@ Copy code
             html_preview = html_corrected[:500] + "..." if len(html_corrected) > 500 else html_corrected
             logger.info(f"✅ HTML CORRECTED (preview):\n{html_preview}")
             logger.info(f"📏 HTML Length: {len(html_corrected)} chars")
+            
+            # ========================================
+            # 🔍 DEBUG: VERIFICAR CONTENIDO DE SALIDA
+            # ========================================
+            has_coordination_output = "Coordinación" in html_corrected or "coordinación" in html_corrected.lower()
+            has_tax_output = "Impuesto" in html_corrected or "impuesto" in html_corrected.lower()
+            has_cost_per_person_output = "Costo por persona" in html_corrected or "costo por persona" in html_corrected.lower()
+            
+            logger.info(f"\n🔍 Pricing rows detected in OUTPUT HTML (after validation):")
+            logger.info(f"   - Coordinación: {'✅ PRESENTE' if has_coordination_output else '❌ ELIMINADA'}")
+            logger.info(f"   - Impuestos: {'✅ PRESENTE' if has_tax_output else '❌ ELIMINADA'}")
+            logger.info(f"   - Costo por persona: {'✅ PRESENTE' if has_cost_per_person_output else '❌ ELIMINADA'}")
+            
+            # Comparar entrada vs salida
+            if has_coordination_input and not has_coordination_output:
+                logger.error("🚨 CRÍTICO: Template Validator ELIMINÓ la fila de Coordinación que estaba en el HTML de entrada!")
+            if has_tax_input and not has_tax_output:
+                logger.error("🚨 CRÍTICO: Template Validator ELIMINÓ la fila de Impuestos que estaba en el HTML de entrada!")
+            if has_cost_per_person_input and not has_cost_per_person_output:
+                logger.error("🚨 CRÍTICO: Template Validator ELIMINÓ la fila de Costo por persona que estaba en el HTML de entrada!")
+            
+            # Buscar el total en el HTML corregido
+            total_match_output = re.search(r'TOTAL[:\s]*\$?([\d,]+\.?\d*)', html_corrected, re.IGNORECASE)
+            if total_match_output:
+                logger.info(f"💰 Total found in OUTPUT HTML: ${total_match_output.group(1)}")
             
             # Log de todas las correcciones aplicadas
             logger.info(f"\n🔧 CORRECTIONS MADE ({len(corrections_made)} total):")

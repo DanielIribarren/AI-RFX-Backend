@@ -18,7 +18,7 @@ from typing import Dict, Optional, Tuple
 from datetime import datetime, timedelta
 import logging
 
-from backend.core.database import get_database_client
+from backend.core.database import get_database_client, retry_on_connection_error
 from backend.core.plans import (
     get_operation_cost,
     get_free_regenerations,
@@ -39,6 +39,7 @@ class CreditsService:
     # VERIFICACIÓN DE CRÉDITOS
     # ========================
     
+    @retry_on_connection_error(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
     def check_credits_available(
         self, 
         organization_id: Optional[str], 
@@ -133,6 +134,7 @@ class CreditsService:
             logger.error(f"Error checking credits: {e}")
             return False, 0, f"Error checking credits: {str(e)}"
     
+    @retry_on_connection_error(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
     def get_credits_info(self, organization_id: str, user_id: Optional[str] = None) -> Dict:
         """
         Obtener información completa de créditos de una organización.
@@ -166,6 +168,8 @@ class CreditsService:
             credits_available = credits_total - credits_used
             reset_date = org_data.get("credits_reset_date")
             
+            logger.info(f"✅ Organization credits - Total: {credits_total}, Used: {credits_used}, Available: {credits_available}")
+            
             return {
                 "status": "success",
                 "credits_total": credits_total,
@@ -173,7 +177,8 @@ class CreditsService:
                 "credits_available": credits_available,
                 "credits_percentage": round((credits_available / credits_total * 100), 2) if credits_total > 0 else 0,
                 "reset_date": reset_date,
-                "plan_tier": org_data.get("plan_tier", "free")
+                "plan_tier": org_data.get("plan_tier", "free"),
+                "plan_type": "organizational"
             }
         
         except Exception as e:
@@ -183,12 +188,15 @@ class CreditsService:
                 "message": str(e)
             }
     
+    @retry_on_connection_error(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
     def get_credits_info_for_user(self, user_id: str) -> Dict:
         """
         Obtener información de créditos para un usuario (organización o personal).
         
-        Si el usuario pertenece a una organización → usar créditos de organización
-        Si el usuario NO pertenece a una organización → usar plan personal
+        LÓGICA DE FALLBACK:
+        1. Buscar usuario en tabla users
+        2. Si tiene organization_id → retornar créditos de organización
+        3. Si NO tiene organization_id → retornar créditos personales
         
         Args:
             user_id: ID del usuario
@@ -197,14 +205,19 @@ class CreditsService:
             Diccionario con información de créditos
         """
         try:
-            # Obtener información del usuario
+            logger.info(f"🔍 Getting credits info for user: {user_id}")
+            
+            # Obtener información del usuario (usar maybe_single para evitar error si no existe)
             user_result = self.db.client.table("users")\
                 .select("organization_id")\
                 .eq("id", user_id)\
-                .single()\
+                .maybe_single()\
                 .execute()
             
+            logger.info(f"📊 User query result: {user_result.data}")
+            
             if not user_result.data:
+                logger.warning(f"⚠️ User {user_id} not found in database")
                 return {
                     "status": "error",
                     "message": "User not found"
@@ -214,18 +227,23 @@ class CreditsService:
             
             # Si el usuario pertenece a una organización
             if organization_id:
-                return self.get_credits_info(organization_id)
+                logger.info(f"✅ User has organization: {organization_id} - fetching org credits")
+                return self.get_credits_info(organization_id, user_id)
             
             # Si el usuario NO pertenece a una organización → plan personal
+            logger.info(f"✅ User has NO organization - fetching personal credits")
             return self.get_personal_plan_credits_info(user_id)
         
         except Exception as e:
-            logger.error(f"Error getting credits info for user {user_id}: {e}")
+            logger.error(f"❌ Error getting credits info for user {user_id}: {e}")
+            logger.error(f"❌ Error type: {type(e).__name__}")
+            logger.error(f"❌ Error details: {str(e)}")
             return {
                 "status": "error",
                 "message": str(e)
             }
     
+    @retry_on_connection_error(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
     def get_personal_plan_credits_info(self, user_id: str) -> Dict:
         """
         Obtener información de créditos para plan personal (free tier).
@@ -295,6 +313,7 @@ class CreditsService:
                 "message": str(e)
             }
     
+    @retry_on_connection_error(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
     def consume_credits(
         self,
         organization_id: Optional[str],

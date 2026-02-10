@@ -265,7 +265,7 @@ class DatabaseClient:
             logger.error(f"❌ Failed to get RFX {rfx_id}: {e}")
             raise
     
-    @retry_on_connection_error(max_retries=3, initial_delay=0.3)
+    @retry_on_connection_error(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
     def get_rfx_history(
         self, 
         user_id: str,
@@ -317,6 +317,7 @@ class DatabaseClient:
             logger.error(f"❌ Failed to get RFX history: {e}")
             raise
     
+    @retry_on_connection_error(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
     def get_latest_rfx(
         self,
         user_id: str,
@@ -1071,6 +1072,7 @@ class DatabaseClient:
     # RAW SQL METHODS (for user_repository)
     # ========================
     
+    @retry_on_connection_error(max_retries=3, initial_delay=0.5, backoff_factor=2.0)
     def query_one(self, query: str, params: tuple = None) -> Optional[Dict[str, Any]]:
         """Execute SQL query and return single result - MEJORADO para user authentication"""
         try:

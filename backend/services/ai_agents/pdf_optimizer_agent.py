@@ -102,10 +102,45 @@ class PDFOptimizerAgent:
         max_width = "216mm" if page_size == "letter" else "210mm"  # Letter vs A4
         
         # System prompt SIMPLIFICADO para respuestas más rápidas
-        system_prompt = """Eres un experto en optimización de HTML para conversión PDF multipágina.
+        system_prompt = """Eres un EXPERTO en OPTIMIZACIÓN DE PROPUESTAS COMERCIALES para conversión a PDF PROFESIONAL.
 
-## OBJETIVO:
-Optimizar HTML para PDF profesional con paginación inteligente. Mantener TODO el contenido intacto.
+## 🎯 OBJETIVO PRINCIPAL:
+Optimizar el HTML para que se convierta en un PDF VISUALMENTE EXCELENTE que el cliente final quiera IMPRIMIR y FIRMAR inmediatamente.
+
+## ⚠️ REGLAS CRÍTICAS DE CONTENIDO:
+
+### 1. PRESERVAR ESTRUCTURA DE FACTURA PROFESIONAL:
+El HTML que recibes tiene una estructura de FACTURA PROFESIONAL con:
+- Tabla de productos
+- **Filas de pricing DENTRO de la tabla** (Subtotal, Coordinación, Impuestos, TOTAL)
+- Footer con términos
+
+### 2. NUNCA MODIFICAR CONTENIDO:
+- ❌ NO eliminar filas de la tabla (productos NI pricing)
+- ❌ NO modificar valores monetarios
+- ❌ NO cambiar texto o estructura
+- ❌ NO mover pricing fuera de la tabla
+- ✅ SOLO agregar/optimizar CSS para PDF
+
+### 3. PRESERVAR PRICING DENTRO DE LA TABLA:
+Las filas de Subtotal, Coordinación, Impuestos y TOTAL están **DENTRO de la tabla de productos**.
+**NUNCA las muevas fuera de la tabla.**
+
+### 4. ELIMINAR TOTAL DUPLICADO:
+⚠️ **CRÍTICO:** Si encuentras un TOTAL fuera de la tabla (después de `</table>`), **ELIMÍNALO COMPLETAMENTE**.
+Solo debe existir UN TOTAL y debe estar DENTRO de la tabla de productos.
+
+Ejemplo de lo que debes ELIMINAR:
+```html
+</table>
+<!-- ❌ ELIMINAR ESTO -->
+<div style="text-align: right;">TOTAL: $812.67</div>
+<!-- ❌ ELIMINAR ESTO -->
+```
+
+## TU TRABAJO:
+1. Agregar CSS para que el PDF se vea PROFESIONAL y se imprima correctamente
+2. **ELIMINAR cualquier TOTAL duplicado fuera de la tabla**
 
 ## OPTIMIZACIONES CRÍTICAS:
 
@@ -133,15 +168,61 @@ img { max-width: 100%; page-break-inside: avoid; }
 ### 4. 🚨 CONFIGURACIONES DE PRICING CONDICIONAL (CRÍTICO - NO MODIFICAR):
 **REGLA FUNDAMENTAL:** NO agregar ni eliminar filas de pricing. Solo optimizar las que YA existen.
 
-El HTML que recibes ya tiene las filas de pricing correctas según la configuración:
-- Si hay fila de "Coordinación y Logística" → Está activa, NO eliminar
-- Si NO hay fila de coordinación → NO está activa, NO agregar
-- Si hay fila de "Impuestos" → Está activa, NO eliminar
-- Si NO hay fila de impuestos → NO está activa, NO agregar
-- Si hay fila de "Costo por persona" → Está activa, NO eliminar
-- Si NO hay fila de costo por persona → NO está activa, NO agregar
+⚠️ **ADVERTENCIA CRÍTICA:** El HTML que recibes ya fue validado por otro agente. Las filas de pricing que contiene son CORRECTAS y OBLIGATORIAS. NO las elimines bajo NINGUNA circunstancia.
+
+**FILAS DE PRICING QUE DEBES PRESERVAR:**
+- Si hay fila de "Coordinación y Logística" → **PRESERVAR OBLIGATORIAMENTE** (está activa en configuración)
+- Si hay fila de "Impuestos" → **PRESERVAR OBLIGATORIAMENTE** (está activa en configuración)
+- Si hay fila de "Costo por persona" → **PRESERVAR OBLIGATORIAMENTE** (está activa en configuración)
+- Si NO hay alguna de estas filas → **NO AGREGAR** (no está activa en configuración)
+
+**EJEMPLOS DE LO QUE NO DEBES HACER:**
+❌ INCORRECTO - Eliminar fila de coordinación:
+```html
+<!-- HTML de entrada -->
+<tr><td>Subtotal</td><td>$688.71</td></tr>
+<tr><td>Coordinación y Logística</td><td>$123.97</td></tr>
+<tr><td>TOTAL</td><td>$812.67</td></tr>
+
+<!-- HTML de salida INCORRECTO -->
+<tr><td>Subtotal</td><td>$688.71</td></tr>
+<tr><td>TOTAL</td><td>$812.67</td></tr>  ❌ ELIMINÓ COORDINACIÓN
+```
+
+✅ CORRECTO - Preservar fila de coordinación:
+```html
+<!-- HTML de entrada -->
+<tr><td>Subtotal</td><td>$688.71</td></tr>
+<tr><td>Coordinación y Logística</td><td>$123.97</td></tr>
+<tr><td>TOTAL</td><td>$812.67</td></tr>
+
+<!-- HTML de salida CORRECTO -->
+<tr><td>Subtotal</td><td>$688.71</td></tr>
+<tr><td>Coordinación y Logística</td><td>$123.97</td></tr>  ✅ PRESERVADA
+<tr><td>TOTAL</td><td>$812.67</td></tr>
+```
 
 **TU RESPONSABILIDAD:**
+
+**A. VALIDACIÓN DE CONTENIDO PARA CLIENTE FINAL (CRÍTICO):**
+1. **Nombre del Cliente (OBLIGATORIO):**
+   - ✅ Verificar que haya un nombre de cliente visible
+   - Si encuentras {{CLIENT_NAME}}, {{CLIENTE}}, [Cliente], "N/A" → Reemplazar con nombre real
+   - Si no hay nombre disponible → Usar "Cliente Estimado"
+   - **NUNCA dejar placeholders vacíos en el documento final**
+
+2. **Campos Completos:**
+   - ❌ PROHIBIDO: Dejar {{VARIABLE}}, [PLACEHOLDER], "N/A", "Por definir"
+   - ✅ OBLIGATORIO: Todos los campos con información real y coherente
+   - Si falta fecha → Usar fecha actual
+   - Si falta descripción → Usar texto genérico profesional
+
+3. **Documento Listo para Envío:**
+   - 100% apto para enviar al cliente sin ediciones
+   - Sin errores de formato, sin placeholders, sin datos faltantes
+   - Información profesional y coherente en todos los campos
+
+**B. OPTIMIZACIÓN DE PRICING (NO MODIFICAR CONTENIDO):**
 - Solo optimizar el CSS y paginación de las filas existentes
 - NO agregar filas de pricing que no existen
 - NO eliminar filas de pricing que existen
@@ -226,7 +307,31 @@ El HTML que recibes ya tiene las filas de pricing correctas según la configurac
         import json
         user_prompt = json.dumps(optimization_payload, indent=2, ensure_ascii=False)
         
-        logger.info(f"📤 Sending HTML COMPLETO to AI - Size: {len(html_content)} chars (NO truncado)")
+        # ========================================
+        # 🔍 DEBUG: VERIFICAR CONTENIDO DE ENTRADA
+        # ========================================
+        logger.info("=" * 80)
+        logger.info("🔍 PDF OPTIMIZER - ANÁLISIS DE HTML DE ENTRADA")
+        logger.info("=" * 80)
+        logger.info(f"📤 HTML Size: {len(html_content)} chars")
+        
+        # Verificar si contiene filas de pricing
+        has_coordination = "Coordinación" in html_content or "coordinación" in html_content.lower()
+        has_tax = "Impuesto" in html_content or "impuesto" in html_content.lower()
+        has_cost_per_person = "Costo por persona" in html_content or "costo por persona" in html_content.lower()
+        
+        logger.info(f"🔍 Pricing rows detected in INPUT HTML:")
+        logger.info(f"   - Coordinación: {'✅ PRESENTE' if has_coordination else '❌ AUSENTE'}")
+        logger.info(f"   - Impuestos: {'✅ PRESENTE' if has_tax else '❌ AUSENTE'}")
+        logger.info(f"   - Costo por persona: {'✅ PRESENTE' if has_cost_per_person else '❌ AUSENTE'}")
+        
+        # Buscar el total para confirmar estructura
+        import re
+        total_match = re.search(r'TOTAL[:\s]*\$?([\d,]+\.?\d*)', html_content, re.IGNORECASE)
+        if total_match:
+            logger.info(f"💰 Total found in HTML: ${total_match.group(1)}")
+        
+        logger.info("=" * 80)
         logger.info(f"🤖 Model: {self.openai_config.model}, Temperature: 0.2")
         
         try:
@@ -269,6 +374,32 @@ El HTML que recibes ya tiene las filas de pricing correctas según la configurac
             html_preview = html_optimized[:500] + "..." if len(html_optimized) > 500 else html_optimized
             logger.info(f"✅ HTML OPTIMIZED (preview):\n{html_preview}")
             logger.info(f"📏 HTML Length: {len(html_optimized)} chars")
+            
+            # ========================================
+            # 🔍 DEBUG: VERIFICAR CONTENIDO DE SALIDA
+            # ========================================
+            has_coordination_output = "Coordinación" in html_optimized or "coordinación" in html_optimized.lower()
+            has_tax_output = "Impuesto" in html_optimized or "impuesto" in html_optimized.lower()
+            has_cost_per_person_output = "Costo por persona" in html_optimized or "costo por persona" in html_optimized.lower()
+            
+            logger.info(f"\n🔍 Pricing rows detected in OUTPUT HTML:")
+            logger.info(f"   - Coordinación: {'✅ PRESENTE' if has_coordination_output else '❌ ELIMINADA'}")
+            logger.info(f"   - Impuestos: {'✅ PRESENTE' if has_tax_output else '❌ ELIMINADA'}")
+            logger.info(f"   - Costo por persona: {'✅ PRESENTE' if has_cost_per_person_output else '❌ ELIMINADA'}")
+            
+            # Comparar entrada vs salida
+            if has_coordination and not has_coordination_output:
+                logger.error("🚨 CRÍTICO: PDF Optimizer ELIMINÓ la fila de Coordinación que estaba en el HTML de entrada!")
+            if has_tax and not has_tax_output:
+                logger.error("🚨 CRÍTICO: PDF Optimizer ELIMINÓ la fila de Impuestos que estaba en el HTML de entrada!")
+            if has_cost_per_person and not has_cost_per_person_output:
+                logger.error("🚨 CRÍTICO: PDF Optimizer ELIMINÓ la fila de Costo por persona que estaba en el HTML de entrada!")
+            
+            # Buscar el total en el HTML optimizado
+            total_match_output = re.search(r'TOTAL[:\s]*\$?([\d,]+\.?\d*)', html_optimized, re.IGNORECASE)
+            if total_match_output:
+                logger.info(f"💰 Total found in OPTIMIZED HTML: ${total_match_output.group(1)}")
+            logger.info("=" * 80)
             
             # Log de todos los ajustes aplicados
             logger.info(f"\n🔧 ADJUSTMENTS MADE ({len(adjustments_made)} total):")
