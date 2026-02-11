@@ -17,6 +17,15 @@ from backend.core.database import get_database_client
 
 logger = logging.getLogger(__name__)
 
+# 🧠 AI Learning System Integration
+try:
+    from backend.services.recommendation_service import recommendation_service
+    LEARNING_ENABLED = True
+    logger.info("✅ AI Learning System enabled for pricing recommendations")
+except ImportError:
+    LEARNING_ENABLED = False
+    logger.warning("⚠️ AI Learning System not available - using defaults only")
+
 
 class PricingConfigurationServiceV2:
     """Servicio V2.2 que usa las nuevas tablas de pricing directamente"""
@@ -41,7 +50,8 @@ class PricingConfigurationServiceV2:
             
             if not response.data:
                 logger.info(f"📝 No pricing configuration found for RFX {rfx_id}")
-                return self._create_default_configuration(rfx_id)
+                # 🧠 Try to get user preferences from learning system
+                return self._create_default_configuration(rfx_id, use_learning=True)
             
             config_data = response.data[0]
             config = self._map_db_data_to_model(rfx_id, config_data)
@@ -198,6 +208,40 @@ class PricingConfigurationServiceV2:
             if updated_config:
                 self._log_configuration_change(rfx_id, 'configuration_updated', updated_config)
             logger.info(f"✅ [V2] Pricing configuration updated for RFX {rfx_id}")
+            
+            # 🧠 Guardar como preferencia del usuario (aprendizaje)
+            if LEARNING_ENABLED:
+                try:
+                    rfx_data = self.db_client.client.table('rfx_v2')\
+                        .select('user_id, organization_id')\
+                        .eq('id', rfx_id)\
+                        .single()\
+                        .execute()
+                    
+                    if rfx_data.data:
+                        user_id = rfx_data.data.get('user_id')
+                        org_id = rfx_data.data.get('organization_id')
+                        
+                        if user_id and org_id:
+                            from backend.services.learning_service import learning_service
+                            
+                            pricing_preference = {
+                                'coordination_enabled': bool(request.coordination_enabled),
+                                'coordination_rate': float(desired_coord_rate),
+                                'taxes_enabled': bool(request.taxes_enabled),
+                                'tax_rate': float(desired_tax_rate),
+                                'cost_per_person_enabled': bool(request.cost_per_person_enabled)
+                            }
+                            
+                            learning_service.save_pricing_preference(
+                                user_id=user_id,
+                                organization_id=org_id,
+                                pricing_config=pricing_preference
+                            )
+                            logger.info(f"🧠 Saved pricing preference for user {user_id}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not save pricing preference: {e}")
+            
             return updated_config
 
         except Exception as e:
@@ -701,10 +745,57 @@ class PricingConfigurationServiceV2:
                 pass
             return new_id
 
-    def _create_default_configuration(self, rfx_id: str) -> RFXPricingConfiguration:
-        """Crear configuración por defecto usando las nuevas tablas"""
+    def _create_default_configuration(self, rfx_id: str, use_learning: bool = False) -> RFXPricingConfiguration:
+        """Crear configuración por defecto usando las nuevas tablas
+        
+        Args:
+            rfx_id: ID del RFX
+            use_learning: Si True, intenta usar recomendaciones del learning system
+        """
         try:
             rfx_uuid = uuid.UUID(rfx_id) if isinstance(rfx_id, str) else rfx_id
+            
+            # 🧠 Intentar obtener recomendación del learning system
+            recommended_config = None
+            if use_learning and LEARNING_ENABLED:
+                try:
+                    # Obtener user_id y rfx_type del RFX
+                    rfx_data = self.db_client.client.table('rfx_v2')\
+                        .select('user_id, rfx_type')\
+                        .eq('id', str(rfx_uuid))\
+                        .single()\
+                        .execute()
+                    
+                    if rfx_data.data:
+                        user_id = rfx_data.data.get('user_id')
+                        rfx_type = rfx_data.data.get('rfx_type')
+                        
+                        if user_id:
+                            recommended_config = recommendation_service.recommend_pricing_config(
+                                user_id=user_id,
+                                rfx_type=rfx_type
+                            )
+                            
+                            if recommended_config:
+                                logger.info(f"🧠 Using learned pricing config (confidence: {recommended_config.get('confidence', 0)}, source: {recommended_config.get('source', 'unknown')})")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not get pricing recommendation: {e}")
+            
+            # Valores por defecto (o recomendados)
+            if recommended_config:
+                coord_enabled = recommended_config.get('coordination_enabled', False)
+                coord_rate = recommended_config.get('coordination_rate', 0.18)
+                tax_enabled = recommended_config.get('taxes_enabled', False)
+                tax_rate = recommended_config.get('tax_rate', 0.16)
+                cpp_enabled = recommended_config.get('cost_per_person_enabled', False)
+                source = f"learned_{recommended_config.get('source', 'unknown')}"
+            else:
+                coord_enabled = False
+                coord_rate = 0.18
+                tax_enabled = False
+                tax_rate = 0.16
+                cpp_enabled = False
+                source = 'default'
             
             # Crear configuración principal
             main_config_id = str(uuid.uuid4())
@@ -713,26 +804,26 @@ class PricingConfigurationServiceV2:
             self.db_client.client.table('rfx_pricing_configurations').insert({
                 'id': main_config_id,
                 'rfx_id': str(rfx_uuid),
-                'configuration_name': 'Default Configuration',
+                'configuration_name': 'Default Configuration' if not recommended_config else 'Learned Configuration',
                 'is_active': True,
                 'status': 'active',
                 'created_by': 'system'
             }).execute()
             
-            # Crear configuraciones por defecto (deshabilitadas)
+            # Crear configuraciones (con valores aprendidos si existen)
             self.db_client.client.table('coordination_configurations').insert({
                 'pricing_config_id': main_config_id,
-                'is_enabled': False,
-                'rate': 0.18,
+                'is_enabled': coord_enabled,
+                'rate': coord_rate,
                 'description': 'Coordinación y logística',
-                'configuration_source': 'default'
+                'configuration_source': source
             }).execute()
             
             self.db_client.client.table('cost_per_person_configurations').insert({
                 'pricing_config_id': main_config_id,
-                'is_enabled': False,
+                'is_enabled': cpp_enabled,
                 'headcount': 120,
-                'headcount_source': 'default',
+                'headcount_source': source,
                 'description': 'Cálculo de costo individual'
             }).execute()
             
@@ -741,17 +832,17 @@ class PricingConfigurationServiceV2:
             config.coordination = PricingConfig(
                 rfx_id=rfx_uuid,
                 config_type=PricingConfigType.COORDINATION,
-                is_enabled=False,
-                config_value=PricingConfigValue(rate=0.18, description="Coordinación y logística")
+                is_enabled=coord_enabled,
+                config_value=PricingConfigValue(rate=coord_rate, description="Coordinación y logística")
             )
             config.cost_per_person = PricingConfig(
                 rfx_id=rfx_uuid,
                 config_type=PricingConfigType.COST_PER_PERSON,
-                is_enabled=False,
+                is_enabled=cpp_enabled,
                 config_value=PricingConfigValue(headcount=120, description="Cálculo por persona")
             )
             
-            logger.info(f"📝 Created default pricing configuration for RFX {rfx_id} in DB")
+            logger.info(f"📝 Created {'learned' if recommended_config else 'default'} pricing configuration for RFX {rfx_id} in DB")
             return config
             
         except Exception as e:

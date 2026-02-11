@@ -202,6 +202,38 @@ class ProposalGenerationService:
             logger.info(f"✅ Proposal generated successfully - Document ID: {proposal.id}")
             logger.info(f"📊 Validation score: {validation_result['score']}/10 ({validation_result['score']*10:.0f}%)")
             
+            # 11. 🧠 Trigger AI Learning System (aprende de RFX completado)
+            try:
+                from backend.services.ai_agents.learning_agent import learning_agent
+                
+                # Marcar RFX como completado
+                self.db_client.client.table("rfx_v2").update({
+                    "status": "completed"
+                }).eq("id", proposal_request.rfx_id).execute()
+                
+                # Obtener organization_id
+                rfx_result = self.db_client.client.table("rfx_v2").select("organization_id").eq("id", proposal_request.rfx_id).single().execute()
+                organization_id = rfx_result.data.get("organization_id") if rfx_result.data else None
+                
+                if organization_id:
+                    logger.info(f"🧠 Triggering AI Learning System for RFX {proposal_request.rfx_id}")
+                    learning_result = learning_agent.learn_from_completed_rfx(
+                        rfx_id=proposal_request.rfx_id,
+                        user_id=user_id,
+                        organization_id=organization_id
+                    )
+                    
+                    if learning_result.get("success"):
+                        logger.info(f"✅ AI Learning completed successfully")
+                    else:
+                        logger.warning(f"⚠️ AI Learning failed: {learning_result.get('reason', 'Unknown')}")
+                else:
+                    logger.warning(f"⚠️ No organization_id found, skipping AI Learning")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error in AI Learning System: {e}")
+                # No fallar la generación de propuesta si el aprendizaje falla
+            
             return proposal
             
         except Exception as e:
