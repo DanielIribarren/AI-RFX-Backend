@@ -5,17 +5,149 @@ Endpoints para gestionar organizaciones multi-tenant.
 Sigue principios KISS: simple, directo, sin overengineering.
 """
 
-from flask import Blueprint, jsonify, g
+from flask import Blueprint, jsonify, g, request
 from backend.utils.auth_middleware import jwt_required
 from backend.utils.organization_middleware import require_organization, require_role
 from backend.core.database import get_database_client
 from backend.core.plans import get_all_plans, get_plan
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 # Blueprint
 organization_bp = Blueprint('organization', __name__, url_prefix='/api/organization')
+
+
+@organization_bp.route('', methods=['POST'])
+@jwt_required
+def create_organization():
+    """
+    Crear una nueva organización para el usuario actual.
+
+    El usuario que crea la organización queda automáticamente como 'owner'.
+    Solo se puede crear una organización si el usuario NO pertenece ya a una.
+
+    Request Body:
+        {
+            "name": "Mi Empresa S.A.",
+            "slug": "mi-empresa"   // opcional, se genera desde el nombre si no se da
+        }
+
+    Returns:
+        JSON con la organización creada
+    """
+    try:
+        current_user = g.current_user
+        current_user_id = str(current_user['id'])
+        db = get_database_client()
+
+        # Verificar que el usuario no tenga ya una organización
+        if current_user.get('organization_id'):
+            return jsonify({
+                "status": "error",
+                "message": "You already belong to an organization. Leave it first before creating a new one."
+            }), 409
+
+        # Validar request body
+        data = request.get_json()
+        if not data or not data.get('name'):
+            return jsonify({
+                "status": "error",
+                "message": "Organization name is required"
+            }), 400
+
+        name = data['name'].strip()
+        if len(name) < 2:
+            return jsonify({
+                "status": "error",
+                "message": "Organization name must be at least 2 characters"
+            }), 400
+
+        # Generar slug si no se proporciona
+        slug = data.get('slug', '').strip()
+        if not slug:
+            slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+        if len(slug) < 2:
+            return jsonify({
+                "status": "error",
+                "message": "Slug must be at least 2 characters"
+            }), 400
+
+        # Verificar que el slug no esté en uso
+        existing_slug = db.client.table("organizations")\
+            .select("id")\
+            .eq("slug", slug)\
+            .execute()
+
+        if existing_slug.data:
+            return jsonify({
+                "status": "error",
+                "message": f"Slug '{slug}' is already in use. Please choose a different one."
+            }), 409
+
+        # Crear la organización con plan free por defecto
+        from backend.core.plans import get_plan as _get_plan
+        free_plan = _get_plan('free')
+
+        new_org_data = {
+            "name": name,
+            "slug": slug,
+            "plan_tier": "free",
+            "max_users": free_plan.max_users,
+            "max_rfx_per_month": free_plan.max_rfx_per_month,
+            "credits_total": free_plan.credits_per_month,
+            "credits_used": 0,
+            "is_active": True
+        }
+
+        org_result = db.client.table("organizations")\
+            .insert(new_org_data)\
+            .execute()
+
+        if not org_result.data:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to create organization"
+            }), 500
+
+        new_org = org_result.data[0]
+        organization_id = new_org['id']
+
+        # Asignar al usuario como owner de la organización
+        db.client.table("users")\
+            .update({
+                "organization_id": organization_id,
+                "role": "owner"
+            })\
+            .eq("id", current_user_id)\
+            .execute()
+
+        logger.info(f"✅ Organization '{name}' created by user {current_user_id} (org_id: {organization_id})")
+
+        return jsonify({
+            "status": "success",
+            "message": "Organization created successfully",
+            "data": {
+                "id": organization_id,
+                "name": new_org['name'],
+                "slug": new_org['slug'],
+                "plan_tier": new_org['plan_tier'],
+                "credits_total": new_org['credits_total'],
+                "credits_used": new_org['credits_used'],
+                "is_active": new_org['is_active'],
+                "created_at": new_org.get('created_at'),
+                "your_role": "owner"
+            }
+        }), 201
+
+    except Exception as e:
+        logger.error(f"❌ Error creating organization: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to create organization"
+        }), 500
 
 
 @organization_bp.route('/test', methods=['GET'])
