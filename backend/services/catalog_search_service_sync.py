@@ -542,6 +542,18 @@ class CatalogSearchServiceSync:
         """
         
         try:
+            # Guard: si no hay ni org ni user, retornar vacío
+            if not organization_id and not user_id:
+                logger.info("ℹ️ No organization_id or user_id provided - returning empty stats")
+                return {
+                    'total_products': 0,
+                    'products_with_cost': 0,
+                    'products_with_price': 0,
+                    'avg_price': 0,
+                    'cache_status': 'inactive',
+                    'semantic_search_available': False
+                }
+            
             # Contar productos
             query_builder = self.db.client.table("product_catalog")\
                 .select("id, unit_cost, unit_price", count="exact")

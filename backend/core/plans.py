@@ -73,13 +73,13 @@ PLANS: Dict[str, SubscriptionPlan] = {
     'free': SubscriptionPlan(
         tier='free',
         name='Free Plan',
-        max_users=2,
+        max_users=1,
         max_rfx_per_month=10,
         credits_per_month=100,  # ~10 RFX completos (10 créditos c/u)
         price_monthly_usd=0.0,
         free_regenerations=1,
         features=[
-            'Up to 2 users',
+            '1 user (no team members)',
             '100 credits per month (~10 RFX)',
             '1 free regeneration per proposal',
             'Basic proposal generation',
