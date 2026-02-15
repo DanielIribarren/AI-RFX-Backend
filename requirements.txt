@@ -57,6 +57,7 @@ MarkupSafe==2.1.3
 # HTML to PDF Generation
 # ========================
 weasyprint==60.2
+pydyf==0.8.0
 pdfkit==1.0.0
 playwright==1.47.0
 

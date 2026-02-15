@@ -27,7 +27,7 @@ SOLUCIÓN: LangChain Agents con Tools
 ### **Riesgos de Aprendizaje Incorrecto:**
 
 ```
-❌ RIESGO 1: Aprender de RFX incompletos
+❌ RIESGO 1: Aprender de RFX incompletos (por eso solo se va a llamar al agente cada vez que el usuario finalice un rfx)
    → Solución: Solo aprender de RFX con status "completed"
 
 ❌ RIESGO 2: Sobrescribir preferencias válidas con errores

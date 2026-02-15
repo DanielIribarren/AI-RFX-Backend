@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cotización - Factura</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            color: #000;
+            line-height: 1.5;
+            background: #fff;
+            padding: 40px;
+        }
+        
+        .invoice-container {
+            max-width: 800px;
+            margin: 0 auto;
+            border: 1px solid #000;
+            padding: 0;
+        }
+        
+        /* Header */
+        .invoice-header {
+            display: flex;
+            justify-content: space-between;
+            padding: 30px;
+            border-bottom: 2px solid #000;
+        }
+        
+        .company-info h1 {
+            font-size: 28px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .company-info p {
+            font-size: 12px;
+            line-height: 1.4;
+            color: #666;
+        }
+        
+        .invoice-details {
+            text-align: right;
+        }
+        
+        .invoice-number {
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .invoice-date {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        /* Client Info */
+        .client-section {
+            display: flex;
+            justify-content: space-between;
+            padding: 30px;
+            border-bottom: 1px solid #000;
+        }
+        
+        .section-block h3 {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        
+        .section-block p {
+            font-size: 13px;
+            line-height: 1.6;
+            margin: 0;
+        }
+        
+        /* Items Table */
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .items-table thead {
+            background: #000;
+            color: #fff;
+        }
+        
+        .items-table th {
+            padding: 12px;
+            text-align: left;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: bold;
+        }
+        
+        .items-table th.center {
+            text-align: center;
+        }
+        
+        .items-table th.right {
+            text-align: right;
+        }
+        
+        .items-table td {
+            padding: 15px 12px;
+            border-bottom: 1px solid #ddd;
+            font-size: 13px;
+        }
+        
+        .items-table td.center {
+            text-align: center;
+        }
+        
+        .items-table td.right {
+            text-align: right;
+        }
+        
+        .items-table tbody tr:last-child td {
+            border-bottom: 2px solid #000;
+        }
+        
+        .item-name {
+            font-weight: bold;
+        }
+        
+        .item-description {
+            font-size: 11px;
+            color: #666;
+            margin-top: 3px;
+        }
+        
+        /* Totals Section */
+        .totals-section {
+            padding: 30px;
+            display: flex;
+            justify-content: flex-end;
+        }
+        
+        .totals-table {
+            width: 300px;
+        }
+        
+        .total-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            font-size: 13px;
+        }
+        
+        .total-row.subtotal {
+            border-top: 1px solid #ddd;
+            padding-top: 15px;
+            margin-top: 8px;
+        }
+        
+        .total-row.final {
+            border-top: 2px solid #000;
+            padding-top: 15px;
+            margin-top: 8px;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        
+        .total-label {
+            color: #666;
+        }
+        
+        .total-value {
+            font-weight: bold;
+            text-align: right;
+        }
+        
+        /* Terms */
+        .terms-section {
+            padding: 30px;
+            border-top: 1px solid #000;
+            background: #f9f9f9;
+        }
+        
+        .terms-section h3 {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+        
+        .terms-section p {
+            font-size: 11px;
+            line-height: 1.7;
+            color: #666;
+            margin-bottom: 8px;
+        }
+        
+        /* Footer */
+        .invoice-footer {
+            padding: 20px 30px;
+            text-align: center;
+            border-top: 1px solid #ddd;
+            background: #f5f5f5;
+        }
+        
+        .invoice-footer p {
+            font-size: 11px;
+            color: #666;
+            margin: 5px 0;
+        }
+        
+        @media print {
+            body {
+                padding: 0;
+            }
+            
+            .invoice-container {
+                border: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="invoice-container">
+        <!-- Header -->
+        <div class="invoice-header">
+            <div class="company-info">
+                <h1>{{NOMBRE_EMPRESA}}</h1>
+                <p>
+                    {{DIRECCION_EMPRESA}}<br>
+                    Tel: {{TELEFONO_EMPRESA}}<br>
+                    Email: {{EMAIL_EMPRESA}}
+                </p>
+            </div>
+            <div class="invoice-details">
+                <div class="invoice-number">COTIZACIÓN #2024-1234</div>
+                <div class="invoice-date">
+                    Fecha: 12 de Febrero, 2024<br>
+                    Válida hasta: 12 de Marzo, 2024
+                </div>
+            </div>
+        </div>
+        
+        <!-- Client Info -->
+        <div class="client-section">
+            <div class="section-block">
+                <h3>Facturar a:</h3>
+                <p>
+                    <strong>TechCorp Inc.</strong><br>
+                    María González<br>
+                    <a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="ff929e8d969ebf8b9a9c979c908d8fd19c9092">[email&#160;protected]</a><br>
+                    +1 (555) 987-6543
+                </p>
+            </div>
+            <div class="section-block">
+                <h3>Detalles del Evento:</h3>
+                <p>
+                    Fecha: 15 de Marzo, 2024<br>
+                    Hora: 12:00 PM<br>
+                    Lugar: Centro de Convenciones<br>
+                    Invitados: 100 personas
+                </p>
+            </div>
+        </div>
+        
+        <!-- Items Table -->
+        <table class="items-table">
+            <thead>
+                <tr>
+                    <th style="width: 50%;">Descripción</th>
+                    <th class="center" style="width: 15%;">Cantidad</th>
+                    <th class="right" style="width: 15%;">Precio Unit.</th>
+                    <th class="right" style="width: 20%;">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>
+                        <div class="item-name">Coffee Break</div>
+                        <div class="item-description">Café, té, jugos, pasteles</div>
+                    </td>
+                    <td class="center">100 pax</td>
+                    <td class="right">$10.00</td>
+                    <td class="right">$1,000.00</td>
+                </tr>
+                <tr>
+                    <td>
+                        <div class="item-name">Almuerzo Ejecutivo</div>
+                        <div class="item-description">3 tiempos, proteína, ensalada, postre</div>
+                    </td>
+                    <td class="center">100 pax</td>
+                    <td class="right">$25.00</td>
+                    <td class="right">$2,500.00</td>
+                </tr>
+                <tr>
+                    <td>
+                        <div class="item-name">Estación de Snacks</div>
+                        <div class="item-description">Fruta, frutos secos, barras</div>
+                    </td>
+                    <td class="center">100 pax</td>
+                    <td class="right">$8.00</td>
+                    <td class="right">$800.00</td>
+                </tr>
+                <tr>
+                    <td>
+                        <div class="item-name">Personal de Servicio</div>
+                        <div class="item-description">Meseros, supervisor, montaje</div>
+                    </td>
+                    <td class="center">6 hrs</td>
+                    <td class="right">$300.00</td>
+                    <td class="right">$1,800.00</td>
+                </tr>
+                <tr>
+                    <td>
+                        <div class="item-name">Renta de Equipo</div>
+                        <div class="item-description">Mesas, sillas, manteles, vajilla</div>
+                    </td>
+                    <td class="center">1</td>
+                    <td class="right">$400.00</td>
+                    <td class="right">$400.00</td>
+                </tr>
+            </tbody>
+        </table>
+        
+        <!-- Totals -->
+        <div class="totals-section">
+            <div class="totals-table">
+                <div class="total-row">
+                    <span class="total-label">Subtotal</span>
+                    <span class="total-value">$6,500.00</span>
+                </div>
+                <div class="total-row">
+                    <span class="total-label">Coordinación (10%)</span>
+                    <span class="total-value">$650.00</span>
+                </div>
+                <div class="total-row subtotal">
+                    <span class="total-label">Subtotal</span>
+                    <span class="total-value">$7,150.00</span>
+                </div>
+                <div class="total-row">
+                    <span class="total-label">IVA (16%)</span>
+                    <span class="total-value">$1,144.00</span>
+                </div>
+                <div class="total-row final">
+                    <span class="total-label">TOTAL</span>
+                    <span class="total-value">$8,294.00 USD</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Terms -->
+        <div class="terms-section">
+            <h3>Términos y Condiciones</h3>
+            <p>• Anticipo del 50% requerido para confirmar reserva.</p>
+            <p>• Saldo restante pagadero 48 horas antes del evento.</p>
+            <p>• Cancelaciones con más de 7 días de anticipación: reembolso del 100% del anticipo.</p>
+            <p>• Cancelaciones entre 3-7 días: reembolso del 50% del anticipo.</p>
+            <p>• Cancelaciones con menos de 3 días: sin reembolso.</p>
+            <p>• El número final de asistentes debe confirmarse 72 horas antes del evento.</p>
+            <p>• Los precios están sujetos a cambio sin previo aviso.</p>
+        </div>
+        
+        <!-- Footer

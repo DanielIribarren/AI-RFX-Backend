@@ -33,6 +33,7 @@ from backend.api.contact import contact_bp  # ✅ Contact request emails
 from backend.api.health import health_bp  # ✅ Health checks and monitoring
 from backend.api.recommendations import recommendations_bp  # 🧠 AI Learning System recommendations
 from backend.api.subscription import subscription_bp  # ✅ Plan requests & approval
+from backend.api.templates import templates_bp  # 🎨 Proposal templates
 
 from backend.models.rfx_models import RFXResponse
 
@@ -110,6 +111,7 @@ def _register_blueprints(app: Flask) -> None:
     # Original API endpoints (keeping for compatibility)
     app.register_blueprint(rfx_bp)  # ⚠️ INSECURE - use rfx_secure_bp instead
     app.register_blueprint(proposals_bp)
+    app.register_blueprint(templates_bp)
     app.register_blueprint(download_bp)
     app.register_blueprint(pricing_bp)
     app.register_blueprint(branding_bp)  # ⚠️ OLD - use user_branding_bp instead

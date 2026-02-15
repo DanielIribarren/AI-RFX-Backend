@@ -5,6 +5,12 @@ Incluye: Cajas azules, tabla con header azul, pricing condicional
 """
 
 from typing import Dict, Any, List
+from backend.prompts.template_config import (
+    build_template_style_instructions,
+    get_template_config,
+    get_template_html_reference,
+    TemplateType,
+)
 
 
 class ProposalPrompts:
@@ -17,7 +23,8 @@ class ProposalPrompts:
         company_info: dict,
         rfx_data: dict,
         pricing_data: dict,
-        branding_config: dict = None
+        branding_config: dict = None,
+        template_type: str = "custom"
     ) -> str:
         """
         Prompt cuando el usuario TIENE branding configurado
@@ -36,12 +43,24 @@ class ProposalPrompts:
         show_tax = pricing_data.get('show_tax', False)
         show_cost_per_person = pricing_data.get('show_cost_per_person', False)
         
-        # ✅ Extraer colores reales del branding (con fallbacks)
-        branding_config = branding_config or {}
-        primary_color = branding_config.get('primary_color', '#0e2541')
-        table_header_bg = branding_config.get('table_header_bg', '#0e2541')
-        table_header_text = branding_config.get('table_header_text', '#ffffff')
-        table_border = branding_config.get('table_border', '#000000')
+        # ✅ Determinar colores según template_type o branding del usuario
+        use_template = template_type and template_type != "custom"
+        
+        if use_template:
+            # Usar colores del template predefinido
+            tpl_config = get_template_config(template_type)
+            tpl_colors = tpl_config.get('colors', {})
+            primary_color = tpl_colors.get('primary', '#0e2541')
+            table_header_bg = tpl_colors.get('table_header_bg', '#0e2541')
+            table_header_text = tpl_colors.get('table_header_text', '#ffffff')
+            table_border = tpl_colors.get('table_border', '#000000')
+        else:
+            # Usar colores del branding del usuario (flujo actual)
+            branding_config = branding_config or {}
+            primary_color = branding_config.get('primary_color', '#0e2541')
+            table_header_bg = branding_config.get('table_header_bg', '#0e2541')
+            table_header_text = branding_config.get('table_header_text', '#ffffff')
+            table_border = branding_config.get('table_border', '#000000')
         
         pricing_lines = f"- Subtotal: {pricing_data.get('subtotal_formatted')}"
         if show_coordination:
@@ -52,8 +71,43 @@ class ProposalPrompts:
         if show_cost_per_person:
             pricing_lines += f"\n- Costo por persona: {cpp_val}"
         
+        # Construir contexto de template si aplica
+        template_style_block = ""
+        template_reference_block = ""
+        role_context = "Eres un experto en generación de presupuestos profesionales en HTML con el estilo corporativo de Sabra Corporation."
+        
+        if use_template:
+            tpl_name = tpl_config.get('name', template_type)
+            role_context = f"Eres un experto en generación de presupuestos profesionales en HTML. Debes generar un presupuesto con estilo '{tpl_name}' ({tpl_config.get('tone', '')})."
+            template_style_block = build_template_style_instructions(template_type)
+            
+            # Incluir HTML de referencia como few-shot si existe
+            ref_html = get_template_html_reference(template_type)
+            if ref_html:
+                template_reference_block = f"""
+
+---
+
+# 📚 HTML DE REFERENCIA DEL TEMPLATE "{tpl_name.upper()}"
+
+**IMPORTANTE:** Este HTML es un EJEMPLO VISUAL de cómo debe verse el documento.
+Usa la MISMA estructura, colores y layout. Reemplaza los datos de ejemplo con los datos REALES del presupuesto.
+
+```html
+{ref_html}
+```
+
+**INSTRUCCIONES SOBRE ESTE EJEMPLO:**
+- ✅ COPIA la estructura visual (layout, secciones, orden)
+- ✅ COPIA los colores y estilos CSS exactos
+- ✅ REEMPLAZA todos los datos de ejemplo con los datos reales de abajo
+- ❌ NO copies los datos de ejemplo literalmente
+- ❌ NO cambies los colores ni el estilo visual
+"""
+        
         return f"""# ROL Y CONTEXTO
-Eres un experto en generación de presupuestos profesionales en HTML con el estilo corporativo de Sabra Corporation.
+{role_context}
+{template_style_block}
 
 ---
 
@@ -239,6 +293,8 @@ Cuando generes el HTML final, debes:
 2. ✅ **REEMPLAZAR TODOS LOS PLACEHOLDERS** con los datos reales de abajo
 3. ❌ **NO COPIES** literalmente `[NOMBRE CLIENTE]`, `[PRODUCTO]`, `[CANTIDAD]`, etc.
 4. ❌ **NO DEJES** placeholders sin reemplazar en el HTML final
+
+{template_reference_block}
 
 ---
 
@@ -530,11 +586,13 @@ RESPONDE SOLO CON EL HTML COMPLETO (sin ```html, sin markdown, sin texto adicion
         company_info: dict,
         rfx_data: dict,
         pricing_data: dict,
-        base_url: str = "http://localhost:5001"
+        base_url: str = "http://localhost:5001",
+        template_type: str = "custom"
     ) -> str:
         """
-        Prompt cuando el usuario NO tiene branding configurado
-        Usa logo por defecto de Sabra Corporation
+        Prompt cuando el usuario NO tiene branding configurado.
+        Si template_type es un template predefinido, usa ese estilo.
+        Si template_type es "custom", usa estilo default Sabra Corporation.
         """
         
         # Usar productos preparados directamente (ya formateados desde el servicio)
@@ -561,8 +619,73 @@ RESPONDE SOLO CON EL HTML COMPLETO (sin ```html, sin markdown, sin texto adicion
         if show_cost_per_person:
             pricing_lines += f"\n- Costo por persona: {cpp_val}"
         
+        # Determinar si usar template predefinido o default Sabra
+        use_template = template_type and template_type != "custom"
+        
+        template_style_block = ""
+        template_reference_block = ""
+        role_context = "Eres un generador de presupuestos profesionales en HTML con estilo corporativo de Sabra Corporation."
+        design_instructions = f"""# INSTRUCCIONES DE DISEÑO - ESTILO SABRA CORPORATION
+
+Usa el mismo estilo que el prompt con branding personalizado, CON el logo por defecto de Sabra.
+
+## COLOR CORPORATIVO
+- **Azul:** #0e2541 (headers de tabla y cajas de información)
+- **Texto blanco:** #ffffff (sobre fondo azul)
+
+## ESTRUCTURA
+
+1. **HEADER:** Logo de Sabra a la izquierda, "PRESUPUESTO" a la derecha
+2. **INFO EMPRESA:** Dirección, teléfono, email
+3. **FECHAS:** Fecha actual y vigencia (30 días) alineadas a la derecha
+4. **CAJAS AZULES:** Solo Cliente y Solicitud
+5. **TABLA:** Header azul con texto blanco, productos, coordinación (si > $0), TOTAL
+6. **COMENTARIOS:** Sección opcional para notas
+
+### HEADER - Ejemplo con Logo:
+<!-- Logo a la izquierda, título PRESUPUESTO a la derecha -->
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5mm; padding: 5mm 10mm 0 10mm;">
+    <img src="{default_logo_endpoint}" alt="Logo Sabra" style="height: 15mm;">
+    <h1 style="font-size: 24pt; color: #0e2541; margin: 0;">PRESUPUESTO</h1>
+</div>"""
+        
+        if use_template:
+            tpl_config = get_template_config(template_type)
+            tpl_name = tpl_config.get('name', template_type)
+            role_context = f"Eres un experto en generación de presupuestos profesionales en HTML. Debes generar un presupuesto con estilo '{tpl_name}' ({tpl_config.get('tone', '')})."
+            template_style_block = build_template_style_instructions(template_type)
+            
+            ref_html = get_template_html_reference(template_type)
+            if ref_html:
+                template_reference_block = f"""
+---
+
+# 📚 HTML DE REFERENCIA DEL TEMPLATE "{tpl_name.upper()}"
+
+**IMPORTANTE:** Este HTML es un EJEMPLO VISUAL de cómo debe verse el documento.
+Usa la MISMA estructura, colores y layout. Reemplaza los datos de ejemplo con los datos REALES del presupuesto.
+
+```html
+{ref_html}
+```
+
+**INSTRUCCIONES SOBRE ESTE EJEMPLO:**
+- ✅ COPIA la estructura visual (layout, secciones, orden)
+- ✅ COPIA los colores y estilos CSS exactos
+- ✅ REEMPLAZA todos los datos de ejemplo con los datos reales de abajo
+- ❌ NO copies los datos de ejemplo literalmente
+- ❌ NO cambies los colores ni el estilo visual
+"""
+            
+            # Reemplazar instrucciones de diseño con las del template
+            design_instructions = f"""# INSTRUCCIONES DE DISEÑO - ESTILO {tpl_name.upper()}
+
+Genera el HTML siguiendo EXACTAMENTE el estilo del template "{tpl_name}" descrito arriba.
+Usa el logo por defecto de Sabra Corporation: {default_logo_endpoint}"""
+        
         return f"""# ROL Y CONTEXTO
-Eres un generador de presupuestos profesionales en HTML con estilo corporativo de Sabra Corporation.
+{role_context}
+{template_style_block}
 
 ---
 
@@ -591,31 +714,11 @@ URL del logo: {default_logo_endpoint}
 ## Pricing
 {pricing_lines}
 
+{template_reference_block}
+
 ---
 
-# INSTRUCCIONES DE DISEÑO - ESTILO SABRA CORPORATION
-
-Usa el mismo estilo que el prompt con branding personalizado, CON el logo por defecto de Sabra.
-
-## COLOR CORPORATIVO
-- **Azul:** #0e2541 (headers de tabla y cajas de información)
-- **Texto blanco:** #ffffff (sobre fondo azul)
-
-## ESTRUCTURA
-
-1. **HEADER:** Logo de Sabra a la izquierda, "PRESUPUESTO" a la derecha
-2. **INFO EMPRESA:** Dirección, teléfono, email
-3. **FECHAS:** Fecha actual y vigencia (30 días) alineadas a la derecha
-4. **CAJAS AZULES:** Solo Cliente y Solicitud
-5. **TABLA:** Header azul con texto blanco, productos, coordinación (si > $0), TOTAL
-6. **COMENTARIOS:** Sección opcional para notas
-
-### HEADER - Ejemplo con Logo:
-<!-- Logo a la izquierda, título PRESUPUESTO a la derecha -->
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5mm; padding: 5mm 10mm 0 10mm;">
-    <img src="{default_logo_endpoint}" alt="Logo Sabra" style="height: 15mm;">
-    <h1 style="font-size: 24pt; color: #0e2541; margin: 0;">PRESUPUESTO</h1>
-</div>
+{design_instructions}
 
 ## REGLAS
 

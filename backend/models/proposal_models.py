@@ -86,6 +86,7 @@ class ProposalRequest(BaseModel):
     history: str = Field(default="", max_length=2000)
     notes: Optional[ProposalNotes] = Field(default_factory=ProposalNotes)
     custom_template: Optional[str] = Field(None, max_length=5000)
+    template_type: str = Field(default="custom", description="Template style: corporate, wedding, celebration, event, invoice, custom")
     
     # New V2.0 fields
     document_type: DocumentType = DocumentType.PROPOSAL
