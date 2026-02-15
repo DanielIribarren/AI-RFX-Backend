@@ -132,6 +132,82 @@ def require_role(allowed_roles: List[str]):
     return decorator
 
 
+def optional_organization(f):
+    """
+    Decorator que OPCIONALMENTE verifica si el usuario tiene organización.
+    Inyecta g.organization_id y g.user_role si existen, pero NO bloquea si no existen.
+    
+    Útil para endpoints que funcionan tanto para usuarios con organización
+    como para usuarios personales (sin organización).
+    
+    Debe usarse DESPUÉS de @jwt_required (asume que g.user existe).
+    
+    Ejemplo:
+        @app.route('/api/organization/current')
+        @jwt_required
+        @optional_organization
+        def get_current_organization():
+            if g.organization_id:
+                # Usuario tiene organización
+                return org_data
+            else:
+                # Usuario personal sin organización
+                return personal_data
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Verificar que el usuario esté autenticado
+        if not hasattr(g, 'current_user') or not g.current_user:
+            logger.warning("❌ optional_organization: No current_user in g (jwt_required missing?)")
+            return jsonify({
+                "status": "error",
+                "message": "Authentication required"
+            }), 401
+        
+        user_id = g.current_user.get('id')
+        
+        # Obtener organization_id y role del usuario
+        from backend.core.database import DatabaseClient
+        db = DatabaseClient()
+        
+        try:
+            result = db.client.table("users")\
+                .select("organization_id, role")\
+                .eq("id", user_id)\
+                .single()\
+                .execute()
+            
+            if not result.data:
+                logger.error(f"❌ User {user_id} not found in database")
+                return jsonify({
+                    "status": "error",
+                    "message": "User not found"
+                }), 404
+            
+            organization_id = result.data.get("organization_id")
+            role = result.data.get("role")
+            
+            # Inyectar en g (pueden ser None para usuarios personales)
+            g.organization_id = organization_id
+            g.user_role = role
+            
+            if organization_id:
+                logger.info(f"✅ Optional organization middleware: user={user_id}, org={organization_id}, role={role}")
+            else:
+                logger.info(f"✅ Optional organization middleware: user={user_id}, personal user (no org)")
+            
+            return f(*args, **kwargs)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in optional_organization: {str(e)}")
+            return jsonify({
+                "status": "error",
+                "message": "Failed to validate organization"
+            }), 500
+    
+    return decorated_function
+
+
 def get_organization_context() -> Optional[dict]:
     """
     Helper para obtener el contexto de organización desde g.

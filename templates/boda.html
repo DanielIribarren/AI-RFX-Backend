@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Propuesta de Boda - Ana & Carlos</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            color: #5a5a5a;
+            line-height: 1.5;
+            background: #fff;
+            padding: 40px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            border: 2px solid #d4af37;
+            padding: 0;
+        }
+        
+        /* Header with Wedding Colors */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 30px;
+            border-bottom: 3px solid #d4af37;
+            background: linear-gradient(to right, #f5f5dc 0%, #fef5f5 100%);
+        }
+        
+        .company-info h1 {
+            font-size: 24px;
+            font-weight: bold;
+            color: #d4af37;
+            margin-bottom: 3px;
+        }
+        
+        .company-info .tagline {
+            font-size: 11px;
+            color: #8b7355;
+            font-style: italic;
+        }
+        
+        .couple-names {
+            text-align: right;
+            font-size: 22px;
+            color: #5a5a5a;
+            font-weight: bold;
+        }
+        
+        .couple-names .heart {
+            color: #e8b4b8;
+            font-size: 18px;
+        }
+        
+        /* Client Section */
+        .client-section {
+            display: flex;
+            justify-content: space-between;
+            padding: 25px 30px;
+            border-bottom: 1px solid #e8b4b8;
+            background: #fef5f5;
+        }
+        
+        .section-block h3 {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #8b7355;
+        }
+        
+        .section-block p {
+            font-size: 13px;
+            line-height: 1.6;
+            color: #5a5a5a;
+        }
+        
+        /* Items Table */
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .items-table thead {
+            background: #d4af37;
+            color: white;
+        }
+        
+        .items-table th {
+            padding: 12px;
+            text-align: left;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: bold;
+        }
+        
+        .items-table th.center {
+            text-align: center;
+        }
+        
+        .items-table th.right {
+            text-align: right;
+        }
+        
+        .items-table td {
+            padding: 14px 12px;
+            border-bottom: 1px solid #f5e6d3;
+            font-size: 13px;
+            color: #5a5a5a;
+        }
+        
+        .items-table td.center {
+            text-align: center;
+        }
+        
+        .items-table td.right {
+            text-align: right;
+            font-weight: 600;
+        }
+        
+        .items-table tbody tr:last-child td {
+            border-bottom: 2px solid #d4af37;
+        }
+        
+        .item-name {
+            font-weight: bold;
+            color: #5a5a5a;
+        }
+        
+        .item-description {
+            font-size: 11px;
+            color: #8b7355;
+            margin-top: 2px;
+            font-style: italic;
+        }
+        
+        /* Totals Section */
+        .totals-section {
+            padding: 25px 30px;
+            display: flex;
+            justify-content: flex-end;
+            background: #fef5f5;
+        }
+        
+        .totals-table {
+            width: 300px;
+        }
+        
+        .total-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 7px 0;
+            font-size: 13px;
+        }
+        
+        .total-row.subtotal {
+            border-top: 1px solid #e8b4b8;
+            padding-top: 10px;
+            margin-top: 6px;
+            font-weight: 600;
+        }
+        
+        .total-row.final {
+            background: #d4af37;
+            color: white;
+            padding: 14px 16px;
+            margin: 12px -16px -25px -16px;
+            font-size: 15px;
+            font-weight: bold;
+        }
+        
+        .total-label {
+            color: #8b7355;
+        }
+        
+        .total-row.final .total-label,
+        .total-row.final .total-value {
+            color: white;
+        }
+        
+        .total-value {
+            font-weight: bold;
+        }
+        
+        /* Footer */
+        .footer {
+            padding: 18px 30px;
+            text-align: center;
+            border-top: 2px solid #d4af37;
+            background: #f5f5dc;
+        }
+        
+        .footer-terms {
+            font-size: 10px;
+            color: #8b7355;
+            line-height: 1.5;
+            margin-bottom: 10px;
+        }
+        
+        .footer-contact {
+            font-size: 11px;
+            color: #5a5a5a;
+            font-weight: 600;
+        }
+        
+        .contact-highlight {
+            color: #d4af37;
+        }
+        
+        @media print {
+            body {
+                padding: 0;
+            }
+            .container {
+                border: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="company-info">
+                <h1>{{NOMBRE_EMPRESA}}</h1>
+                <div class="tagline">Haciendo realidad el día de tus sueños</div>
+            </div>
+            <div class="couple-names">
+                Ana <span class="heart">♥</span> Carlos
+            </div>
+        </div>
+        
+        <!-- Client Info -->
+        <div class="client-section">
+            <div class="section-block">
+                <h3>Novios</h3>
+                <p>
+                    <strong>Ana García & Carlos Rodríguez</strong><br>
+                    ana.garcia@email.com<br>
+                    +1 (555) 234-5678
+                </p>
+            </div>
+            <div class="section-block">
+                <h3>Celebración</h3>
+                <p>
+                    Boda<br>
+                    15 Junio 2024 • 7:00 PM<br>
+                    Hacienda San Miguel
+                </p>
+            </div>
+            <div class="section-block">
+                <h3>Invitados</h3>
+                <p>
+                    <strong>120 personas</strong><br>
+                    Familiares y amigos<br>
+                    Servicio elegante
+                </p>
+            </div>
+        </div>
+        
+        <!-- Items Table -->
+        <table class="items-table">
+            <thead>
+                <tr>
+                    <th style="width: 50%;">Descripción</th>
+                    <th class="center" style="width: 15%;">Cantidad</th>
+                    <th class="right" style="width: 15%;">P. Unit.</th>
+                    <th class="right" style="width: 20%;">Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>
+                        <div class="item-name">Recepción de Cocktail</div>
+                        <div class="item-description">Canapés gourmet, estación de quesos, sushi, champagne</div>
+                    </td>
+                    <td class="center">120 pax</td>
+                    <td class="right">$35.00</td>
+                    <td class="right">$4,200.00</td>
+                </tr>
+                <tr>
+                    <td>
+                        <div class="item-name">Cena de Gala</div>
+                        <div class="item-description">Ensalada caprese, filet mignon, papa trufada, vegetales</div>
+                    </td>
+                    <td class="center">120 pax</td>
+                    <td class="right">$65.00</td>
+                    <td class="right">$7,800.00</td>
+                </tr>
+                <tr>
+                    <td>
+                        <div class="item-name">Pastel de Boda</div>
+                        <div class="item-description">3 pisos, decoración floral, relleno tres leches</div>
+                    </td>
+                    <td class="center">120 porc</td>
+                    <td class="right">$850.00</td>
+                    <td class="right">$850.00</td>
+                </tr>
+                <tr>
+                    <td>
+                        <div class="item-name">Servicio Completo</div>
+                        <div class="item-description">Meseros de gala, coordinador, montaje, decoración floral</div>
+                    </td>
+                    <td class="center">8 hrs</td>
+                    <td class="right">$2,800.00</td>
+                    <td class="right">$2,800.00</td>
+                </tr>
+            </tbody>
+        </table>
+        
+        <!-- Totals -->
+        <div class="totals-section">
+            <div class="totals-table">
+                <div class="total-row">
+                    <span class="total-label">Cocktail de Recepción</span>
+                    <span class="total-value">$4,200.00</span>
+                </div>
+                <div class="total-row">
+                    <span class="total-label">Cena de Gala</span>
+                    <span class="total-value">$7,800.00</span>
+                </div>
+                <div class="total-row">
+                    <span class="total-label">Pastel</span>
+                    <span class="total-value">$850.00</span>
+                </div>
+                <div class="total-row">
+                    <span class="total-label">Servicio</span>
+                    <span class="total-value">$2,800.00</span>
+                </div>
+                <div class="total-row subtotal">
+                    <span class="total-label">Subtotal</span>
+                    <span class="total-value">$15,650.00</span>
+                </div>
+                <div class="total-row">
+                    <span class="total-label">Coordinación (10%)</span>
+                    <span class="total-value">$1,565.00</span>
+                </div>
+                <div class="total-row final">
+                    <span class="total-label">INVERSIÓN TOTAL</span>
+                    <span class="total-value">$17,215.00</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="footer">
+            <div class="footer-terms">
+                Anticipo 50% • Saldo 5 días antes • Incluye degustación previa • Menú personalizable • Decoración floral • Vajilla fina
+            </div>
+            <div class="footer-contact">
+                <span class="contact-highlight">{{EMAIL_EMPRESA}}</span> • 
+                <span class="contact-highlight">{{TELEFONO_EMPRESA}}</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

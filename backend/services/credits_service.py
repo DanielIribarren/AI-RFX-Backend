@@ -600,37 +600,36 @@ class CreditsService:
     
     def reset_monthly_credits(self) -> Dict:
         """
-        Reset mensual de créditos para todas las organizaciones.
-        
-        NOTA: Este método debe ser llamado por un cron job mensual.
-        
+        Reset mensual de créditos para todas las organizaciones Y usuarios personales.
+
+        NOTA: Este método debe ser llamado por un cron job mensual o por un admin
+        desde el endpoint POST /api/subscription/admin/reset-credits.
+
         Returns:
             Diccionario con resultado del reset
         """
         try:
-            # Obtener todas las organizaciones que necesitan reset
             now = datetime.now()
-            
+            from backend.core.plans import get_plan
+
+            # ── 1. Reset de organizaciones ───────────────────────────────────
             orgs_result = self.db.client.table("organizations")\
                 .select("id, plan_tier, credits_reset_date")\
                 .lte("credits_reset_date", now.isoformat())\
                 .execute()
-            
-            reset_count = 0
-            
+
+            org_reset_count = 0
+
             for org in orgs_result.data:
                 org_id = org["id"]
                 plan_tier = org.get("plan_tier", "free")
-                
-                # Obtener créditos del plan
-                from backend.core.plans import get_plan
+
                 plan = get_plan(plan_tier)
-                
                 if not plan:
                     logger.warning(f"Plan not found for organization {org_id}")
                     continue
-                
-                # Reset créditos
+
+                # Reset créditos de la organización
                 self.db.client.table("organizations")\
                     .update({
                         "credits_used": 0,
@@ -639,26 +638,62 @@ class CreditsService:
                     })\
                     .eq("id", org_id)\
                     .execute()
-                
+
                 # Registrar transacción de reset
-                self.db.client.table("credit_transactions")\
-                    .insert({
-                        "organization_id": org_id,
-                        "amount": plan.credits_per_month,
-                        "type": "monthly_reset",
-                        "description": f"Monthly credits reset for {plan_tier} plan"
-                    })\
-                    .execute()
-                
-                reset_count += 1
+                try:
+                    self.db.client.table("credit_transactions")\
+                        .insert({
+                            "organization_id": org_id,
+                            "amount": plan.credits_per_month,
+                            "type": "monthly_reset",
+                            "description": f"Monthly credits reset for {plan_tier} plan"
+                        })\
+                        .execute()
+                except Exception as tx_err:
+                    logger.warning(f"Could not record credit transaction for org {org_id}: {tx_err}")
+
+                org_reset_count += 1
                 logger.info(f"✅ Credits reset for organization {org_id} ({plan_tier})")
-            
+
+            # ── 2. Reset de usuarios personales (user_credits) ───────────────
+            users_result = self.db.client.table("user_credits")\
+                .select("user_id, plan_tier, credits_reset_date")\
+                .lte("credits_reset_date", now.isoformat())\
+                .execute()
+
+            user_reset_count = 0
+
+            for uc in (users_result.data or []):
+                user_id = uc["user_id"]
+                plan_tier = uc.get("plan_tier", "free")
+
+                plan = get_plan(plan_tier)
+                if not plan:
+                    logger.warning(f"Plan not found for user {user_id}")
+                    continue
+
+                self.db.client.table("user_credits")\
+                    .update({
+                        "credits_used": 0,
+                        "credits_total": plan.credits_per_month,
+                        "credits_reset_date": (now + timedelta(days=30)).isoformat()
+                    })\
+                    .eq("user_id", user_id)\
+                    .execute()
+
+                user_reset_count += 1
+                logger.info(f"✅ Credits reset for personal user {user_id} ({plan_tier})")
+
+            total_reset = org_reset_count + user_reset_count
+
             return {
                 "status": "success",
-                "message": f"Credits reset for {reset_count} organizations",
-                "reset_count": reset_count
+                "message": f"Credits reset for {org_reset_count} organizations and {user_reset_count} personal users",
+                "reset_count": total_reset,
+                "org_reset_count": org_reset_count,
+                "user_reset_count": user_reset_count
             }
-        
+
         except Exception as e:
             logger.error(f"Error resetting monthly credits: {e}")
             return {

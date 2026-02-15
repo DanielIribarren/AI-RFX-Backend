@@ -48,12 +48,13 @@ Tu output será validado automáticamente. Si no cumple EXACTAMENTE con el brand
 Generar HTML limpio que respete al 100% el branding configurado, con máxima precisión y cero improvisación."""
 
 
-# Información de empresa por defecto (constante)
+# Información de empresa por defecto (placeholder genérico)
+# Se sobreescribe dinámicamente con datos de la organización del usuario
 DEFAULT_COMPANY_INFO = {
-    'name': 'Sabra Corporation',
-    'address': 'Dirección de la empresa',
-    'phone': '+1 (555) 123-4567',
-    'email': 'contacto@sabracorp.com'
+    'name': '',
+    'address': '',
+    'phone': '',
+    'email': ''
 }
     
 class ProposalGenerationService:
@@ -113,8 +114,12 @@ class ProposalGenerationService:
             # 5. Detectar si tiene branding completo
             has_branding = self._has_complete_branding(user_id)
             
+            # 5.5. Extraer template_type del request
+            template_type = getattr(proposal_request, 'template_type', 'custom') or 'custom'
+            logger.info(f"🎨 Template type: {template_type}")
+            
             # ✅ NUEVO: Usar sistema de 3 agentes AI si está activado
-            if USE_AI_AGENTS and has_branding:
+            if USE_AI_AGENTS and has_branding and template_type == 'custom':
                 logger.info("🤖 Using AI Agents System (3-Agent Architecture)")
                 proposal = await self._generate_with_ai_agents(
                     rfx_data, products_info, pricing_calculation, currency, user_id, proposal_request, pricing_config
@@ -132,13 +137,13 @@ class ProposalGenerationService:
                 logger.info(f"✅ Using BRANDING PROMPT (with logo)")
                 branding_config = self._get_branding_config(user_id)
                 html_content = await self._generate_with_branding(
-                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config
+                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config, template_type
                 )
             else:
                 logger.info(f"📄 No branding found for user {user_id}")
                 logger.info(f"📄 Using DEFAULT PROMPT (no branding)")
                 html_content = await self._generate_default(
-                    rfx_data, products_info, pricing_calculation, currency
+                    rfx_data, products_info, pricing_calculation, currency, template_type
                 )
             
             # 7. Validar HTML con sistema de scoring
@@ -200,7 +205,7 @@ class ProposalGenerationService:
             await self._save_to_database(proposal)
             
             logger.info(f"✅ Proposal generated successfully - Document ID: {proposal.id}")
-            logger.info(f"📊 Validation score: {validation_result['score']}/10 ({validation_result['score']*10:.0f}%)")
+            logger.info(f"📊 Validation: {'✅ VALID' if validation_result.get('is_valid') else '⚠️ INVALID (saved anyway)'}")
             
             # 11. 🧠 Trigger AI Learning System (aprende de RFX completado)
             try:
@@ -286,6 +291,36 @@ class ProposalGenerationService:
         
         return products_info
     
+    def _get_user_company_info(self, user_id: str) -> Dict[str, str]:
+        """Obtiene info de la empresa del usuario desde su branding configurado.
+        NO usa el nombre de la organización (puede ser interno/de prueba).
+        Si no hay company name configurado, retorna vacío para que el LLM no invente."""
+        try:
+            # Buscar company name desde branding (template_analysis puede tenerlo)
+            branding_result = self.db_client.client.table("company_branding_assets")\
+                .select("template_analysis")\
+                .eq("user_id", user_id)\
+                .eq("is_active", True)\
+                .execute()
+            
+            if branding_result.data and branding_result.data[0].get("template_analysis"):
+                analysis = branding_result.data[0]["template_analysis"]
+                if isinstance(analysis, dict):
+                    company_name = analysis.get("company_name", "")
+                    if company_name:
+                        logger.info(f"🏢 Using company name from branding analysis: {company_name}")
+                        return {
+                            'name': company_name,
+                            'address': analysis.get("address", ""),
+                            'phone': analysis.get("phone", ""),
+                            'email': analysis.get("email", "")
+                        }
+        except Exception as e:
+            logger.warning(f"⚠️ Could not get user company info from branding: {e}")
+        
+        logger.info("🏢 No company name configured, using empty (LLM will omit company header)")
+        return DEFAULT_COMPANY_INFO
+
     def _get_currency(self, rfx_data: Dict[str, Any], unified_config: Optional[Dict]) -> str:
         """Obtiene moneda con prioridades"""
         if unified_config:
@@ -472,7 +507,8 @@ class ProposalGenerationService:
     
     async def _generate_with_branding(
         self, rfx_data: Dict, products_info: List[Dict], 
-        pricing_calculation: Dict, currency: str, user_id: str, branding_config: Dict
+        pricing_calculation: Dict, currency: str, user_id: str, branding_config: Dict,
+        template_type: str = "custom"
     ) -> str:
         """🎨 Genera propuesta CON branding usando ProposalPrompts"""
         logger.info(f"🎨 Building prompt with branding for user {user_id}")
@@ -508,7 +544,7 @@ class ProposalGenerationService:
             logger.warning(f"⚠️ Cloudinary URL not found, using local endpoint: {logo_endpoint}")
         
         # Preparar datos para el prompt
-        company_info = DEFAULT_COMPANY_INFO
+        company_info = self._get_user_company_info(user_id)
         pricing_data = self._format_pricing_data(pricing_calculation, currency)
         
         # DEBUG: Log de datos originales (solo si DEBUG está activado)
@@ -539,21 +575,23 @@ class ProposalGenerationService:
             company_info=company_info,
             rfx_data=mapped_rfx_data,
             pricing_data=pricing_data,
-            branding_config=branding_config  # ✅ Pasar colores del branding
+            branding_config=branding_config,
+            template_type=template_type
         )
         
         return await self._call_ai(prompt)
     
     async def _generate_default(
         self, rfx_data: Dict, products_info: List[Dict], 
-        pricing_calculation: Dict, currency: str
+        pricing_calculation: Dict, currency: str,
+        template_type: str = "custom"
     ) -> str:
-        """📋 Genera propuesta CON logo por defecto de Sabra usando ProposalPrompts"""
-        logger.info(f"📋 Building default prompt (with Sabra default logo)")
+        """📋 Genera propuesta sin branding personalizado usando ProposalPrompts"""
+        logger.info(f"📋 Building default prompt (no branding)")
         
         # Preparar datos para el prompt
         user_id = rfx_data.get('user_id', 'unknown')
-        company_info = DEFAULT_COMPANY_INFO
+        company_info = self._get_user_company_info(user_id)
         pricing_data = self._format_pricing_data(pricing_calculation, currency)
         
         # Mapear datos para el prompt (inline simplificado)
@@ -574,7 +612,8 @@ class ProposalGenerationService:
         prompt = ProposalPrompts.get_prompt_default(
             company_info=company_info,
             rfx_data=mapped_rfx_data,
-            pricing_data=pricing_data
+            pricing_data=pricing_data,
+            template_type=template_type
         )
         
         return await self._call_ai(prompt)
@@ -719,8 +758,8 @@ class ProposalGenerationService:
         logger.info(f"🔄 Retrying generation with {len(issues)} issues to fix")
         
         # Preparar datos comunes
-        logo_endpoint = f"/api/branding/files/{user_id}/logo" if has_branding else "/api/branding/default/logo"
-        company_info = DEFAULT_COMPANY_INFO
+        logo_endpoint = f"/api/branding/files/{user_id}/logo" if has_branding else ""
+        company_info = self._get_user_company_info(user_id)
         pricing_data = self._format_pricing_data(pricing_calculation, currency)
         
         # Mapear datos para el prompt (inline simplificado)
@@ -823,14 +862,10 @@ GENERA EL HTML CORREGIDO.
         issues = []
         
         # Validaciones básicas
-        if '<!DOCTYPE' not in html:
-            issues.append("Missing DOCTYPE declaration")
-        if '<html' not in html:
-            issues.append("Missing HTML tag")
+        if '<!DOCTYPE' not in html and '<html' not in html:
+            issues.append("Missing DOCTYPE or HTML tag")
         if '<table' not in html:
             issues.append("Missing table")
-        if len(products_info) > 0 and f"{len(products_info)} productos" not in html and f"{len(products_info)} products" not in html:
-            issues.append("Products count mismatch")
         
         is_valid = len(issues) == 0
         

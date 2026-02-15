@@ -2,11 +2,13 @@
 Download API Endpoints - Versión Final Simplificada
 Conversión HTML a PDF con fidelidad visual exacta usando Playwright
 """
-from flask import Blueprint, send_file, jsonify, request
+from flask import Blueprint, send_file, jsonify, request, make_response
 import logging
 import os
+import io
 import tempfile
 import re
+import hashlib
 from datetime import datetime
 
 from backend.core.database import get_database_client
@@ -53,8 +55,24 @@ def convert_html_to_pdf():
         except Exception as e:
             logger.error(f"Playwright failed: {e}")
         
-        # MÉTODO 2: HTML con instrucciones precisas
-        logger.info("Fallback: generando HTML con instrucciones")
+        # MÉTODO 2: WeasyPrint (buena fidelidad, no requiere browser)
+        try:
+            return convert_with_weasyprint(html_content, client_name, document_id)
+        except ImportError:
+            logger.warning("WeasyPrint no disponible")
+        except Exception as e:
+            logger.error(f"WeasyPrint failed: {e}")
+        
+        # MÉTODO 3: pdfkit/wkhtmltopdf
+        try:
+            return convert_with_pdfkit(html_content, client_name, document_id)
+        except ImportError:
+            logger.warning("pdfkit no disponible")
+        except Exception as e:
+            logger.error(f"pdfkit failed: {e}")
+        
+        # MÉTODO 4: HTML con instrucciones precisas (último recurso)
+        logger.warning("⚠️ Todos los métodos PDF fallaron, generando HTML con instrucciones")
         return create_html_download_with_instructions(html_content, client_name, document_id)
         
     except Exception as e:
@@ -64,6 +82,175 @@ def convert_html_to_pdf():
             "message": "Error interno en conversión",
             "error": str(e)
         }), 500
+
+
+def sanitize_html_for_chromium_pdf(html_content: str) -> str:
+    """
+    Elimina CSS que causa crashes en Chromium PDF engine (page.pdf()).
+    Mantiene el estilo visual pero quita propiedades problemáticas.
+    """
+    problematic_css = [
+        # Filters y effects (muy problemáticos con page.pdf)
+        (r'filter:\s*[^;]+;', ''),
+        (r'backdrop-filter:\s*[^;]+;', ''),
+        (r'-webkit-backdrop-filter:\s*[^;]+;', ''),
+        (r'mix-blend-mode:\s*[^;]+;', ''),
+        
+        # Masks y clips complejos
+        (r'-webkit-mask:\s*[^;]+;', ''),
+        (r'-webkit-mask-image:\s*[^;]+;', ''),
+        (r'mask:\s*[^;]+;', ''),
+        (r'clip-path:\s*polygon[^;]+;', ''),
+        
+        # Transforms 3D problemáticos
+        (r'transform:\s*[^;]*perspective[^;]+;', ''),
+        (r'transform:\s*[^;]*rotateX[^;]+;', ''),
+        (r'transform:\s*[^;]*rotateY[^;]+;', ''),
+        (r'transform:\s*[^;]*rotateZ[^;]+;', ''),
+        (r'transform-style:\s*preserve-3d;', ''),
+        
+        # Will-change (no sirve en PDF)
+        (r'will-change:\s*[^;]+;', ''),
+        
+        # Contenido generado problemático
+        (r'content:\s*url\([^)]+\);', ''),
+        
+        # Animaciones y transiciones (no tienen sentido en PDF)
+        (r'animation:\s*[^;]+;', ''),
+        (r'animation-[^:]+:\s*[^;]+;', ''),
+        (r'transition:\s*[^;]+;', ''),
+        (r'transition-[^:]+:\s*[^;]+;', ''),
+        
+        # image-rendering no estándar
+        (r'image-rendering:\s*-webkit-optimize-contrast[^;]*;', 'image-rendering: auto;'),
+        
+        # -webkit-print-color-adjust con !important en selectores universales
+        (r'-webkit-print-color-adjust:\s*exact\s*!important\s*;', '-webkit-print-color-adjust: exact;'),
+    ]
+    
+    sanitized = html_content
+    
+    for pattern, replacement in problematic_css:
+        sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+    
+    # Remover bloques universales (*) con -webkit-print-color-adjust (principal causa de crash)
+    sanitized = re.sub(
+        r'\*\s*(?:,\s*\*::before\s*,\s*\*::after\s*)?\{[^}]*-webkit-print-color-adjust[^}]*\}',
+        '',
+        sanitized
+    )
+    
+    # Limpiar inline scripts (no sirven en PDF)
+    sanitized = re.sub(r'<script[^>]*>.*?</script>', '', sanitized, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Limpiar event handlers inline
+    sanitized = re.sub(r'\s+on\w+\s*=\s*["\'][^"\']*["\']', '', sanitized, flags=re.IGNORECASE)
+    
+    logger.info("🧹 HTML sanitized for Chromium PDF engine")
+    return sanitized
+
+
+def sanitize_html_for_playwright_stability(html_content: str) -> str:
+    """
+    Sanitización agresiva para casos donde set_content crashea.
+    Reduce features de HTML/CSS que suelen romper el renderer.
+    """
+    sanitized = html_content
+
+    # Evitar dependencias externas e imports CSS dinámicos
+    sanitized = re.sub(r'<link[^>]+rel=["\']?stylesheet["\']?[^>]*>', '', sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(r'@import\s+url\([^)]+\)\s*;?', '', sanitized, flags=re.IGNORECASE)
+
+    # Remover tags multimedia/embebidos problemáticos para PDF
+    sanitized = re.sub(r'<(iframe|embed|object|video|audio|canvas)[^>]*>.*?</\1>', '', sanitized, flags=re.IGNORECASE | re.DOTALL)
+    sanitized = re.sub(r'<(iframe|embed|object|video|audio|canvas)[^>]*/?>', '', sanitized, flags=re.IGNORECASE)
+
+    # SVG complejos pueden tumbar el renderer en algunos hosts
+    sanitized = re.sub(r'<svg[^>]*>.*?</svg>', '', sanitized, flags=re.IGNORECASE | re.DOTALL)
+
+    # Reducir payload de data URIs extremadamente largos
+    sanitized = re.sub(r'data:[^"\')\s]{5000,}', 'data:,', sanitized, flags=re.IGNORECASE)
+
+    # Quitar scripts inline y handlers
+    sanitized = re.sub(r'<script[^>]*>.*?</script>', '', sanitized, flags=re.DOTALL | re.IGNORECASE)
+    sanitized = re.sub(r'\s+on\w+\s*=\s*["\'][^"\']*["\']', '', sanitized, flags=re.IGNORECASE)
+
+    logger.warning("🛟 Applied aggressive HTML stabilization for Playwright")
+    return sanitized
+
+
+def render_html_to_pdf_bytes(page, html_content: str) -> bytes:
+    """
+    Renderiza HTML y devuelve bytes PDF.
+    Usa domcontentloaded para evitar crashes asociados a networkidle.
+    """
+    page.set_default_timeout(60000)
+    page.set_viewport_size({"width": 1200, "height": 1600})
+
+    logger.info("🌐 Loading HTML content into browser...")
+    page.set_content(html_content, wait_until='domcontentloaded', timeout=60000)
+
+    # Espera de red no bloqueante: si falla, seguimos.
+    try:
+        page.wait_for_load_state('networkidle', timeout=5000)
+    except Exception:
+        logger.info("ℹ️ networkidle not reached, continuing with current render state")
+
+    logger.info("🖼️ Waiting for pending images...")
+    try:
+        page.evaluate("""
+            () => Promise.all(
+                Array.from(document.images)
+                    .filter(img => !img.complete)
+                    .map(img => new Promise(resolve => {
+                        img.onload = img.onerror = resolve;
+                    }))
+            )
+        """)
+    except Exception as img_error:
+        logger.warning(f"⚠️ Image loading check failed (continuing): {img_error}")
+
+    page.wait_for_timeout(700)
+
+    logger.info("✅ Generating PDF...")
+    return page.pdf(
+        format='A4',
+        margin={
+            'top': '2cm',
+            'right': '2cm',
+            'bottom': '2cm',
+            'left': '2cm'
+        },
+        print_background=True,
+        prefer_css_page_size=True,
+        display_header_footer=False
+    )
+
+
+def persist_html_crash_snapshot(html_content: str, stage: str) -> None:
+    """
+    Guarda snapshot de HTML para análisis forense cuando Playwright crashea.
+    """
+    try:
+        digest = hashlib.sha256(html_content.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        filename = f"/tmp/rfx_pdf_crash_{stage}_{digest}.html"
+        with open(filename, "w", encoding="utf-8") as snapshot:
+            snapshot.write(html_content)
+        logger.warning(f"🧪 Crash snapshot saved: {filename} (len={len(html_content)})")
+    except Exception as snapshot_error:
+        logger.warning(f"⚠️ Could not persist crash snapshot: {snapshot_error}")
+
+
+def is_renderer_crash_error(error: Exception) -> bool:
+    """Detecta crashes del renderer Chromium en distintos puntos del pipeline."""
+    message = str(error).lower()
+    crash_tokens = [
+        "target crashed",
+        "page crashed",
+        "renderer",
+        "crash"
+    ]
+    return any(token in message for token in crash_tokens)
 
 
 @retry_on_failure(max_retries=2, initial_delay=2.0, backoff_factor=2.0)
@@ -78,78 +265,45 @@ def convert_with_playwright(html_content: str, client_name: str, document_id: st
     except ImportError as e:
         raise ExternalServiceError("Playwright", "Playwright not installed", original_error=e)
     
-    # Optimizar HTML para PDF
-    optimized_html = optimize_html_for_pdf(html_content)
+    # PASO 1: Limpiar CSS problemático ANTES de optimizar
+    sanitized_html = sanitize_html_for_chromium_pdf(html_content)
+    
+    # PASO 2: Optimizar HTML para PDF
+    optimized_html = optimize_html_for_pdf(sanitized_html)
     
     with sync_playwright() as p:
-        # Lanzar navegador - headless=True usa automáticamente el modo nuevo
-        # NO especificar --headless manualmente para evitar conflictos
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu'
-            ]
-        )
+        browser = launch_chromium_for_pdf(p)
         
         try:
-            # Configurar timeout más largo para evitar cierres prematuros
             page = browser.new_page()
-            page.set_default_timeout(30000)  # 30 segundos timeout
-            
-            # Configurar viewport para renderizado consistente
-            page.set_viewport_size({"width": 1200, "height": 1600})
-            
-            logger.info("🌐 Loading HTML content into browser...")
-            
-            # Cargar HTML y esperar renderizado completo
-            # 'load' espera a que todas las imágenes (incluidas base64) estén cargadas
-            page.set_content(optimized_html, wait_until='load', timeout=30000)
-            
-            logger.info("🖼️ Waiting for all images to load (including base64)...")
-            
-            # Esperar a que todas las imágenes estén completamente cargadas
-            # Esto es crítico para imágenes base64
             try:
-                page.evaluate("""
-                    () => {
-                        return Promise.all(
-                            Array.from(document.images)
-                                .filter(img => !img.complete)
-                                .map(img => new Promise(resolve => {
-                                    img.onload = img.onerror = resolve;
-                                }))
-                        );
-                    }
-                """)
-            except Exception as img_error:
-                logger.warning(f"⚠️ Image loading check failed (continuing anyway): {img_error}")
-            
-            # Esperar un momento adicional para asegurar renderizado completo
-            page.wait_for_timeout(1500)
-            
-            logger.info("✅ All images loaded (including base64), generating PDF...")
-            
-            # Generar PDF con configuración optimizada
-            pdf_bytes = page.pdf(
-                format='A4',
-                margin={
-                    'top': '2cm',
-                    'right': '2cm',
-                    'bottom': '2cm',
-                    'left': '2cm'
-                },
-                print_background=True,  # CRÍTICO para colores
-                prefer_css_page_size=True,
-                display_header_footer=False
-            )
-            
+                pdf_bytes = render_html_to_pdf_bytes(page, optimized_html)
+            except Exception as render_error:
+                # Activar safe mode para cualquier crash del renderer (set_content/evaluate/pdf)
+                if not is_renderer_crash_error(render_error):
+                    raise
+
+                persist_html_crash_snapshot(optimized_html, "optimized")
+                logger.warning(f"⚠️ Playwright page crashed with optimized HTML, retrying safe mode: {render_error}")
+
+                # Reintento local sin salir de la función: HTML más conservador
+                try:
+                    page.close()
+                except Exception:
+                    pass
+
+                page = browser.new_page()
+                safe_html = optimize_html_for_pdf(sanitize_html_for_playwright_stability(sanitized_html))
+                try:
+                    pdf_bytes = render_html_to_pdf_bytes(page, safe_html)
+                except Exception as safe_error:
+                    if is_renderer_crash_error(safe_error):
+                        persist_html_crash_snapshot(safe_html, "safe")
+                    raise
+
             logger.info(f"✅ PDF generated successfully - Size: {len(pdf_bytes)} bytes")
-            
             return create_pdf_response(pdf_bytes, client_name, document_id)
-            
+
         except Exception as e:
             logger.error(f"❌ Error during PDF generation: {e}")
             raise
@@ -161,95 +315,174 @@ def convert_with_playwright(html_content: str, client_name: str, document_id: st
                 logger.warning(f"⚠️ Error closing browser (non-critical): {close_error}")
 
 
+def launch_chromium_for_pdf(playwright_instance):
+    """
+    Lanza Chromium para generación PDF.
+    Prioriza headless moderno y usa fallback a old headless para compatibilidad.
+    """
+    common_args = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-gpu',
+        '--disable-software-rasterizer',
+        '--disable-dev-shm-usage',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+    ]
+
+    launch_configs = [
+        {
+            "label": "modern-headless",
+            "kwargs": {
+                "headless": True,
+                "args": common_args
+            }
+        },
+        {
+            "label": "legacy-headless",
+            "kwargs": {
+                "headless": True,
+                "args": common_args + ['--headless=old']
+            }
+        }
+    ]
+
+    last_error = None
+    for config in launch_configs:
+        try:
+            logger.info(f"🚀 Launching Chromium with {config['label']}")
+            return playwright_instance.chromium.launch(**config["kwargs"])
+        except Exception as launch_error:
+            last_error = launch_error
+            logger.warning(f"⚠️ Chromium launch failed ({config['label']}): {launch_error}")
+
+    raise last_error
+
+
+def convert_with_weasyprint(html_content: str, client_name: str, document_id: str):
+    """
+    Conversión usando WeasyPrint - Buena fidelidad sin necesidad de browser
+    """
+    try:
+        from weasyprint import HTML as WeasyHTML
+    except ImportError as e:
+        raise ImportError("WeasyPrint not installed") from e
+    
+    optimized_html = optimize_html_for_pdf(html_content)
+    
+    logger.info("📄 Converting HTML to PDF with WeasyPrint...")
+    
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+        tmp_path = tmp_file.name
+    
+    try:
+        WeasyHTML(string=optimized_html).write_pdf(tmp_path)
+        
+        with open(tmp_path, 'rb') as f:
+            pdf_bytes = f.read()
+        
+        logger.info(f"✅ WeasyPrint PDF generated - Size: {len(pdf_bytes)} bytes")
+        return create_pdf_response(pdf_bytes, client_name, document_id)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def convert_with_pdfkit(html_content: str, client_name: str, document_id: str):
+    """
+    Conversión usando pdfkit (requiere wkhtmltopdf instalado en el sistema)
+    """
+    try:
+        import pdfkit
+    except ImportError as e:
+        raise ImportError("pdfkit not installed") from e
+    
+    optimized_html = optimize_html_for_pdf(html_content)
+    
+    logger.info("📄 Converting HTML to PDF with pdfkit...")
+    
+    options = {
+        'page-size': 'A4',
+        'margin-top': '20mm',
+        'margin-right': '20mm',
+        'margin-bottom': '20mm',
+        'margin-left': '20mm',
+        'encoding': 'UTF-8',
+        'print-media-type': '',
+        'no-outline': None,
+        'enable-local-file-access': None
+    }
+    
+    try:
+        pdf_bytes = pdfkit.from_string(optimized_html, False, options=options)
+        logger.info(f"✅ pdfkit PDF generated - Size: {len(pdf_bytes)} bytes")
+        return create_pdf_response(pdf_bytes, client_name, document_id)
+    except OSError as e:
+        if 'wkhtmltopdf' in str(e).lower():
+            raise ImportError("wkhtmltopdf not installed on system") from e
+        raise
+
+
 def optimize_html_for_pdf(html_content: str) -> str:
     """
-    Optimizar HTML para máxima fidelidad en PDF
+    Optimizar HTML para máxima fidelidad en PDF.
+    CSS minimalista y compatible con Chromium page.pdf() para evitar 'Target crashed'.
+    NO usar selectores universales (*) con propiedades -webkit- pesadas.
     """
-    # CSS para forzar colores y estilos en PDF
     pdf_optimization_css = """
     <style type="text/css">
-        /* FORZAR COLORES EN PDF */
-        *, *::before, *::after {
-            -webkit-print-color-adjust: exact !important;
-            color-adjust: exact !important;
-            print-color-adjust: exact !important;
-        }
-        
-        /* OPTIMIZACIÓN PARA IMÁGENES BASE64 EN PDF */
-        img {
-            max-width: 100% !important;
-            height: auto !important;
-            display: block !important;
-            page-break-inside: avoid !important;
-            -webkit-print-color-adjust: exact !important;
-        }
-        
-        /* ASEGURAR LOGOS SE RENDERICEN CORRECTAMENTE */
-        img[alt*="Logo"], img[alt*="logo"], .logo {
-            image-rendering: -webkit-optimize-contrast !important;
-            image-rendering: crisp-edges !important;
-        }
-        
-        /* ASEGURAR COLORES SABRA CORPORATION */
-        .company-name {
-            color: #2c5f7c !important;
-            font-weight: bold !important;
-        }
-        
-        .company-subtitle {
-            color: #2c5f7c !important;
-        }
-        
-        /* FORZAR FONDOS DE TABLA */
-        .main-table th {
-            background-color: #f0f0f0 !important;
-        }
-        
-        .total-row {
-            background-color: #f8f8f8 !important;
-        }
-        
-        .final-total {
-            background-color: #e0e0e0 !important;
-        }
-        
-        .coordination-row td {
-            border-top: 2px solid #000 !important;
-        }
-        
-        /* ASEGURAR BORDES */
-        .budget-section {
-            border: 2px solid #000 !important;
-        }
-        
-        .budget-table td {
-            border: 1px solid #000 !important;
-        }
-        
-        .main-table {
-            border: 2px solid #000 !important;
-        }
-        
-        .main-table th,
-        .main-table td {
-            border: 1px solid #000 !important;
-        }
-        
-        /* EVITAR CORTES DE PÁGINA EN ELEMENTOS CRÍTICOS */
-        .header {
-            page-break-inside: avoid !important;
-        }
-        
-        .main-table thead {
-            page-break-inside: avoid !important;
-        }
-        
-        /* ASEGURAR TIPOGRAFÍA */
+        /* PDF: Forzar colores de fondo en impresión (solo en body, no universal) */
         body {
-            font-family: Arial, sans-serif !important;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+        
+        /* PDF: Imágenes responsivas */
+        img {
+            max-width: 100%;
+            height: auto;
+            page-break-inside: avoid;
+        }
+        
+        /* PDF: Evitar cortes de página en elementos críticos */
+        table, thead, tr, .header {
+            page-break-inside: avoid;
+        }
+        
+        /* PDF: Configuración de página */
+        @page {
+            size: A4;
+            margin: 2cm;
         }
     </style>
     """
+    
+    # Sanitizar CSS problemático del HTML generado por el LLM
+    # Estas propiedades pueden causar 'Target crashed' en Chromium page.pdf()
+    
+    # 1. Remover image-rendering: -webkit-optimize-contrast (no estándar, causa crash)
+    html_content = re.sub(
+        r'image-rendering:\s*-webkit-optimize-contrast[^;]*;',
+        'image-rendering: auto;',
+        html_content
+    )
+    
+    # 2. Remover selectores universales (*) con -webkit-print-color-adjust
+    #    Esto es el principal causante de 'Target crashed'
+    html_content = re.sub(
+        r'\*\s*(?:,\s*\*::before\s*,\s*\*::after\s*)?\{[^}]*-webkit-print-color-adjust[^}]*\}',
+        '',
+        html_content
+    )
+    
+    # 3. Remover propiedades -webkit- problemáticas sueltas en cualquier selector
+    html_content = re.sub(
+        r'-webkit-print-color-adjust:\s*exact\s*!important\s*;',
+        '-webkit-print-color-adjust: exact;',
+        html_content
+    )
     
     # Insertar CSS optimizado
     if '</head>' in html_content:
@@ -257,7 +490,6 @@ def optimize_html_for_pdf(html_content: str) -> str:
     elif '<head>' in html_content:
         html_content = html_content.replace('<head>', '<head>' + pdf_optimization_css)
     elif '<body>' in html_content:
-        # Si no hay head, crearlo
         html_content = html_content.replace('<body>', f'<head>{pdf_optimization_css}</head><body>')
     
     return html_content
@@ -540,7 +772,7 @@ def create_html_download_with_instructions(html_content: str, client_name: str, 
         </div>
         
         <div class="warning-box">
-            ⚠️ SIN "Gráficos de fondo", los colores azules de Sabra Corporation y bordes NO aparecerán
+            ⚠️ SIN "Gráficos de fondo", los colores y bordes NO aparecerán en el PDF
         </div>
         
         <div class="success-box">
@@ -561,54 +793,34 @@ def create_html_download_with_instructions(html_content: str, client_name: str, 
 
 
 def create_pdf_response(pdf_bytes: bytes, client_name: str, document_id: str):
-    """Crear respuesta HTTP con PDF"""
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-        tmp_file.write(pdf_bytes)
-        tmp_file_path = tmp_file.name
+    """Crear respuesta HTTP con PDF usando BytesIO (sin archivo temporal que cause race condition)"""
+    safe_name = sanitize_filename(client_name)
+    filename = f"propuesta-{safe_name}-{document_id}.pdf"
     
-    try:
-        safe_name = sanitize_filename(client_name)
-        filename = f"propuesta-{safe_name}-{document_id}.pdf"
-        
-        logger.info(f"PDF generated successfully: {filename} ({len(pdf_bytes)} bytes)")
-        
-        return send_file(
-            tmp_file_path,
-            as_attachment=True,
-            download_name=filename,
-            mimetype='application/pdf'
-        )
-    finally:
-        # Cleanup en background
-        try:
-            os.unlink(tmp_file_path)
-        except OSError:
-            pass
+    logger.info(f"PDF generated successfully: {filename} ({len(pdf_bytes)} bytes)")
+    
+    return send_file(
+        io.BytesIO(pdf_bytes),
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/pdf'
+    )
 
 
 def create_html_response(html_content: str, client_name: str, document_id: str):
     """Crear respuesta HTTP con HTML"""
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.html', mode='w', encoding='utf-8') as tmp_file:
-        tmp_file.write(html_content)
-        tmp_file_path = tmp_file.name
-    
-    try:
-        safe_name = sanitize_filename(client_name)
-        filename = f"propuesta-{safe_name}-{document_id}.html"
-        
-        logger.info(f"HTML with instructions generated: {filename}")
-        
-        return send_file(
-            tmp_file_path,
-            as_attachment=True,
-            download_name=filename,
-            mimetype='text/html'
-        )
-    finally:
-        try:
-            os.unlink(tmp_file_path)
-        except OSError:
-            pass
+    safe_name = sanitize_filename(client_name)
+    filename = f"propuesta-{safe_name}-{document_id}.html"
+    html_bytes = html_content.encode('utf-8')
+
+    logger.info(f"HTML with instructions generated: {filename}")
+
+    return send_file(
+        io.BytesIO(html_bytes),
+        as_attachment=True,
+        download_name=filename,
+        mimetype='text/html'
+    )
 
 
 def sanitize_filename(filename: str) -> str:

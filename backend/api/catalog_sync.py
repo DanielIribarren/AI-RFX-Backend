@@ -21,6 +21,31 @@ logger = logging.getLogger(__name__)
 catalog_bp = Blueprint('catalog', __name__, url_prefix='/api/catalog')
 
 
+def _get_catalog_owner():
+    """
+    Determina el owner del catálogo: organization_id primero, user_id como fallback.
+    Retorna (owner_field, owner_id, user_id) para usar en queries.
+    """
+    organization_id = get_current_user_organization_id()
+    user_id = get_current_user_id()
+    
+    if organization_id:
+        return 'organization_id', organization_id, user_id
+    else:
+        return 'user_id', user_id, user_id
+
+
+def _apply_owner_filter(query_builder, owner_field, owner_id):
+    """
+    Aplica el filtro de owner al query builder de Supabase.
+    Si es user_id, también filtra organization_id IS NULL.
+    """
+    query_builder = query_builder.eq(owner_field, owner_id)
+    if owner_field == 'user_id':
+        query_builder = query_builder.is_('organization_id', 'null')
+    return query_builder
+
+
 @catalog_bp.route('/import', methods=['POST'])
 @jwt_required
 def import_catalog():
@@ -89,6 +114,100 @@ def import_catalog():
         }), 500
 
 
+@catalog_bp.route('/products', methods=['POST'])
+@jwt_required
+def add_product():
+    """
+    ➕ Agregar un producto individual al catálogo
+    
+    POST /api/catalog/products
+    Body: {
+        "product_name": "Tequeños de Queso",    (requerido)
+        "product_code": "TEQ-001",               (opcional)
+        "unit_cost": 15.50,                       (opcional)
+        "unit_price": 22.00,                      (opcional)
+        "unit": "bandeja"                         (opcional, default: "unidad")
+    }
+    """
+    
+    try:
+        owner_field, owner_id, user_id = _get_catalog_owner()
+        organization_id = get_current_user_organization_id()
+        
+        data = request.get_json()
+        if not data or not data.get('product_name', '').strip():
+            return jsonify({
+                'status': 'error',
+                'message': 'product_name is required'
+            }), 400
+        
+        db = get_database_client()
+        
+        product_name = data['product_name'].strip()
+        product_code = data.get('product_code', '').strip() or None
+        unit_cost = data.get('unit_cost')
+        unit_price = data.get('unit_price')
+        unit = data.get('unit', 'unidad').strip()
+        
+        # Validar que costos/precios sean numéricos si se proporcionan
+        if unit_cost is not None:
+            try:
+                unit_cost = float(unit_cost)
+            except (ValueError, TypeError):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'unit_cost must be a valid number'
+                }), 400
+        
+        if unit_price is not None:
+            try:
+                unit_price = float(unit_price)
+            except (ValueError, TypeError):
+                return jsonify({
+                    'status': 'error',
+                    'message': 'unit_price must be a valid number'
+                }), 400
+        
+        new_product = {
+            'user_id': user_id,
+            'product_name': product_name,
+            'product_code': product_code,
+            'unit_cost': unit_cost,
+            'unit_price': unit_price,
+            'unit': unit,
+            'is_active': True
+        }
+        # Solo agregar organization_id si existe (usuarios personales no tienen)
+        if organization_id:
+            new_product['organization_id'] = organization_id
+        
+        result = db.client.table('product_catalog')\
+            .insert(new_product)\
+            .execute()
+        
+        if not result.data:
+            return jsonify({
+                'status': 'error',
+                'message': 'Failed to create product'
+            }), 500
+        
+        created = result.data[0]
+        logger.info(f"✅ Product created: {product_name} ({owner_field}: {owner_id})")
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Product "{product_name}" created successfully',
+            'product': created
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"❌ Add product failed: {e}", exc_info=True)
+        return jsonify({
+            'status': 'error',
+            'message': f'Failed to add product: {str(e)}'
+        }), 500
+
+
 @catalog_bp.route('/products', methods=['GET'])
 @jwt_required
 def list_products():
@@ -101,7 +220,7 @@ def list_products():
     try:
         from backend.core.database import get_database_client
         
-        organization_id = get_current_user_organization_id()
+        owner_field, owner_id, user_id = _get_catalog_owner()
         
         page = int(request.args.get('page', 1))
         page_size = min(int(request.args.get('page_size', 50)), 100)
@@ -113,42 +232,39 @@ def list_products():
         
         # Query con búsqueda por nombre O código
         if search:
-            query = """
-                SELECT id, product_name, product_code, unit_cost, unit_price, unit, created_at
-                FROM product_catalog
-                WHERE organization_id = %s AND is_active = true
-                  AND (product_name ILIKE %s OR product_code ILIKE %s)
-                ORDER BY product_name
-                LIMIT %s OFFSET %s
-            """
-            products_response = db.client.rpc('exec_sql', {
-                'query': query,
-                'params': [organization_id, f'%{search}%', f'%{search}%', page_size, offset]
-            }).execute()
+            # Para búsqueda con texto, usar query builder con filtro de owner
+            q = db.client.table('product_catalog')\
+                .select('id, product_name, product_code, unit_cost, unit_price, unit, created_at')
+            q = _apply_owner_filter(q, owner_field, owner_id)
+            products_response = q\
+                .eq('is_active', True)\
+                .or_(f'product_name.ilike.%{search}%,product_code.ilike.%{search}%')\
+                .order('product_name')\
+                .range(offset, offset + page_size - 1)\
+                .execute()
             
-            count_query = """
-                SELECT COUNT(*) as count
-                FROM product_catalog
-                WHERE organization_id = %s AND is_active = true
-                  AND (product_name ILIKE %s OR product_code ILIKE %s)
-            """
-            count_response = db.client.rpc('exec_sql', {
-                'query': count_query,
-                'params': [organization_id, f'%{search}%', f'%{search}%']
-            }).execute()
+            cq = db.client.table('product_catalog')\
+                .select('id', count='exact')
+            cq = _apply_owner_filter(cq, owner_field, owner_id)
+            count_response = cq\
+                .eq('is_active', True)\
+                .or_(f'product_name.ilike.%{search}%,product_code.ilike.%{search}%')\
+                .execute()
         else:
             # Sin búsqueda
-            products_response = db.client.table('product_catalog')\
-                .select('id, product_name, product_code, unit_cost, unit_price, unit, created_at')\
-                .eq('organization_id', organization_id)\
+            q = db.client.table('product_catalog')\
+                .select('id, product_name, product_code, unit_cost, unit_price, unit, created_at')
+            q = _apply_owner_filter(q, owner_field, owner_id)
+            products_response = q\
                 .eq('is_active', True)\
                 .order('product_name')\
                 .range(offset, offset + page_size - 1)\
                 .execute()
             
-            count_response = db.client.table('product_catalog')\
-                .select('id', count='exact')\
-                .eq('organization_id', organization_id)\
+            cq = db.client.table('product_catalog')\
+                .select('id', count='exact')
+            cq = _apply_owner_filter(cq, owner_field, owner_id)
+            count_response = cq\
                 .eq('is_active', True)\
                 .execute()
         
@@ -183,7 +299,9 @@ def search_product():
     try:
         from backend.services.catalog_helpers import get_catalog_search_service_sync
         
+        owner_field, owner_id, user_id = _get_catalog_owner()
         organization_id = get_current_user_organization_id()
+        
         query = request.args.get('query', '').strip()
         
         if not query:
@@ -194,7 +312,11 @@ def search_product():
         
         # Usar servicio SYNC
         search_service = get_catalog_search_service_sync()
-        result = search_service.search_product(query, organization_id)
+        result = search_service.search_product(
+            query, 
+            organization_id=organization_id,
+            user_id=user_id if not organization_id else None
+        )
         
         if not result:
             return jsonify({
@@ -231,16 +353,18 @@ def delete_product(product_id: str):
         import redis
         from backend.core.config import config
         
-        organization_id = get_current_user_organization_id()
+        owner_field, owner_id, user_id = _get_catalog_owner()
+        
         db = get_database_client()
         
-        logger.info(f"🗑️ Attempting to delete product {product_id} for org {organization_id}")
+        logger.info(f"🗑️ Attempting to delete product {product_id} ({owner_field}: {owner_id})")
         
         # Verificar que existe
-        existing = db.client.table('product_catalog')\
+        q = db.client.table('product_catalog')\
             .select('product_name')\
-            .eq('id', product_id)\
-            .eq('organization_id', organization_id)\
+            .eq('id', product_id)
+        q = _apply_owner_filter(q, owner_field, owner_id)
+        existing = q\
             .eq('is_active', True)\
             .limit(1)\
             .execute()
@@ -255,17 +379,17 @@ def delete_product(product_id: str):
         product_name = existing.data[0]['product_name']
         
         # Soft delete
-        result = db.client.table('product_catalog')\
+        dq = db.client.table('product_catalog')\
             .update({'is_active': False, 'updated_at': 'now()'})\
-            .eq('id', product_id)\
-            .eq('organization_id', organization_id)\
-            .execute()
+            .eq('id', product_id)
+        _apply_owner_filter(dq, owner_field, owner_id)
+        dq.execute()
         
         # Invalidar cache de Redis (sync) - opcional
         try:
             redis_client = redis.from_url(config.redis.url, decode_responses=True)
-            redis_client.delete(f"catalog_embeddings:{organization_id}")
-            logger.info(f"✅ Redis cache invalidated for org {organization_id}")
+            redis_client.delete(f"catalog_embeddings:{owner_field}:{owner_id}")
+            logger.info(f"✅ Redis cache invalidated for {owner_field}: {owner_id}")
         except Exception as redis_error:
             # Redis es opcional, no es crítico
             logger.info(f"ℹ️ Redis cache not available (optional): {redis_error}")
@@ -300,7 +424,8 @@ def update_product(product_id: str):
         import redis
         from backend.core.config import config
         
-        organization_id = get_current_user_organization_id()
+        owner_field, owner_id, user_id = _get_catalog_owner()
+        
         data = request.get_json()
         
         if not data:
@@ -312,10 +437,11 @@ def update_product(product_id: str):
         db = get_database_client()
         
         # Verificar que existe
-        existing = db.client.table('product_catalog')\
+        q = db.client.table('product_catalog')\
             .select('id')\
-            .eq('id', product_id)\
-            .eq('organization_id', organization_id)\
+            .eq('id', product_id)
+        q = _apply_owner_filter(q, owner_field, owner_id)
+        existing = q\
             .eq('is_active', True)\
             .limit(1)\
             .execute()
@@ -345,25 +471,26 @@ def update_product(product_id: str):
                 'message': 'No valid fields to update'
             }), 400
         
-        db.client.table('product_catalog')\
+        uq = db.client.table('product_catalog')\
             .update(update_data)\
-            .eq('id', product_id)\
-            .eq('organization_id', organization_id)\
-            .execute()
+            .eq('id', product_id)
+        _apply_owner_filter(uq, owner_field, owner_id)
+        uq.execute()
         
         # Invalidar cache - opcional
         try:
             redis_client = redis.from_url(config.redis.url, decode_responses=True)
-            redis_client.delete(f"catalog_embeddings:{organization_id}")
+            redis_client.delete(f"catalog_embeddings:{owner_field}:{owner_id}")
         except Exception as redis_error:
             # Redis es opcional, no es crítico
             logger.info(f"ℹ️ Redis cache not available (optional): {redis_error}")
         
         # Retornar producto actualizado
-        updated = db.client.table('product_catalog')\
+        rq = db.client.table('product_catalog')\
             .select('*')\
-            .eq('id', product_id)\
-            .eq('organization_id', organization_id)\
+            .eq('id', product_id)
+        rq = _apply_owner_filter(rq, owner_field, owner_id)
+        updated = rq\
             .limit(1)\
             .execute()
         
@@ -401,15 +528,17 @@ def clear_catalog():
         import redis
         from backend.core.config import config
         
-        organization_id = get_current_user_organization_id()
+        owner_field, owner_id, user_id = _get_catalog_owner()
+        
         db = get_database_client()
         
-        logger.warning(f"⚠️ CLEARING ENTIRE CATALOG for org {organization_id}")
+        logger.warning(f"⚠️ CLEARING ENTIRE CATALOG for {owner_field}: {owner_id}")
         
         # Contar productos activos antes de eliminar
-        count_result = db.client.table('product_catalog')\
-            .select('id', count='exact')\
-            .eq('organization_id', organization_id)\
+        cq = db.client.table('product_catalog')\
+            .select('id', count='exact')
+        cq = _apply_owner_filter(cq, owner_field, owner_id)
+        count_result = cq\
             .eq('is_active', True)\
             .execute()
         
@@ -423,22 +552,21 @@ def clear_catalog():
             }), 200
         
         # Soft delete de TODOS los productos
-        result = db.client.table('product_catalog')\
-            .update({'is_active': False, 'updated_at': 'now()'})\
-            .eq('organization_id', organization_id)\
-            .eq('is_active', True)\
-            .execute()
+        dq = db.client.table('product_catalog')\
+            .update({'is_active': False, 'updated_at': 'now()'})
+        dq = _apply_owner_filter(dq, owner_field, owner_id)
+        dq.eq('is_active', True).execute()
         
         # Invalidar cache de Redis - opcional
         try:
             redis_client = redis.from_url(config.redis.url, decode_responses=True)
-            redis_client.delete(f"catalog_embeddings:{organization_id}")
-            logger.info(f"✅ Redis cache invalidated for org {organization_id}")
+            redis_client.delete(f"catalog_embeddings:{owner_field}:{owner_id}")
+            logger.info(f"✅ Redis cache invalidated for {owner_field}: {owner_id}")
         except Exception as redis_error:
             # Redis es opcional, no es crítico
             logger.info(f"ℹ️ Redis cache not available (optional): {redis_error}")
         
-        logger.warning(f"✅ CLEARED {products_count} products from catalog (org: {organization_id})")
+        logger.warning(f"✅ CLEARED {products_count} products from catalog ({owner_field}: {owner_id})")
         
         return jsonify({
             'status': 'success',
@@ -466,11 +594,15 @@ def get_stats():
     try:
         from backend.services.catalog_helpers import get_catalog_search_service_sync
         
+        owner_field, owner_id, user_id = _get_catalog_owner()
         organization_id = get_current_user_organization_id()
         
         # Usar servicio SYNC
         search_service = get_catalog_search_service_sync()
-        stats = search_service.get_catalog_stats(organization_id)
+        stats = search_service.get_catalog_stats(
+            organization_id=organization_id,
+            user_id=user_id if not organization_id else None
+        )
         
         return jsonify(stats), 200
         

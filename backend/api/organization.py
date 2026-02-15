@@ -5,17 +5,227 @@ Endpoints para gestionar organizaciones multi-tenant.
 Sigue principios KISS: simple, directo, sin overengineering.
 """
 
-from flask import Blueprint, jsonify, g
+from flask import Blueprint, jsonify, g, request
 from backend.utils.auth_middleware import jwt_required
-from backend.utils.organization_middleware import require_organization, require_role
+from backend.utils.organization_middleware import require_organization, require_role, optional_organization
 from backend.core.database import get_database_client
-from backend.core.plans import get_all_plans, get_plan
+from backend.core.plans import get_all_plans, get_plan, PLANS
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 # Blueprint
 organization_bp = Blueprint('organization', __name__, url_prefix='/api/organization')
+
+
+@organization_bp.route('', methods=['POST'])
+@organization_bp.route('/create', methods=['POST'])
+@jwt_required
+def create_organization():
+    """
+    Crear una nueva organización para el usuario actual.
+
+    El usuario que crea la organización queda automáticamente como 'owner'.
+    Solo se puede crear una organización si el usuario NO pertenece ya a una.
+
+    La organización se crea con el plan solicitado. Si el plan es pagado (no free),
+    se crea automáticamente un plan_request pendiente para aprobación del admin.
+
+    Request Body:
+        {
+            "name": "Mi Empresa S.A.",
+            "slug": "mi-empresa",          // opcional, se genera desde el nombre
+            "plan_tier": "starter",         // opcional, default "free"
+            "billing_email": "billing@..."  // opcional, se guarda en plan_request
+        }
+
+    Returns:
+        JSON con la organización creada y plan_request si aplica
+    """
+    try:
+        current_user = g.current_user
+        current_user_id = str(current_user['id'])
+        db = get_database_client()
+
+        # Verificar que el usuario no tenga ya una organización
+        if current_user.get('organization_id'):
+            return jsonify({
+                "status": "error",
+                "message": "You already belong to an organization. Leave it first before creating a new one."
+            }), 409
+
+        # Validar request body
+        data = request.get_json()
+        if not data or not data.get('name'):
+            return jsonify({
+                "status": "error",
+                "message": "Organization name is required"
+            }), 400
+
+        name = data['name'].strip()
+        if len(name) < 2:
+            return jsonify({
+                "status": "error",
+                "message": "Organization name must be at least 2 characters"
+            }), 400
+
+        # Generar slug si no se proporciona
+        slug = data.get('slug', '').strip()
+        if not slug:
+            slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+
+        if len(slug) < 2:
+            return jsonify({
+                "status": "error",
+                "message": "Slug must be at least 2 characters"
+            }), 400
+
+        # Verificar que el slug no esté en uso
+        existing_slug = db.client.table("organizations")\
+            .select("id")\
+            .eq("slug", slug)\
+            .execute()
+
+        if existing_slug.data:
+            return jsonify({
+                "status": "error",
+                "message": f"Slug '{slug}' is already in use. Please choose a different one."
+            }), 409
+
+        # Determinar plan solicitado (default: free)
+        requested_tier = data.get('plan_tier', 'free').lower().strip()
+        billing_email = data.get('billing_email', '').strip()
+
+        if requested_tier not in PLANS:
+            return jsonify({
+                "status": "error",
+                "message": f"Invalid plan tier. Available: {list(PLANS.keys())}"
+            }), 400
+
+        # Siempre crear la organización con plan free inicialmente
+        # Si pidieron un plan pagado, se crea un plan_request pendiente
+        free_plan = get_plan('free')
+
+        new_org_data = {
+            "name": name,
+            "slug": slug,
+            "plan_tier": "free",
+            "max_users": free_plan.max_users,
+            "max_rfx_per_month": free_plan.max_rfx_per_month,
+            "credits_total": free_plan.credits_per_month,
+            "credits_used": 0,
+            "is_active": True
+        }
+
+        org_result = db.client.table("organizations")\
+            .insert(new_org_data)\
+            .execute()
+
+        if not org_result.data:
+            return jsonify({
+                "status": "error",
+                "message": "Failed to create organization"
+            }), 500
+
+        new_org = org_result.data[0]
+        organization_id = new_org['id']
+
+        # Asignar al usuario como owner de la organización
+        db.client.table("users")\
+            .update({
+                "organization_id": organization_id,
+                "role": "owner"
+            })\
+            .eq("id", current_user_id)\
+            .execute()
+
+        logger.info(f"✅ Organization '{name}' created by user {current_user_id} (org_id: {organization_id})")
+
+        # Si pidieron un plan pagado, crear plan_request automáticamente
+        plan_request_data = None
+        if requested_tier != 'free':
+            notes_parts = []
+            if billing_email:
+                notes_parts.append(f"Billing email: {billing_email}")
+            notes_parts.append(f"Requested during organization creation")
+
+            pr_data = {
+                "user_id": current_user_id,
+                "organization_id": organization_id,
+                "current_tier": "free",
+                "requested_tier": requested_tier,
+                "status": "pending",
+                "user_notes": " | ".join(notes_parts)
+            }
+
+            pr_result = db.client.table("plan_requests")\
+                .insert(pr_data)\
+                .execute()
+
+            if pr_result.data:
+                plan_request_data = pr_result.data[0]
+                requested_plan = get_plan(requested_tier)
+                logger.info(
+                    f"📋 Auto-created plan_request: free → {requested_tier} "
+                    f"for org '{name}' (request_id: {plan_request_data['id']})"
+                )
+
+        # Construir respuesta compatible con frontend
+        org_response = {
+            "id": organization_id,
+            "name": new_org['name'],
+            "slug": new_org['slug'],
+            "is_active": new_org['is_active'],
+            "trial_ends_at": new_org.get('trial_ends_at'),
+            "created_at": new_org.get('created_at'),
+            "plan": free_plan.to_dict(),
+            "usage": {
+                "users": {
+                    "current": 1,
+                    "limit": free_plan.max_users,
+                    "can_add_more": False
+                },
+                "rfx_this_month": {
+                    "current": 0,
+                    "limit": free_plan.max_rfx_per_month,
+                    "can_create_more": True
+                }
+            },
+            "your_role": "owner"
+        }
+
+        message = "Organization created successfully"
+        if requested_tier != 'free':
+            message += (
+                f". Your '{requested_tier}' plan request has been submitted "
+                f"and is pending admin approval. You'll be notified when approved."
+            )
+
+        response_data = {
+            "organization": org_response,
+            "stripe_checkout_url": None
+        }
+
+        if plan_request_data:
+            response_data["plan_request"] = {
+                "id": plan_request_data['id'],
+                "requested_tier": requested_tier,
+                "status": "pending"
+            }
+
+        return jsonify({
+            "status": "success",
+            "message": message,
+            "data": response_data
+        }), 201
+
+    except Exception as e:
+        logger.error(f"❌ Error creating organization: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to create organization"
+        }), 500
 
 
 @organization_bp.route('/test', methods=['GET'])
@@ -87,36 +297,51 @@ def test_organization_endpoint():
 
 @organization_bp.route('/current', methods=['GET'])
 @jwt_required
-@require_organization
+@optional_organization
 def get_current_organization():
     """
     Obtener información de la organización actual del usuario.
     
-    Returns:
-        JSON con datos de la organización, plan actual, y límites
+    Si el usuario NO tiene organización, retorna información de usuario personal.
     
-    Ejemplo Response:
+    Returns:
+        JSON con datos de la organización/usuario, plan actual, y límites
+    
+    Ejemplo Response (con organización):
         {
             "status": "success",
+            "has_organization": true,
             "data": {
                 "id": "uuid",
                 "name": "Sabra Corporation",
                 "slug": "sabra-corp",
-                "plan": {
-                    "tier": "free",
-                    "name": "Free Plan",
-                    "max_users": 2,
-                    "max_rfx_per_month": 10
-                },
-                "usage": {
-                    "users": {"current": 1, "limit": 2},
-                    "rfx_this_month": {"current": 5, "limit": 10}
-                }
+                "plan": {...},
+                "usage": {...}
             }
+        }
+    
+    Ejemplo Response (sin organización):
+        {
+            "status": "success",
+            "has_organization": false,
+            "message": "User has no organization. Using personal credits.",
+            "data": null
         }
     """
     try:
         organization_id = g.organization_id
+        
+        # Usuario NO tiene organización (usuario personal)
+        if not organization_id:
+            logger.info(f"✅ User {g.current_user.get('id')} has no organization - personal user")
+            return jsonify({
+                "status": "success",
+                "has_organization": False,
+                "message": "User has no organization. Using personal credits.",
+                "data": None
+            }), 200
+        
+        # Usuario SÍ tiene organización
         db = get_database_client()
         
         # Obtener organización
@@ -137,6 +362,7 @@ def get_current_organization():
         
         return jsonify({
             "status": "success",
+            "has_organization": True,
             "data": {
                 "id": org['id'],
                 "name": org['name'],
