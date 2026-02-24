@@ -4,13 +4,19 @@ Uses the new architecture with proper separation of concerns
 """
 import os
 import logging
+from pathlib import Path
 from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_mail import Mail
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load base + environment-specific variables.
+# .env.<environment> overrides .env to avoid accidental key mismatches.
+load_dotenv(".env")
+_env_name = os.getenv("ENVIRONMENT", "development").strip().lower()
+_env_specific_file = Path(f".env.{_env_name}")
+if _env_specific_file.exists():
+    load_dotenv(_env_specific_file, override=True)
 
 # Import new architecture components
 from backend.core.config import config, get_server_config

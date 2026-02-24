@@ -75,12 +75,9 @@ class PricingConfigurationServiceV2:
             rfx_id = request.rfx_id
             logger.info(f"🔄 [V2] Updating pricing configuration (DB-first) for RFX: {rfx_id}")
 
-            # 1) Obtener o crear configuración principal activa
-            pricing_config_id = self._get_or_create_active_pricing_config_id(rfx_id)
-
-            # 2) Upsert coordinación
-            desired_coord_rate = request.coordination_rate if request.coordination_rate is not None else 0.18
-            # Normalización de coordination_level/coordination_type a enum permitido
+            # 2-5) Atomic upsert: main config + all 3 child tables in one DB roundtrip
+            # (atomic function handles get-or-create of the main config internally)
+            # Normalise coordination_level to allowed enum values
             allowed_coord_types = {'basic', 'standard', 'premium', 'custom'}
             if request.coordination_level is not None and hasattr(request.coordination_level, 'value'):
                 desired_coord_type = str(request.coordination_level.value)
@@ -91,117 +88,54 @@ class PricingConfigurationServiceV2:
             if desired_coord_type not in allowed_coord_types:
                 desired_coord_type = 'standard'
 
-            coord_existing = self.db_client.client.table('coordination_configurations')\
-                .select('id, rate, coordination_type')\
-                .eq('pricing_config_id', pricing_config_id)\
-                .limit(1)\
-                .execute()
-
-            if coord_existing.data:
-                self.db_client.client.table('coordination_configurations')\
-                    .update({
-                        'is_enabled': bool(request.coordination_enabled),
-                        'rate': float(desired_coord_rate),
-                        'coordination_type': str(desired_coord_type),
-                        'updated_at': datetime.now().isoformat()
-                    })\
-                    .eq('id', coord_existing.data[0]['id'])\
-                    .execute()
-            else:
-                self.db_client.client.table('coordination_configurations')\
-                    .insert({
-                        'pricing_config_id': pricing_config_id,
-                        'is_enabled': bool(request.coordination_enabled),
-                        'rate': float(desired_coord_rate),
-                        'coordination_type': str(desired_coord_type),
-                        'description': 'Coordinación y logística'
-                    })\
-                    .execute()
-
-            # 3) Upsert costo por persona (headcount es NOT NULL en la tabla)
+            desired_coord_rate = request.coordination_rate if request.coordination_rate is not None else 0.18
             desired_headcount = request.headcount if (request.headcount and request.headcount > 0) else 120
-            cpp_existing = self.db_client.client.table('cost_per_person_configurations')\
-                .select('id, headcount')\
-                .eq('pricing_config_id', pricing_config_id)\
-                .limit(1)\
+            desired_tax_rate = request.tax_rate if request.tax_rate is not None else 0.16
+            desired_tax_name = request.tax_type or 'IVA'
+
+            # Fetch user_id for the atomic function (needed for config ownership)
+            rfx_meta = self.db_client.client.table('rfx_v2')\
+                .select('user_id, organization_id')\
+                .eq('id', rfx_id)\
+                .single()\
                 .execute()
+            atomic_response = self.db_client.client.rpc(
+                'upsert_rfx_pricing_configuration_atomic',
+                {
+                    'p_rfx_id': rfx_id,
+                    'p_coordination_enabled': bool(request.coordination_enabled),
+                    'p_coordination_rate': float(desired_coord_rate),
+                    'p_coordination_type': str(desired_coord_type),
+                    'p_cost_per_person_enabled': bool(request.cost_per_person_enabled),
+                    'p_headcount': int(desired_headcount),
+                    'p_display_in_proposal': bool(request.per_person_display),
+                    'p_taxes_enabled': bool(request.taxes_enabled),
+                    'p_tax_rate': float(desired_tax_rate),
+                    'p_tax_name': str(desired_tax_name),
+                }
+            ).execute()
 
-            if cpp_existing.data:
-                preserved_headcount = cpp_existing.data[0].get('headcount') or desired_headcount
-                self.db_client.client.table('cost_per_person_configurations')\
-                    .update({
-                        'is_enabled': bool(request.cost_per_person_enabled),
-                        'headcount': int(desired_headcount if request.cost_per_person_enabled else preserved_headcount),
-                        'display_in_proposal': bool(request.per_person_display),
-                        'calculation_base': 'final_total',
-                        'updated_at': datetime.now().isoformat()
-                    })\
-                    .eq('id', cpp_existing.data[0]['id'])\
-                    .execute()
-            else:
-                self.db_client.client.table('cost_per_person_configurations')\
-                    .insert({
-                        'pricing_config_id': pricing_config_id,
-                        'is_enabled': bool(request.cost_per_person_enabled),
-                        'headcount': int(desired_headcount),
-                        'display_in_proposal': bool(request.per_person_display),
-                        'calculation_base': 'final_total',
-                        'description': 'Cálculo de costo individual'
-                    })\
-                    .execute()
+            if not atomic_response.data:
+                raise Exception("upsert_rfx_pricing_configuration_atomic returned no data")
 
-            # 4) Upsert impuestos (la fila puede no existir si está deshabilitado)
-            tax_existing = self.db_client.client.table('tax_configurations')\
-                .select('id, tax_rate, tax_name')\
-                .eq('pricing_config_id', pricing_config_id)\
-                .limit(1)\
-                .execute()
-
-            if request.taxes_enabled:
-                desired_tax_rate = request.tax_rate if request.tax_rate is not None else 0.16
-                desired_tax_name = request.tax_type or 'IVA'
-                if tax_existing.data:
-                    self.db_client.client.table('tax_configurations')\
-                        .update({
-                            'is_enabled': True,
-                            'tax_rate': float(desired_tax_rate),
-                            'tax_name': str(desired_tax_name),
-                            'updated_at': datetime.now().isoformat()
-                        })\
-                        .eq('id', tax_existing.data[0]['id'])\
-                        .execute()
+            # Supabase RPC can return scalar UUID or [{column_name: uuid}]
+            if isinstance(atomic_response.data, list):
+                first = atomic_response.data[0] if atomic_response.data else None
+                if isinstance(first, dict):
+                    pricing_config_id = (
+                        first.get('upsert_rfx_pricing_configuration_atomic')
+                        or first.get('pricing_config_id')
+                        or next(iter(first.values()), None)
+                    )
                 else:
-                    self.db_client.client.table('tax_configurations')\
-                        .insert({
-                            'pricing_config_id': pricing_config_id,
-                            'is_enabled': True,
-                            'tax_rate': float(desired_tax_rate),
-                            'tax_name': str(desired_tax_name)
-                        })\
-                        .execute()
+                    pricing_config_id = first
             else:
-                # Si existe, marcar como deshabilitado manteniendo valores obligatorios
-                if tax_existing.data:
-                    preserved_tax_rate = tax_existing.data[0].get('tax_rate') or 0.16
-                    preserved_tax_name = tax_existing.data[0].get('tax_name') or 'IVA'
-                    self.db_client.client.table('tax_configurations')\
-                        .update({
-                            'is_enabled': False,
-                            'tax_rate': float(preserved_tax_rate),
-                            'tax_name': str(preserved_tax_name),
-                            'updated_at': datetime.now().isoformat()
-                        })\
-                        .eq('id', tax_existing.data[0]['id'])\
-                        .execute()
+                pricing_config_id = atomic_response.data
 
-            # 5) Marcar quién actualizó la configuración principal (opcional)
-            try:
-                self.db_client.client.table('rfx_pricing_configurations')\
-                    .update({'updated_by': 'user', 'updated_at': datetime.now().isoformat()})\
-                    .eq('id', pricing_config_id)\
-                    .execute()
-            except Exception as e:
-                logger.warning(f"⚠️ Could not set updated_by on rfx_pricing_configurations: {e}")
+            if not pricing_config_id:
+                raise Exception("upsert_rfx_pricing_configuration_atomic returned invalid config id")
+
+            logger.info(f"✅ [V2] Atomic pricing upsert completed for RFX {rfx_id}, config_id={pricing_config_id}")
 
             # 6) Log y retorno de configuración actualizada
             updated_config = self.get_rfx_pricing_configuration(rfx_id)
@@ -212,15 +146,10 @@ class PricingConfigurationServiceV2:
             # 🧠 Guardar como preferencia del usuario (aprendizaje)
             if LEARNING_ENABLED:
                 try:
-                    rfx_data = self.db_client.client.table('rfx_v2')\
-                        .select('user_id, organization_id')\
-                        .eq('id', rfx_id)\
-                        .single()\
-                        .execute()
-                    
-                    if rfx_data.data:
-                        user_id = rfx_data.data.get('user_id')
-                        org_id = rfx_data.data.get('organization_id')
+                    # Reuse rfx_meta already fetched above (no extra DB call)
+                    if rfx_meta.data:
+                        user_id = rfx_meta.data.get('user_id')
+                        org_id = rfx_meta.data.get('organization_id')
                         
                         if user_id and org_id:
                             from backend.services.learning_service import learning_service

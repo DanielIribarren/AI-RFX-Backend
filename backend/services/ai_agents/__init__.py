@@ -14,10 +14,12 @@ from backend.services.ai_agents.proposal_generator_agent import ProposalGenerato
 from backend.services.ai_agents.template_validator_agent import TemplateValidatorAgent
 from backend.services.ai_agents.pdf_optimizer_agent import PDFOptimizerAgent
 from backend.services.ai_agents.agent_orchestrator import AgentOrchestrator
+from backend.services.ai_agents.rfx_orchestrator_agent import RFXOrchestratorAgent
 
 __all__ = [
     'ProposalGeneratorAgent',
     'TemplateValidatorAgent',
     'PDFOptimizerAgent',
-    'AgentOrchestrator'
+    'AgentOrchestrator',
+    'RFXOrchestratorAgent',
 ]

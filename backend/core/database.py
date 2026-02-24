@@ -519,6 +519,34 @@ class DatabaseClient:
             logger.error(f"❌ Failed to get RFX products for {rfx_id}: {e}")
             return []
     
+    def get_rfx_product_counts_batch(self, rfx_ids: List[str]) -> Dict[str, int]:
+        """
+        Batch fetch product counts for multiple RFX IDs in a single DB call.
+        Eliminates N+1 query pattern in listing endpoints.
+
+        Args:
+            rfx_ids: List of RFX UUIDs as strings
+
+        Returns:
+            Dict mapping rfx_id -> product_count (missing keys = 0 products)
+        """
+        if not rfx_ids:
+            return {}
+        try:
+            response = self.client.rpc(
+                "get_rfx_product_counts",
+                {"rfx_ids": rfx_ids}
+            ).execute()
+            result = {}
+            if response.data:
+                for row in response.data:
+                    result[str(row["rfx_id"])] = int(row["product_count"])
+            logger.info(f"✅ Batch product counts fetched for {len(rfx_ids)} RFX ({len(result)} with products)")
+            return result
+        except Exception as e:
+            logger.error(f"❌ Failed to batch fetch product counts: {e}")
+            return {}
+
     def update_rfx_product_cost(self, rfx_id: Union[str, UUID], product_id: str, unit_price: float) -> bool:
         """Update unit price for a specific RFX product"""
         try:
@@ -730,6 +758,74 @@ class DatabaseClient:
         except Exception as e:
             logger.error(f"❌ Failed to get proposals for RFX {rfx_id}: {e}")
             raise
+
+    def get_latest_proposals_for_rfx_ids(self, rfx_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Get latest proposal per RFX for a list of RFX IDs.
+        Returns a dict keyed by rfx_id.
+        """
+        try:
+            if not rfx_ids:
+                return {}
+
+            response = self.client.table("generated_documents")\
+                .select("*")\
+                .eq("document_type", "proposal")\
+                .in_("rfx_id", rfx_ids)\
+                .order("created_at", desc=True)\
+                .execute()
+
+            latest_by_rfx: Dict[str, Dict[str, Any]] = {}
+            for proposal in (response.data or []):
+                rid = str(proposal.get("rfx_id", ""))
+                if rid and rid not in latest_by_rfx:
+                    latest_by_rfx[rid] = proposal
+
+            return latest_by_rfx
+        except Exception as e:
+            logger.error(f"❌ Failed to get latest proposals for RFX IDs: {e}")
+            return {}
+
+    def update_proposal_commercial_status(
+        self,
+        proposal_id: Union[str, UUID],
+        commercial_status: str,
+        updated_by: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Update proposal commercial status in metadata.
+        Supported: generated, sent, accepted, rejected
+        """
+        try:
+            proposal = self.get_document_by_id(proposal_id)
+            if not proposal:
+                return None
+
+            metadata = proposal.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            metadata["commercial_status"] = commercial_status
+            metadata["status_updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            if updated_by:
+                metadata["status_updated_by"] = updated_by
+
+            if commercial_status == "sent":
+                metadata["sent_at"] = metadata.get("sent_at") or metadata["status_updated_at"]
+            if commercial_status == "accepted":
+                metadata["accepted_at"] = metadata.get("accepted_at") or metadata["status_updated_at"]
+            if commercial_status == "rejected":
+                metadata["rejected_at"] = metadata.get("rejected_at") or metadata["status_updated_at"]
+
+            response = self.client.table("generated_documents")\
+                .update({"metadata": metadata})\
+                .eq("id", str(proposal_id))\
+                .execute()
+
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"❌ Failed to update proposal status {proposal_id}: {e}")
+            return None
     
     # ========================
     # HISTORY & AUDIT

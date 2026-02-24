@@ -24,6 +24,10 @@ from backend.services.tools.update_product_tool import update_product_tool
 from backend.services.tools.delete_product_tool import delete_product_tool
 from backend.services.tools.modify_request_details_tool import modify_request_details_tool
 from backend.services.tools.parse_file_tool import parse_file_tool
+from backend.services.tools.search_catalog_variants_tool import search_catalog_variants_tool
+from backend.services.tools.resolve_unit_packaging_tool import resolve_unit_packaging_tool
+from backend.services.tools.calculate_line_price_tool import calculate_line_price_tool
+from backend.services.tools.verify_pricing_totals_tool import verify_pricing_totals_tool
 
 # AI Learning System Tools
 from backend.services.tools.get_pricing_preference_tool import get_pricing_preference_tool
@@ -41,6 +45,10 @@ __all__ = [
     "delete_product_tool",
     "modify_request_details_tool",
     "parse_file_tool",
+    "search_catalog_variants_tool",
+    "resolve_unit_packaging_tool",
+    "calculate_line_price_tool",
+    "verify_pricing_totals_tool",
     # AI Learning System Tools
     "get_pricing_preference_tool",
     "get_frequent_products_tool",

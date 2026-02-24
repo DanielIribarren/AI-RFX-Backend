@@ -71,7 +71,10 @@ class ProposalGenerationService:
         if self.openai_client is None:
             try:
                 from openai import OpenAI
-                self.openai_client = OpenAI(api_key=self.openai_config.api_key)
+                self.openai_client = OpenAI(
+                    api_key=self.openai_config.api_key,
+                    max_retries=0  # Desactivar reintentos automáticos del SDK
+                )
             except ImportError:
                 raise ImportError("OpenAI module not installed. Run: pip install openai")
         return self.openai_client
@@ -276,9 +279,17 @@ class ProposalGenerationService:
         products_info = []
         
         for producto in productos:
-            precio_unitario = producto.get("estimated_unit_price") or 0.0
+            precio_unitario = (
+                producto.get("estimated_unit_price")
+                or producto.get("precio_unitario")
+                or producto.get("resolved_unit_price")
+                or 0.0
+            )
             cantidad = producto.get("quantity", producto.get("cantidad", 1))
-            total_venta = precio_unitario * cantidad
+            # Preferir total ya calculado por orquestador de pricing (si existe).
+            total_venta = producto.get("estimated_line_total")
+            if total_venta is None:
+                total_venta = precio_unitario * cantidad
             
             # ✅ SOLO INCLUIR DATOS PARA EL PROMPT DEL AGENTE (sin costos)
             products_info.append({

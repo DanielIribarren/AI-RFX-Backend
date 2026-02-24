@@ -13,7 +13,7 @@ import random
 from backend.models.proposal_models import ProposalRequest, ProposalResponse, PropuestaGenerada, NotasPropuesta
 from backend.core.database import get_database_client
 from backend.services.credits_service import get_credits_service
-from backend.utils.auth_middleware import optional_jwt, get_current_user, get_current_user_id, get_current_user_organization_id
+from backend.utils.auth_middleware import optional_jwt, jwt_required, get_current_user, get_current_user_id, get_current_user_organization_id
 from backend.exceptions import InsufficientCreditsError
 
 logger = logging.getLogger(__name__)
@@ -338,6 +338,63 @@ def get_proposal(proposal_id: str):
         }), 500
 
 
+@proposals_bp.route("/<proposal_id>/status", methods=["PATCH"])
+@jwt_required
+def update_proposal_status(proposal_id: str):
+    """Actualizar estado comercial de propuesta: generated | sent | accepted | rejected"""
+    try:
+        if not request.is_json:
+            return jsonify({
+                "status": "error",
+                "message": "Content-Type must be application/json",
+                "error": "Invalid content type"
+            }), 400
+
+        payload = request.get_json() or {}
+        new_status = str(payload.get("status", "")).strip().lower()
+        allowed = {"generated", "sent", "accepted", "rejected"}
+        if new_status not in allowed:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid proposal status",
+                "error": f"status must be one of: {', '.join(sorted(allowed))}"
+            }), 400
+
+        user_id = get_current_user_id()
+        db_client = get_database_client()
+        updated = db_client.update_proposal_commercial_status(
+            proposal_id=proposal_id,
+            commercial_status=new_status,
+            updated_by=user_id
+        )
+
+        if not updated:
+            return jsonify({
+                "status": "error",
+                "message": "Propuesta no encontrada",
+                "error": f"No proposal found with ID: {proposal_id}"
+            }), 404
+
+        return jsonify({
+            "status": "success",
+            "message": "Proposal status updated successfully",
+            "data": {
+                "id": updated.get("id"),
+                "rfx_id": updated.get("rfx_id"),
+                "commercial_status": (updated.get("metadata") or {}).get("commercial_status", "generated"),
+                "metadata": updated.get("metadata") or {}
+            }
+        }), 200
+
+    except Exception as e:
+        logger.error(f"❌ Error updating proposal status {proposal_id}: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to update proposal status",
+            "error": str(e)
+        }), 500
+
+
 @proposals_bp.route("/rfx/<rfx_id>/proposals", methods=["GET"])
 def get_proposals_by_rfx(rfx_id: str):
     """Obtener todas las propuestas de un RFX específico"""
@@ -347,12 +404,16 @@ def get_proposals_by_rfx(rfx_id: str):
         
         proposals_data = []
         for proposal in proposals:
+            metadata = proposal.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
             proposals_data.append({
                 "id": proposal["id"],
                 "rfx_id": proposal["rfx_id"],
                 "document_type": proposal.get("document_type", "proposal"),  # ✅ V2.0 field name
                 "created_at": proposal.get("created_at", ""),  # ✅ V2.0 field name
                 "total_cost": proposal.get("total_cost", 0.0),  # ✅ V2.0 field name
+                "commercial_status": metadata.get("commercial_status", "generated"),
                 "download_url": f"/api/download/{proposal['id']}"
             })
         

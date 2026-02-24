@@ -36,7 +36,10 @@ class AIExtractor:
             debug_mode: Habilitar logs detallados
         """
         config = get_openai_config()
-        self.client = OpenAI(api_key=config.api_key)
+        self.client = OpenAI(
+            api_key=config.api_key,
+            max_retries=0  # Desactivar reintentos automáticos del SDK
+        )
         self.model = model
         self.debug_mode = debug_mode
         self.timeout = config.timeout

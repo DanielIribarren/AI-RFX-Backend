@@ -90,7 +90,10 @@ def import_catalog():
         # Inicializar servicio AI-First
         db = get_database_client()
         openai_config = get_openai_config()
-        openai_client = OpenAI(api_key=openai_config.api_key)
+        openai_client = OpenAI(
+            api_key=openai_config.api_key,
+            max_retries=0  # Desactivar reintentos automáticos del SDK
+        )
         
         # Redis es opcional
         try:

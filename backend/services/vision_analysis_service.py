@@ -28,7 +28,10 @@ class VisionAnalysisService:
         if self.client is None:
             try:
                 from openai import OpenAI
-                self.client = OpenAI(api_key=self.config.api_key)
+                self.client = OpenAI(
+                    api_key=self.config.api_key,
+                    max_retries=0  # Desactivar reintentos automáticos del SDK
+                )
             except ImportError:
                 raise ImportError("OpenAI module not installed. Run: pip install openai")
         return self.client

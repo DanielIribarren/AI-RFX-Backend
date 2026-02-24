@@ -27,8 +27,11 @@ def get_catalog_search_service_sync() -> CatalogSearchServiceSync:
         decode_responses=True  # Para obtener strings en lugar de bytes
     )
     
-    # OpenAI SYNC client
-    openai_client = OpenAI(api_key=config.openai.api_key)
+    # OpenAI SYNC client - sin reintentos automáticos
+    openai_client = OpenAI(
+        api_key=config.openai.api_key,
+        max_retries=0  # Desactivar reintentos automáticos del SDK
+    )
     
     return CatalogSearchServiceSync(db, redis_client, openai_client)
 

@@ -42,6 +42,7 @@ from backend.utils.text_utils import clean_json_string
 from backend.core.feature_flags import FeatureFlags
 from backend.services.function_calling_extractor import FunctionCallingRFXExtractor
 from backend.services.catalog_search_service_sync import CatalogSearchServiceSync
+from backend.services.ai_agents.rfx_orchestrator_agent import RFXOrchestratorAgent
 from backend.utils.retry_decorator import retry_on_failure
 from backend.exceptions import ExternalServiceError
 
@@ -385,7 +386,11 @@ class RFXProcessorService:
     
     def __init__(self, catalog_search_service: Optional[CatalogSearchServiceSync] = None):
         self.openai_config = get_openai_config()
-        self.openai_client = OpenAI(api_key=self.openai_config.api_key)
+        # Desactivar reintentos automáticos del SDK - usamos nuestro backoff personalizado
+        self.openai_client = OpenAI(
+            api_key=self.openai_config.api_key,
+            max_retries=0  # ← CRÍTICO: Desactivar reintentos automáticos del SDK
+        )
         self.db_client = get_database_client()
         
         self.debug_mode = False  # Simplificado - sin feature flags
@@ -399,11 +404,16 @@ class RFXProcessorService:
         
         # 🚀 FUNCTION CALLING EXTRACTOR (siempre habilitado)
         self.function_calling_extractor = None
+        self.rfx_orchestrator_agent = None
         try:
             self.function_calling_extractor = FunctionCallingRFXExtractor(
                 openai_client=self.openai_client,
                 model=self.openai_config.model,
                 debug_mode=self.debug_mode
+            )
+            self.rfx_orchestrator_agent = RFXOrchestratorAgent(
+                openai_client=self.openai_client,
+                model=self.openai_config.chat_model
             )
             logger.info("🚀 Function Calling Extractor initialized successfully")
         except Exception as e:
@@ -610,40 +620,25 @@ class RFXProcessorService:
                     
                 except Exception as e:
                     logger.error(f"❌ Function calling failed: {e}")
-                    # Sin fallbacks - si falla, devolver estructura vacía
-                    extracted_data = {
-                        "productos": [],
-                        "email": "",
-                        "fecha_entrega": "",
-                        "hora_entrega": "",
-                        "lugar": "",
-                        "nombre_solicitante": "",
-                        "currency": "USD"
-                    }
+                    raise ExternalServiceError(
+                        service_name="openai",
+                        message="RFX extraction failed during function calling",
+                        original_error=e,
+                    )
             else:
                 logger.error("❌ No function calling extractor available")
-                extracted_data = {
-                    "productos": [],
-                    "email": "",
-                    "fecha_entrega": "",
-                    "hora_entrega": "",
-                    "lugar": "",
-                    "nombre_solicitante": "",
-                    "currency": "USD"
-                }
+                raise ExternalServiceError(
+                    service_name="openai",
+                    message="Function calling extractor not available",
+                )
             
-            # ✅ CAMBIO #2: Sin fallback a chunking - si falla, retornar estructura vacía
+            # Si no hay datos útiles, tratarlo como error de extracción para evitar falsos éxitos.
             if not extracted_data:
-                logger.error(f"❌ All extraction methods failed")
-                extracted_data = {
-                    "productos": [],
-                    "email": "",
-                    "fecha_entrega": "",
-                    "hora_entrega": "",
-                    "lugar": "",
-                    "nombre_solicitante": "",
-                    "currency": "USD"
-                }
+                logger.error("❌ All extraction methods failed")
+                raise ExternalServiceError(
+                    service_name="openai",
+                    message="No extraction data returned by function calling",
+                )
             
             # 🔍 Validate completeness automatically (for metrics only)
             completeness_result = self._validate_product_completeness(extracted_data, text)
@@ -666,25 +661,15 @@ class RFXProcessorService:
             
             return extracted_data
             
+        except ExternalServiceError:
+            raise
         except Exception as e:
             logger.error(f"❌ COMPLETE AI processing failed: {e}")
-            self.processing_stats['fallback_usage_count'] += 1
-            
-            # Fallback to chunking only as last resort
-            logger.warning(f"🔄 Fallback to chunked processing due to error")
-            
-            # Return minimal structure instead of None to prevent downstream errors
-            return {
-                "productos": [],
-                "email": "",
-                "fecha_entrega": "",
-                "hora_entrega": "",
-                "lugar": "",
-                "nombre_solicitante": "",
-                "currency": "USD",
-                "processing_error": True,
-                "error_message": str(e)
-            }
+            raise ExternalServiceError(
+                service_name="openai",
+                message="AI extraction pipeline failed",
+                original_error=e,
+            )
             
     def _convert_db_result_to_legacy_format(self, db_result: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -2045,9 +2030,9 @@ TEXTO: {text[:5000]}"""
         else:
             logger.info(f"📊 USING AI extracted products: {ai_products_count} items")
 
-        # 🛒 ENRIQUECER PRODUCTOS CON CATÁLOGO (si está disponible)
+        # 🛒 ENRIQUECER/ORQUESTAR PRODUCTOS CON CATÁLOGO (si está disponible)
         if self.catalog_search and organization_id and raw_data.get("productos"):
-            logger.info(f"🛒 Enriching {len(raw_data['productos'])} products with catalog prices...")
+            logger.info(f"🛒 Processing {len(raw_data['productos'])} products with catalog pricing...")
             
             # Preparar contexto del RFX para selección inteligente de variantes
             rfx_context = {
@@ -2057,11 +2042,18 @@ TEXTO: {text[:5000]}"""
                 'event_type': raw_data.get('tipo_evento', '')
             }
             
-            raw_data["productos"] = self._enrich_products_with_catalog(
-                raw_data["productos"], 
-                organization_id,
-                rfx_context=rfx_context
-            )
+            if FeatureFlags.rfx_llm_orchestrator_enabled() and self.rfx_orchestrator_agent:
+                raw_data["productos"] = self._orchestrate_products_with_llm_tools(
+                    raw_data["productos"],
+                    organization_id,
+                    rfx_context=rfx_context
+                )
+            else:
+                raw_data["productos"] = self._enrich_products_with_catalog(
+                    raw_data["productos"],
+                    organization_id,
+                    rfx_context=rfx_context
+                )
             
             # 🔍 DEBUG: Verificar que los productos enriquecidos tienen precios
             logger.info(f"🔍 AFTER ENRICHMENT - Checking first product:")
@@ -2080,6 +2072,77 @@ TEXTO: {text[:5000]}"""
         self._save_rfx_to_database(rfx_processed, user_id=user_id, organization_id=organization_id)
         logger.info(f"✅ process_rfx_case done: {rfx_input.id}")
         return rfx_processed
+
+    def _orchestrate_products_with_llm_tools(
+        self,
+        products: List[Dict[str, Any]],
+        organization_id: str,
+        rfx_context: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Orquesta matching + unidad + pricing con LLM function-calling y tools.
+        Fallback automático al flujo legacy si hay error.
+        """
+        if not products:
+            return products
+
+        if not self.rfx_orchestrator_agent:
+            logger.warning("⚠️ RFX orchestrator agent unavailable, using legacy catalog enrichment")
+            return self._enrich_products_with_catalog(products, organization_id, rfx_context=rfx_context)
+
+        try:
+            logger.info("🤖 Running LLM pricing orchestrator (tools-based)")
+            result = self.rfx_orchestrator_agent.orchestrate(
+                products=products,
+                organization_id=organization_id,
+                rfx_context=rfx_context or {},
+                catalog_search=self.catalog_search,
+            )
+
+            if result.get("status") != "success":
+                logger.warning("⚠️ LLM orchestrator returned error status, falling back to legacy enrichment")
+                return self._enrich_products_with_catalog(products, organization_id, rfx_context=rfx_context)
+
+            orchestrated_items = result.get("items", [])
+            if not isinstance(orchestrated_items, list) or not orchestrated_items:
+                logger.warning("⚠️ LLM orchestrator returned empty items, falling back to legacy enrichment")
+                return self._enrich_products_with_catalog(products, organization_id, rfx_context=rfx_context)
+
+            # Normalizar claves para compatibilidad con pipeline actual.
+            normalized_products: List[Dict[str, Any]] = []
+            clarifications = 0
+
+            for idx, original in enumerate(products):
+                item = orchestrated_items[idx] if idx < len(orchestrated_items) else {}
+                qty = item.get("cantidad", original.get("cantidad", 1))
+                price = item.get("precio_unitario", original.get("precio_unitario", original.get("unit_price")))
+                cost = item.get("costo_unitario", original.get("costo_unitario", original.get("unit_cost")))
+                line_total = item.get("line_total")
+
+                if item.get("requires_clarification"):
+                    clarifications += 1
+
+                normalized_products.append(
+                    {
+                        **original,
+                        **item,
+                        "cantidad": qty,
+                        "precio_unitario": price,
+                        "costo_unitario": cost,
+                        "estimated_line_total": line_total,
+                        "pricing_source": item.get("pricing_source", "llm_orchestrated_tools"),
+                    }
+                )
+
+            logger.info(
+                "✅ LLM orchestration completed: "
+                f"{len(normalized_products)} items, clarifications={clarifications}"
+            )
+            return normalized_products
+
+        except Exception as e:
+            logger.error(f"❌ LLM orchestration failed, fallback to legacy enrichment: {e}")
+            return self._enrich_products_with_catalog(products, organization_id, rfx_context=rfx_context)
 
     def _detect_content_type(self, content: bytes, filename: str) -> str:
         """Detect file content type from bytes and filename with improved detection"""

@@ -107,6 +107,19 @@ class FeatureFlags:
         return os.getenv("ENABLE_JSON_MODE_FALLBACK", "true").lower() == "true"
 
     @staticmethod
+    def rfx_llm_orchestrator_enabled() -> bool:
+        """
+        Check if LLM-first pricing orchestrator is enabled for RFX processing.
+
+        When enabled:
+        - Uses function-calling orchestration for catalog matching and pricing
+        - Delegates calculations to pricing tools with traceability
+        - Falls back to legacy enrichment on runtime errors
+        """
+        import os
+        return os.getenv("ENABLE_RFX_LLM_ORCHESTRATOR", "true").lower() == "true"
+
+    @staticmethod
     def get_enabled_features() -> dict[str, bool]:
         """
         Get status of all feature flags.
@@ -120,7 +133,8 @@ class FeatureFlags:
             "vertical_agent": FeatureFlags.vertical_agent_enabled(),
             "eval_debug": FeatureFlags.eval_debug_enabled(),
             "function_calling": FeatureFlags.function_calling_enabled(),
-            "json_mode_fallback": FeatureFlags.json_mode_fallback_enabled()
+            "json_mode_fallback": FeatureFlags.json_mode_fallback_enabled(),
+            "rfx_llm_orchestrator": FeatureFlags.rfx_llm_orchestrator_enabled(),
         }
 
     @staticmethod

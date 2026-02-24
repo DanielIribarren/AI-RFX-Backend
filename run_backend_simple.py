@@ -5,10 +5,15 @@ Unified entry point for the cleaned architecture
 """
 import os
 import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load base + environment-specific variables.
+load_dotenv(".env")
+_env_name = os.getenv("ENVIRONMENT", "development").strip().lower()
+_env_specific_file = Path(f".env.{_env_name}")
+if _env_specific_file.exists():
+    load_dotenv(_env_specific_file, override=True)
 
 # Add the project root to Python path
 project_root = os.path.dirname(os.path.abspath(__file__))

@@ -23,7 +23,10 @@ class TemplateValidatorAgent:
     
     def __init__(self):
         self.openai_config = get_openai_config()
-        self.client = OpenAI(api_key=self.openai_config.api_key)
+        self.client = OpenAI(
+            api_key=self.openai_config.api_key,
+            max_retries=0  # Desactivar reintentos automáticos del SDK
+        )
     
     async def validate(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """

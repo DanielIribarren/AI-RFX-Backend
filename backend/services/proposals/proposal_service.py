@@ -26,7 +26,10 @@ class ProposalService:
     
     def __init__(self):
         config = get_openai_config()
-        self.client = OpenAI(api_key=config.api_key)
+        self.client = OpenAI(
+            api_key=config.api_key,
+            max_retries=0  # Desactivar reintentos automáticos del SDK
+        )
         self.db = get_database_client()
         self.model = config.model
         self.validator = HTMLValidator()

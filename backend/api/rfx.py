@@ -5,11 +5,11 @@ Provides backward compatibility while using new architecture
 from flask import Blueprint, request, jsonify
 from werkzeug.exceptions import BadRequest
 from pydantic import ValidationError
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import logging
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from backend.models.rfx_models import (
     RFXInput, RFXResponse, RFXType, RFXHistoryItem,
@@ -18,17 +18,51 @@ from backend.models.rfx_models import (
     TipoRFX
 )
 from backend.services.rfx_processor import RFXProcessorService
-from backend.services.rfx.rfx_service import rfx_service
 from backend.services.credits_service import get_credits_service
 from backend.core.config import get_file_upload_config
 from backend.core.database import get_database_client
 from backend.utils.auth_middleware import jwt_required, get_current_user_id, get_current_user_organization_id
-from backend.exceptions import InsufficientCreditsError
+from backend.exceptions import InsufficientCreditsError, ExternalServiceError
 
 logger = logging.getLogger(__name__)
 
 # Create blueprint
 rfx_bp = Blueprint("rfx_api", __name__, url_prefix="/api/rfx")
+
+
+def _extract_commercial_status(latest_proposal: Optional[Dict[str, Any]]) -> str:
+    """Resolve commercial status from latest proposal metadata."""
+    if not latest_proposal:
+        return "not_sent"
+
+    metadata = latest_proposal.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    status = str(
+        metadata.get("commercial_status")
+        or metadata.get("status")
+        or "generated"
+    ).strip().lower()
+
+    if status in {"sent", "accepted", "rejected"}:
+        return status
+    return "not_sent"
+
+
+def _resolve_agentic_status(rfx_status: str, latest_proposal: Optional[Dict[str, Any]]) -> str:
+    """
+    Agentic status priority:
+    accepted > sent > processed > in_progress
+    """
+    commercial_status = _extract_commercial_status(latest_proposal)
+    if commercial_status == "accepted":
+        return "accepted"
+    if commercial_status == "sent":
+        return "sent"
+    if latest_proposal or str(rfx_status).lower() == "completed":
+        return "processed"
+    return "in_progress"
 
 
 
@@ -205,56 +239,24 @@ def process_rfx():
         context = "organization" if organization_id else "personal"
         logger.info(f"✅ Credits verified ({context}): {available} available")
 
-        # 🚀 NUEVO: Usar rfx_service simplificado (AI-FIRST)
-        # El servicio maneja: extracción de texto → AI extraction → guardado en BD
+        # 🛒 Inicializar servicio de catálogo (opcional)
+        catalog_service = None
         try:
-            logger.info("🚀 Using new RFXService (AI-FIRST approach)")
-            rfx_result = rfx_service.process(valid_files, current_user_id)
-            
-            # Convertir resultado a formato legacy para compatibilidad
-            from backend.models.rfx_models import RFXProcessed, RFXProductRequest
-            rfx_processed = RFXProcessed(
-                id=rfx_result['id'],
-                rfx_type=RFXType(rfx_result.get('rfx_type', 'rfq')),
-                email=rfx_result.get('email'),
-                nombre_solicitante=rfx_result.get('nombre_solicitante'),
-                nombre_empresa=rfx_result.get('nombre_empresa'),
-                fecha=rfx_result.get('fecha'),
-                hora_entrega=rfx_result.get('hora_entrega'),
-                lugar=rfx_result.get('lugar'),
-                productos=[
-                    RFXProductRequest(
-                        nombre=p.get('nombre', p.get('product_name', '')),
-                        cantidad=p.get('cantidad', p.get('quantity', 0)),
-                        unidad=p.get('unidad', p.get('unit', 'unidades'))
-                    ) for p in rfx_result.get('productos', [])
-                ],
-                status='pending'
-            )
-            logger.info(f"✅ New RFXService completed successfully")
-            
+            from backend.services.catalog_helpers import get_catalog_search_service_for_rfx
+            catalog_service = get_catalog_search_service_for_rfx()
+            logger.info("🛒 Catalog service initialized - products will be enriched")
         except Exception as e:
-            # Fallback al servicio legacy si el nuevo falla
-            logger.warning(f"⚠️ New RFXService failed, falling back to legacy: {e}")
-            
-            # 🛒 Inicializar servicio de catálogo (opcional)
-            catalog_service = None
-            try:
-                from backend.services.catalog_helpers import get_catalog_search_service_for_rfx
-                catalog_service = get_catalog_search_service_for_rfx()
-                logger.info("🛒 Catalog service initialized - products will be enriched")
-            except Exception as e:
-                logger.warning(f"⚠️ Catalog service not available: {e}")
-            
-            processor_service = RFXProcessorService(catalog_search_service=catalog_service)
-            # 🔒 PIPELINE FLEXIBLE con USER_ID y ORGANIZATION_ID: Procesa archivos Y/O texto
-            # IMPORTANTE: process_rfx_case() guarda el RFX en BD internamente
-            rfx_processed = processor_service.process_rfx_case(
-                rfx_input, 
-                valid_files, 
-                user_id=current_user_id,
-                organization_id=organization_id  # ← CRÍTICO: Pasar organization_id
-            )
+            logger.warning(f"⚠️ Catalog service not available: {e}")
+
+        # 🔒 Pipeline único: RFXProcessorService
+        processor_service = RFXProcessorService(catalog_search_service=catalog_service)
+        # IMPORTANTE: process_rfx_case() guarda el RFX en BD internamente
+        rfx_processed = processor_service.process_rfx_case(
+            rfx_input,
+            valid_files,
+            user_id=current_user_id,
+            organization_id=organization_id
+        )
         
         # ✅ AHORA el RFX existe en BD, usar su ID real (no el generado al inicio)
         actual_rfx_id = str(rfx_processed.id)
@@ -309,6 +311,14 @@ def process_rfx():
         
         logger.info(f"✅ RFX processed successfully: {actual_rfx_id}")
         return jsonify({"status":"success","data":rfx_processed.model_dump(mode='json')}), 200
+    except ExternalServiceError as e:
+        logger.error(f"❌ External service error processing RFX: {e}")
+        return jsonify({
+            "status": "error",
+            "error_type": "external_service_error",
+            "message": str(e),
+            "retryable": True,
+        }), e.status_code
     except Exception as e:
         logger.exception("❌ Error processing RFX")
         return jsonify({"status":"error","message":str(e),"error":"internal"}), 500
@@ -441,6 +451,15 @@ def get_rfx_history():
         # Enrich with user information
         rfx_records = db_client.enrich_rfx_with_user_info(rfx_records)
         
+        # Prefetch latest proposal per RFX to compute commercial/agentic status
+        rfx_ids = [str(r.get("id")) for r in rfx_records if r.get("id")]
+        latest_proposals_by_rfx = db_client.get_latest_proposals_for_rfx_ids(rfx_ids)
+        product_counts_by_rfx = db_client.get_rfx_product_counts_batch(rfx_ids)
+        product_counts_by_rfx = db_client.get_rfx_product_counts_batch(rfx_ids)
+
+        # Batch fetch product counts — eliminates N+1 query pattern
+        product_counts_by_rfx = db_client.get_rfx_product_counts_batch(rfx_ids)
+
         # Format response data with V2.0 structure
         history_items = []
         for record in rfx_records:
@@ -453,6 +472,10 @@ def get_rfx_history():
             # Map V2.0 status to legacy format
             rfx_status = record.get("status", "in_progress")
             legacy_status = "completed" if rfx_status == "completed" else "In progress"
+            latest_proposal = latest_proposals_by_rfx.get(str(record["id"]))
+            commercial_status = _extract_commercial_status(latest_proposal)
+            agentic_status = _resolve_agentic_status(rfx_status, latest_proposal)
+            processing_status = "processed" if agentic_status in {"processed", "sent", "accepted"} else "in_progress"
             
             # Extract empresa information
             empresa_info = {
@@ -461,9 +484,9 @@ def get_rfx_history():
                 "telefono_empresa": company_data.get("phone", metadata.get("telefono_empresa", ""))
             }
             
-            # Get structured products count
-            structured_products = db_client.get_rfx_products(record["id"])
-            productos_count = len(structured_products) if structured_products else len(record.get("requested_products", []))
+            # Product count from batch map — no extra DB call per record
+            rfx_id_str = str(record["id"])
+            productos_count = product_counts_by_rfx.get(rfx_id_str, len(record.get("requested_products", [])))
             
             history_item = {
                 # V2.0 fields
@@ -505,7 +528,12 @@ def get_rfx_history():
                 # Additional fields for frontend consistency
                 "client": requester_data.get("name", "Unknown Requester"),
                 "date": record.get("created_at"),
-                "rfxId": record["id"]
+                "rfxId": record["id"],
+
+                # Agentic lifecycle statuses (new)
+                "processing_status": processing_status,
+                "commercial_status": commercial_status,
+                "agentic_status": agentic_status
             }
             history_items.append(history_item)
         
@@ -2092,6 +2120,13 @@ def get_latest_rfx():
         # Enrich with user information
         rfx_records = db_client.enrich_rfx_with_user_info(rfx_records)
         
+        # Prefetch latest proposal per RFX to compute commercial/agentic status
+        rfx_ids = [str(r.get("id")) for r in rfx_records if r.get("id")]
+        latest_proposals_by_rfx = db_client.get_latest_proposals_for_rfx_ids(rfx_ids)
+
+        # Batch fetch product counts — eliminates N+1 query pattern
+        product_counts_by_rfx = db_client.get_rfx_product_counts_batch(rfx_ids)
+
         # Format response data with consistent structure
         latest_items = []
         for record in rfx_records:
@@ -2104,10 +2139,14 @@ def get_latest_rfx():
             # Map V2.0 status to frontend format
             rfx_status = record.get("status", "in_progress")
             display_status = "completed" if rfx_status == "completed" else "In progress"
+            latest_proposal = latest_proposals_by_rfx.get(str(record["id"]))
+            commercial_status = _extract_commercial_status(latest_proposal)
+            agentic_status = _resolve_agentic_status(rfx_status, latest_proposal)
+            processing_status = "processed" if agentic_status in {"processed", "sent", "accepted"} else "in_progress"
             
-            # Get structured products count
-            structured_products = db_client.get_rfx_products(record["id"])
-            products_count = len(structured_products) if structured_products else len(record.get("requested_products", []))
+            # Product count from batch map — no extra DB call per record
+            rfx_id_str = str(record["id"])
+            products_count = product_counts_by_rfx.get(rfx_id_str, len(record.get("requested_products", [])))
             
             latest_item = {
                 # Core RFX data
@@ -2125,6 +2164,9 @@ def get_latest_rfx():
                 # Status and classification
                 "status": display_status,
                 "rfx_status": rfx_status,  # Raw status
+                "processing_status": processing_status,
+                "commercial_status": commercial_status,
+                "agentic_status": agentic_status,
                 "tipo": record.get("rfx_type", "catering"),
                 "priority": record.get("priority", "medium"),
                 
@@ -2195,7 +2237,119 @@ def get_latest_rfx():
         }), 500
 
 
+@rfx_bp.route("/metrics/overview", methods=["GET"])
+@jwt_required
+def get_rfx_metrics_overview():
+    """
+    Agentic metrics overview for dashboard:
+    - Totales por estado (processed/sent/accepted)
+    - Funnel
+    - Tendencia diaria en rango
+    """
+    try:
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+
+        range_days = int(request.args.get("range_days", 30))
+        if range_days < 7 or range_days > 365:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid range_days parameter",
+                "error": "range_days must be between 7 and 365"
+            }), 400
+
+        db_client = get_database_client()
+        rfx_records = db_client.get_rfx_history(
+            user_id=user_id,
+            organization_id=organization_id,
+            limit=2000,
+            offset=0
+        )
+
+        rfx_ids = [str(r.get("id")) for r in rfx_records if r.get("id")]
+        latest_proposals_by_rfx = db_client.get_latest_proposals_for_rfx_ids(rfx_ids)
+
+        total_rfx = len(rfx_records)
+        counts = {
+            "in_progress": 0,
+            "processed": 0,
+            "sent": 0,
+            "accepted": 0
+        }
+
+        today = datetime.utcnow().date()
+        start_date = today - timedelta(days=range_days - 1)
+        daily = {}
+        for i in range(range_days):
+            d = start_date + timedelta(days=i)
+            daily[d.isoformat()] = {
+                "date": d.isoformat(),
+                "created": 0,
+                "processed": 0,
+                "sent": 0,
+                "accepted": 0
+            }
+
+        for record in rfx_records:
+            rid = str(record.get("id"))
+            rfx_status = str(record.get("status", "in_progress")).lower()
+            latest_proposal = latest_proposals_by_rfx.get(rid)
+
+            agentic_status = _resolve_agentic_status(rfx_status, latest_proposal)
+            if agentic_status not in counts:
+                agentic_status = "in_progress"
+            counts[agentic_status] += 1
+
+            created_raw = record.get("created_at")
+            if created_raw:
+                created_date = str(created_raw)[:10]
+                if created_date in daily:
+                    daily[created_date]["created"] += 1
+                    if agentic_status in {"processed", "sent", "accepted"}:
+                        daily[created_date]["processed"] += 1
+                    if agentic_status in {"sent", "accepted"}:
+                        daily[created_date]["sent"] += 1
+                    if agentic_status == "accepted":
+                        daily[created_date]["accepted"] += 1
+
+        sent_or_accepted = counts["sent"] + counts["accepted"]
+        acceptance_rate = (counts["accepted"] / sent_or_accepted * 100.0) if sent_or_accepted > 0 else 0.0
+
+        response = {
+            "status": "success",
+            "message": "Metrics overview generated successfully",
+            "data": {
+                "range_days": range_days,
+                "kpis": {
+                    "total_rfx": total_rfx,
+                    "in_progress": counts["in_progress"],
+                    "processed": counts["processed"],
+                    "sent": counts["sent"],
+                    "accepted": counts["accepted"],
+                    "acceptance_rate": round(acceptance_rate, 2)
+                },
+                "funnel": {
+                    "processed": counts["processed"],
+                    "sent": counts["sent"],
+                    "accepted": counts["accepted"]
+                },
+                "distribution": counts,
+                "timeseries": list(daily.values())
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        return jsonify(response), 200
+    except Exception as e:
+        logger.error(f"❌ Error generating metrics overview: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to generate metrics overview",
+            "error": str(e)
+        }), 500
+
+
 @rfx_bp.route("/load-more", methods=["GET"])
+@jwt_required
 def load_more_rfx():
     """
     ⏩ Load more RFX records for infinite scroll pagination
@@ -2231,13 +2385,27 @@ def load_more_rfx():
                 "error": "Limit must be between 1 and 50"
             }), 400
         
-        logger.info(f"⏩ Loading more RFX records: offset={offset}, limit={limit}")
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+
+        logger.info(f"⏩ Loading more RFX records: offset={offset}, limit={limit}, user={user_id}, org={organization_id}")
         
         # Get data from database
         from ..core.database import get_database_client
         db_client = get_database_client()
         
-        rfx_records = db_client.get_latest_rfx(limit=limit, offset=offset)
+        rfx_records = db_client.get_latest_rfx(
+            user_id=user_id,
+            organization_id=organization_id,
+            limit=limit,
+            offset=offset
+        )
+        rfx_records = db_client.enrich_rfx_with_user_info(rfx_records)
+
+        # Prefetch latest proposal per RFX to compute commercial/agentic status
+        rfx_ids = [str(r.get("id")) for r in rfx_records if r.get("id")]
+        latest_proposals_by_rfx = db_client.get_latest_proposals_for_rfx_ids(rfx_ids)
+        product_counts_by_rfx = db_client.get_rfx_product_counts_batch(rfx_ids)
         
         if not rfx_records:
             logger.info(f"📄 No more RFX records found at offset {offset}")
@@ -2264,9 +2432,13 @@ def load_more_rfx():
             
             rfx_status = record.get("status", "in_progress")
             display_status = "completed" if rfx_status == "completed" else "In progress"
+            latest_proposal = latest_proposals_by_rfx.get(str(record["id"]))
+            commercial_status = _extract_commercial_status(latest_proposal)
+            agentic_status = _resolve_agentic_status(rfx_status, latest_proposal)
+            processing_status = "processed" if agentic_status in {"processed", "sent", "accepted"} else "in_progress"
             
-            structured_products = db_client.get_rfx_products(record["id"])
-            products_count = len(structured_products) if structured_products else len(record.get("requested_products", []))
+            rfx_id_str = str(record["id"])
+            products_count = product_counts_by_rfx.get(rfx_id_str, len(record.get("requested_products", [])))
             
             more_item = {
                 # Core RFX data
@@ -2284,6 +2456,9 @@ def load_more_rfx():
                 # Status and classification
                 "status": display_status,
                 "rfx_status": rfx_status,
+                "processing_status": processing_status,
+                "commercial_status": commercial_status,
+                "agentic_status": agentic_status,
                 "tipo": record.get("rfx_type", "catering"),
                 "priority": record.get("priority", "medium"),
                 

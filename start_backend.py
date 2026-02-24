@@ -182,7 +182,7 @@ def install_dependencies():
         return False
 
 def check_environment_file():
-    """Check if .env file exists, has required variables, and load them"""
+    """Check env files, load .env and optional .env.<environment> override."""
     from dotenv import load_dotenv
     
     env_file = Path(".env")
@@ -202,9 +202,14 @@ def check_environment_file():
         print("- SECRET_KEY")
         return False
     
-    # 🔥 AQUÍ ESTÁ LA CLAVE: Cargar las variables del .env
     print("🔄 Loading environment variables from .env...")
     load_dotenv(env_file)
+
+    env_name = os.environ.get("ENVIRONMENT", "development").strip().lower()
+    env_specific_file = Path(f".env.{env_name}")
+    if env_specific_file.exists():
+        print(f"🔄 Loading environment override from {env_specific_file}...")
+        load_dotenv(env_specific_file, override=True)
     
     # Check for required variables (ahora desde os.environ)
     required_vars = ['SUPABASE_URL', 'SUPABASE_ANON_KEY', 'OPENAI_API_KEY']

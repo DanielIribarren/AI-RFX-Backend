@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional, List
 from openai import OpenAI
 import time
 from pydantic import ValidationError
+from backend.exceptions import ExternalServiceError
 
 # Importar esquemas locales
 from backend.schemas.rfx_extraction_schema import (
@@ -60,7 +61,7 @@ class FunctionCallingRFXExtractor:
         if debug_mode:
             logger.debug(f"🔍 Debug mode ACTIVE - detailed logging enabled")
     
-    def extract_rfx_data(self, document_text: str, max_retries: int = 2) -> Dict[str, Any]:
+    def extract_rfx_data(self, document_text: str, max_retries: int = 5) -> Dict[str, Any]:
         """
         Extraer datos de RFX usando function calling
         
@@ -731,15 +732,59 @@ Usa la función extract_rfx_data para proporcionar la respuesta estructurada."""
                 
             except Exception as e:
                 self.extraction_stats["openai_errors"] += 1
-                wait_time = (2 ** attempt) + 1  # Exponential backoff
-                logger.warning(f"⚠️ Function calling attempt {attempt + 1} failed: {e}")
+                error_text = str(e).lower()
+                error_code = getattr(e, "code", None)
+                
+                # Log completo del error para debugging
+                logger.error(f"🔍 OpenAI Error Details - Type: {type(e).__name__}, Code: {error_code}, Message: {str(e)[:200]}")
+
+                # IMPORTANTE: Detectar rate limit PRIMERO (429 es rate limit, NO quota)
+                # Rate limit = requests/minuto excedido (recuperable con espera)
+                # Insufficient quota = sin créditos (no recuperable)
+                is_rate_limit = (
+                    "429" in error_text or 
+                    "rate_limit" in error_text or 
+                    "too many requests" in error_text or
+                    error_code == "rate_limit_exceeded"
+                )
+                
+                # Solo es quota exhausted si el código específico lo indica
+                # NO confundir 429 (rate limit) con insufficient_quota
+                is_quota_exhausted = (
+                    error_code == "insufficient_quota" or
+                    "billing" in error_text or
+                    "quota exceeded" in error_text
+                ) and not is_rate_limit  # ← CRÍTICO: Si es rate limit, NO es quota
+                
+                # Quota exhausted es no-recuperable (sin créditos/billing)
+                if is_quota_exhausted:
+                    logger.error("❌ OpenAI quota exhausted (insufficient_quota) - aborting retries")
+                    raise ExternalServiceError(
+                        service_name="openai",
+                        message="OpenAI quota exhausted (insufficient_quota). Extraction aborted.",
+                        original_error=e,
+                    )
+                
+                # Rate limit (429) - usar backoff exponencial más largo
+                if is_rate_limit:
+                    # Backoff más agresivo para rate limits: 5s, 15s, 45s
+                    wait_time = 5 * (3 ** attempt)
+                    logger.warning(f"⚠️ Rate limit hit (429) on attempt {attempt + 1}/{max_retries}: {e}")
+                else:
+                    # Backoff normal para otros errores: 2s, 5s, 9s
+                    wait_time = (2 ** attempt) + 1
+                    logger.warning(f"⚠️ Function calling attempt {attempt + 1}/{max_retries} failed: {e}")
                 
                 if attempt < max_retries - 1:
                     logger.info(f"🔄 Retrying in {wait_time} seconds...")
                     time.sleep(wait_time)
                 else:
                     logger.error(f"❌ Function calling failed after {max_retries} attempts")
-                    raise
+                    raise ExternalServiceError(
+                        service_name="openai",
+                        message=f"Function calling failed after {max_retries} attempts",
+                        original_error=e,
+                    )
     
     def _validate_and_structure_result(self, raw_result: Dict[str, Any]) -> RFXFunctionResult:
         """
