@@ -73,12 +73,12 @@ def create_app(config_name: str = None) -> Flask:
     # Initialize Flask-Mail
     mail = Mail(app)
     
-    # Configure CORS - Temporary fix for production
+    # Configure CORS from environment/PM2 configuration
     server_config = get_server_config()
     CORS(app, 
-         origins=["*"],  # Temporary: Allow all origins
-         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],  # ✅ Added PATCH for independent pricing updates
-         allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+         origins=server_config.cors_origins,
+         methods=server_config.cors_methods,
+         allow_headers=server_config.cors_headers,
          supports_credentials=True,
          expose_headers=["Content-Disposition", "Content-Type"]
     )

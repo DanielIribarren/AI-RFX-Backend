@@ -759,6 +759,27 @@ class DatabaseClient:
             logger.error(f"❌ Failed to get proposals for RFX {rfx_id}: {e}")
             raise
 
+    def search_proposals_by_code(self, code_query: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Search proposals by corporate proposal code (exact or prefix-like)."""
+        try:
+            query = (code_query or "").strip()
+            if not query:
+                return []
+
+            # Case-insensitive prefix search for fast operational lookup.
+            response = self.client.table("generated_documents")\
+                .select("*")\
+                .eq("document_type", "proposal")\
+                .ilike("proposal_code", f"{query}%")\
+                .order("created_at", desc=True)\
+                .limit(limit)\
+                .execute()
+
+            return response.data or []
+        except Exception as e:
+            logger.error(f"❌ Failed to search proposals by code '{code_query}': {e}")
+            return []
+
     def get_latest_proposals_for_rfx_ids(self, rfx_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         """
         Get latest proposal per RFX for a list of RFX IDs.

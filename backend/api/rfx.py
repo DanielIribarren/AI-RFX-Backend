@@ -364,6 +364,8 @@ def get_recent_rfx():
             # V2.0 uses 'status' field directly
             rfx_status = record.get("status", "in_progress")
             status = "completed" if rfx_status == "completed" else "In progress"
+            metadata_json = record.get("metadata_json", {}) or {}
+            rfx_code = record.get("rfx_code") or metadata_json.get("rfx_code")
             
             # V2.0 structure with joined tables
             company_name = record.get("companies", {}).get("name", "Unknown Company") if record.get("companies") else "Unknown Company"
@@ -376,6 +378,7 @@ def get_recent_rfx():
                 "date": record.get("created_at"),
                 "status": status,
                 "rfxId": record["id"],
+                "rfx_code": rfx_code,
                 # Additional fields for consistency with history
                 "tipo": record.get("rfx_type", "catering"),
                 "numero_productos": len(record.get("requested_products", [])) if record.get("requested_products") else 0,
@@ -476,6 +479,12 @@ def get_rfx_history():
             commercial_status = _extract_commercial_status(latest_proposal)
             agentic_status = _resolve_agentic_status(rfx_status, latest_proposal)
             processing_status = "processed" if agentic_status in {"processed", "sent", "accepted"} else "in_progress"
+            rfx_code = record.get("rfx_code") or metadata.get("rfx_code")
+            latest_proposal_metadata = (latest_proposal or {}).get("metadata") or {}
+            latest_proposal_code = (
+                (latest_proposal or {}).get("proposal_code")
+                or latest_proposal_metadata.get("proposal_code")
+            )
             
             # Extract empresa information
             empresa_info = {
@@ -529,6 +538,8 @@ def get_rfx_history():
                 "client": requester_data.get("name", "Unknown Requester"),
                 "date": record.get("created_at"),
                 "rfxId": record["id"],
+                "rfx_code": rfx_code,
+                "proposal_code": latest_proposal_code,
 
                 # Agentic lifecycle statuses (new)
                 "processing_status": processing_status,
@@ -654,11 +665,14 @@ def get_rfx_by_id(rfx_id: str):
         
         # 🆕 Get generated document HTML content for frontend
         generated_html = None
+        latest_proposal_code = None
         if proposals:
             # Get the most recent proposal/document
             latest_proposal = proposals[0]  # proposals are ordered by created_at DESC
             # Extract HTML content from the document
             html_content = latest_proposal.get("content_html") or latest_proposal.get("content")
+            latest_metadata = latest_proposal.get("metadata") or {}
+            latest_proposal_code = latest_proposal.get("proposal_code") or latest_metadata.get("proposal_code")
             if html_content:
                 generated_html = html_content
                 logger.info(f"✅ Including HTML content for RFX {rfx_id}: {len(html_content)} characters")
@@ -694,6 +708,8 @@ def get_rfx_by_id(rfx_id: str):
             "delivery_date": rfx_record.get("delivery_date"),
             "delivery_time": rfx_record.get("delivery_time"),
             "status": rfx_record.get("status", "in_progress"),
+            "rfx_code": rfx_record.get("rfx_code", metadata.get("rfx_code")),
+            "latest_proposal_code": latest_proposal_code,
             "priority": rfx_record.get("priority", "medium"),
             "currency": rfx_record.get("currency", "USD"),  # ✅ Exponer moneda del RFX
             "estimated_budget": rfx_record.get("estimated_budget"),
@@ -2143,6 +2159,12 @@ def get_latest_rfx():
             commercial_status = _extract_commercial_status(latest_proposal)
             agentic_status = _resolve_agentic_status(rfx_status, latest_proposal)
             processing_status = "processed" if agentic_status in {"processed", "sent", "accepted"} else "in_progress"
+            rfx_code = record.get("rfx_code") or metadata.get("rfx_code")
+            latest_proposal_metadata = (latest_proposal or {}).get("metadata") or {}
+            latest_proposal_code = (
+                (latest_proposal or {}).get("proposal_code")
+                or latest_proposal_metadata.get("proposal_code")
+            )
             
             # Product count from batch map — no extra DB call per record
             rfx_id_str = str(record["id"])
@@ -2152,6 +2174,8 @@ def get_latest_rfx():
                 # Core RFX data
                 "id": record["id"],
                 "rfxId": record["id"],  # Legacy compatibility
+                "rfx_code": rfx_code,
+                "proposal_code": latest_proposal_code,
                 "title": record.get("title", f"RFX: {company_data.get('name', 'Unknown Company')}"),
                 "description": record.get("description"),
                 
@@ -2436,6 +2460,12 @@ def load_more_rfx():
             commercial_status = _extract_commercial_status(latest_proposal)
             agentic_status = _resolve_agentic_status(rfx_status, latest_proposal)
             processing_status = "processed" if agentic_status in {"processed", "sent", "accepted"} else "in_progress"
+            rfx_code = record.get("rfx_code") or metadata.get("rfx_code")
+            latest_proposal_metadata = (latest_proposal or {}).get("metadata") or {}
+            latest_proposal_code = (
+                (latest_proposal or {}).get("proposal_code")
+                or latest_proposal_metadata.get("proposal_code")
+            )
             
             rfx_id_str = str(record["id"])
             products_count = product_counts_by_rfx.get(rfx_id_str, len(record.get("requested_products", [])))
@@ -2444,6 +2474,8 @@ def load_more_rfx():
                 # Core RFX data
                 "id": record["id"],
                 "rfxId": record["id"],
+                "rfx_code": rfx_code,
+                "proposal_code": latest_proposal_code,
                 "title": record.get("title", f"RFX: {company_data.get('name', 'Unknown Company')}"),
                 "description": record.get("description"),
                 

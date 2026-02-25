@@ -99,8 +99,10 @@ def map_rfx_data_for_proposal(rfx_data_raw: Dict[str, Any], rfx_products: List[D
             "delivery_time": rfx_data_raw.get("delivery_time", ""),
             "estimated_budget": rfx_data_raw.get("estimated_budget", 0),
             "rfx_type": rfx_data_raw.get("rfx_type", "catering"),
+            "rfx_code": rfx_data_raw.get("rfx_code") or (rfx_data_raw.get("metadata_json", {}) or {}).get("rfx_code"),
             "title": rfx_data_raw.get("title", ""),
             "description": rfx_data_raw.get("description", ""),
+            "organization_id": rfx_data_raw.get("organization_id"),
             "metadata": rfx_data_raw.get("metadata_json", {})
         }
         

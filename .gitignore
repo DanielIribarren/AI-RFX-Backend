@@ -109,3 +109,4 @@ credentials/
 .next/
 # Ignore typo'd PM2 local file with secrets
 ecosystem.dev.confing.js
+pm2.config.js

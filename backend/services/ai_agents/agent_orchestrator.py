@@ -267,7 +267,7 @@ class AgentOrchestrator:
   <div class="dates">
     <p style="margin: 0;"><strong>Fecha:</strong> {{CURRENT_DATE}}</p>
     <p style="margin: 0;"><strong>Vigencia:</strong> {{VALIDITY_DATE}}</p>
-    <p style="margin: 0;"><strong>Código:</strong> SABRA-PO-2025-XXX</p>
+    <p style="margin: 0;"><strong>Código:</strong> {{PROPOSAL_CODE}}</p>
   </div>
   <div style="padding: 0 10mm; margin: 3mm 0;">
     <span class="info-label">Cliente:</span>

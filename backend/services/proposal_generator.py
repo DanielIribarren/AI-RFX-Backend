@@ -18,6 +18,7 @@ from backend.services.unified_budget_configuration_service import unified_budget
 from backend.services.prompts.proposal_prompts import ProposalPrompts
 from backend.utils.html_validator import HTMLValidator
 from backend.utils.branding_validator import BrandingValidator  # ✅ MEJORA #5
+from backend.services.document_code_service import DocumentCodeService
 
 # ✅ NUEVO: Sistema de 3 Agentes AI
 from backend.services.ai_agents.agent_orchestrator import agent_orchestrator
@@ -64,6 +65,7 @@ class ProposalGenerationService:
         """Inicializa el servicio con las dependencias necesarias"""
         self.openai_config = get_openai_config()
         self.db_client = get_database_client()
+        self.document_code_service = DocumentCodeService(self.db_client)
         self.openai_client = None  # Lazy initialization
     
     def _get_openai_client(self):
@@ -96,6 +98,20 @@ class ProposalGenerationService:
             # 1. Obtener user_id con fallbacks múltiples
             user_id = self._get_user_id(rfx_data, proposal_request.rfx_id)
             logger.info(f"✅ Generating proposal for user: {user_id}")
+
+            # 1.1 Corporate code strategy:
+            # - Stable RFX code at case level
+            # - Proposal code derived from RFX code with revision suffix
+            rfx_code = self._ensure_rfx_code(
+                rfx_id=proposal_request.rfx_id,
+                rfx_data=rfx_data
+            )
+            proposal_revision = self.document_code_service.next_proposal_revision(proposal_request.rfx_id)
+            proposal_code = self.document_code_service.build_proposal_code(rfx_code, proposal_revision)
+            rfx_data["rfx_code"] = rfx_code
+            rfx_data["proposal_code"] = proposal_code
+            rfx_data["proposal_revision"] = proposal_revision
+            logger.info(f"🏷️ Corporate codes - rfx_code={rfx_code}, proposal_code={proposal_code}")
             
             # 2. Preparar datos de productos
             products_info = self._prepare_products_data(rfx_data)
@@ -125,7 +141,8 @@ class ProposalGenerationService:
             if USE_AI_AGENTS and has_branding and template_type == 'custom':
                 logger.info("🤖 Using AI Agents System (3-Agent Architecture)")
                 proposal = await self._generate_with_ai_agents(
-                    rfx_data, products_info, pricing_calculation, currency, user_id, proposal_request, pricing_config
+                    rfx_data, products_info, pricing_calculation, currency, user_id, proposal_request, pricing_config,
+                    proposal_code=proposal_code, rfx_code=rfx_code, proposal_revision=proposal_revision
                 )
                 
                 # 🔧 FIX: Guardar en BD antes de retornar
@@ -201,7 +218,8 @@ class ProposalGenerationService:
             
             # 9. Crear objeto de propuesta
             proposal = self._create_proposal_object(
-                rfx_data, html_content, proposal_request, pricing_calculation
+                rfx_data, html_content, proposal_request, pricing_calculation,
+                proposal_code=proposal_code, rfx_code=rfx_code, proposal_revision=proposal_revision
             )
             
             # 10. Guardar en BD
@@ -340,6 +358,111 @@ class ProposalGenerationService:
                 return currency
         
         return rfx_data.get("currency", "USD")
+
+    def _ensure_rfx_code(self, rfx_id: str, rfx_data: Dict[str, Any]) -> str:
+        """
+        Ensure a stable corporate code exists at RFX level.
+        Priority:
+        1) rfx_v2.rfx_code
+        2) metadata_json.rfx_code
+        3) generate + persist
+        """
+        existing_code = rfx_data.get("rfx_code")
+        if existing_code:
+            return str(existing_code)
+
+        metadata_json = rfx_data.get("metadata_json") if isinstance(rfx_data.get("metadata_json"), dict) else None
+        if metadata_json is None and isinstance(rfx_data.get("metadata"), dict):
+            metadata_json = dict(rfx_data.get("metadata") or {})
+        if metadata_json is None:
+            metadata_json = {}
+
+        metadata_code = metadata_json.get("rfx_code")
+        if metadata_code:
+            return str(metadata_code)
+
+        # Prefer authoritative DB values to avoid overriding existing metadata.
+        db_rfx = self.db_client.client.table("rfx_v2")\
+            .select("rfx_code, metadata_json, rfx_type")\
+            .eq("id", str(rfx_id))\
+            .limit(1)\
+            .execute()
+        db_row = db_rfx.data[0] if db_rfx.data else {}
+        db_rfx_code = db_row.get("rfx_code")
+        if db_rfx_code:
+            return str(db_rfx_code)
+
+        db_metadata = db_row.get("metadata_json") if isinstance(db_row.get("metadata_json"), dict) else {}
+        if db_metadata.get("rfx_code"):
+            return str(db_metadata.get("rfx_code"))
+
+        merged_metadata = {**db_metadata, **metadata_json}
+
+        rfx_type = db_row.get("rfx_type") or rfx_data.get("rfx_type", "catering")
+        rfx_code = self.document_code_service.generate_rfx_code(rfx_type)
+
+        # Persist in rfx_v2 and metadata_json for backwards compatibility.
+        merged_metadata["rfx_code"] = rfx_code
+        try:
+            self.db_client.client.table("rfx_v2").update(
+                {
+                    "rfx_code": rfx_code,
+                    "metadata_json": merged_metadata,
+                }
+            ).eq("id", rfx_id).execute()
+        except Exception as exc:
+            logger.error(f"❌ Failed to persist rfx_code for RFX {rfx_id}: {exc}")
+            raise
+
+        rfx_data["metadata"] = merged_metadata
+        rfx_data["metadata_json"] = merged_metadata
+        return rfx_code
+
+    def _inject_proposal_code_in_html(
+        self,
+        html_content: str,
+        proposal_code: Optional[str],
+        rfx_code: Optional[str] = None,
+    ) -> str:
+        """Inject proposal/rfx codes in generated HTML regardless of template style."""
+        if not html_content:
+            return html_content
+
+        html = html_content
+        if proposal_code:
+            html = html.replace("{{PROPOSAL_CODE}}", proposal_code)
+            html = html.replace("[NUMERO]", proposal_code)
+        if rfx_code:
+            html = html.replace("{{RFX_CODE}}", rfx_code)
+
+        if proposal_code:
+            # Replace common "Codigo: XYZ" blocks in deterministic way.
+            html = re.sub(
+                r"(<strong>\s*C[óo]digo:\s*</strong>\s*)([^<\\n]+)",
+                rf"\\1{proposal_code}",
+                html,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+            html = re.sub(
+                r"(C[óo]digo:\s*)(SABRA-PO-[A-Za-z0-9\\-]+|PROP-[A-Za-z0-9\\-]+|RFX-[A-Za-z0-9\\-]+)",
+                rf"\\1{proposal_code}",
+                html,
+                count=1,
+                flags=re.IGNORECASE,
+            )
+
+            # If the template omitted the code block entirely, insert one after "Vigencia".
+            if proposal_code not in html:
+                html = re.sub(
+                    r"(<strong>\s*Vigencia:\s*</strong>\s*[^<\\n]*)(</p>)",
+                    rf"\\1\\2\n<p style=\"margin: 0;\"><strong>Código:</strong> {proposal_code}</p>",
+                    html,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+
+        return html
     
     def _map_rfx_data_for_prompt(self, rfx_data: Dict, products_info: List[Dict]) -> Dict:
         """
@@ -376,7 +499,9 @@ class ProposalGenerationService:
             'products': products,
             'user_id': rfx_data.get('user_id'),
             'current_date': current_date,
-            'validity_date': validity_date
+            'validity_date': validity_date,
+            'proposal_code': rfx_data.get('proposal_code'),
+            'rfx_code': rfx_data.get('rfx_code'),
         }
         
         logger.info(f"✅ Mapped data - client: {client_name}, solicitud: {rfx_data.get('title', 'N/A')}, products: {len(products)}, date: {current_date}")
@@ -630,9 +755,12 @@ class ProposalGenerationService:
         return await self._call_ai(prompt)
     
     async def _generate_with_ai_agents(
-        self, rfx_data: Dict, products_info: List[Dict], 
+        self, rfx_data: Dict, products_info: List[Dict],
         pricing_calculation: Dict, currency: str, user_id: str,
-        proposal_request: ProposalRequest, pricing_config: Dict = None
+        proposal_request: ProposalRequest, pricing_config: Dict = None,
+        proposal_code: Optional[str] = None,
+        rfx_code: Optional[str] = None,
+        proposal_revision: Optional[int] = None,
     ) -> GeneratedProposal:
         """
         🤖 Genera propuesta usando el sistema de 3 agentes AI
@@ -660,7 +788,10 @@ class ProposalGenerationService:
                 html_content = await self._generate_with_branding(
                     rfx_data, products_info, pricing_calculation, currency, user_id, branding_config
                 )
-                return self._create_proposal_object(rfx_data, html_content, proposal_request, pricing_calculation)
+                return self._create_proposal_object(
+                    rfx_data, html_content, proposal_request, pricing_calculation,
+                    proposal_code=proposal_code, rfx_code=rfx_code, proposal_revision=proposal_revision
+                )
             
             # 2. Obtener template HTML desde BD
             html_template = branding.get('html_template')
@@ -716,7 +847,9 @@ class ProposalGenerationService:
                 "solicitud": rfx_data.get('title', 'N/A'),
                 "products": products_info,
                 "pricing": self._format_pricing_data(pricing_calculation, currency, proposal_request.rfx_id),
-                "pricing_config": pricing_detailed_config  # ✅ NUEVO: Configuraciones detalladas
+                "pricing_config": pricing_detailed_config,  # ✅ NUEVO: Configuraciones detalladas
+                "proposal_code": proposal_code,
+                "rfx_code": rfx_code,
             }
             
             # 4. Llamar al orquestador de agentes
@@ -737,7 +870,10 @@ class ProposalGenerationService:
                 html_content = await self._generate_with_branding(
                     rfx_data, products_info, pricing_calculation, currency, user_id, branding_config_old
                 )
-                return self._create_proposal_object(rfx_data, html_content, proposal_request, pricing_calculation)
+                return self._create_proposal_object(
+                    rfx_data, html_content, proposal_request, pricing_calculation,
+                    proposal_code=proposal_code, rfx_code=rfx_code, proposal_revision=proposal_revision
+                )
             
             # 6. Obtener HTML final
             html_final = result["html_final"]
@@ -747,7 +883,10 @@ class ProposalGenerationService:
             logger.info(f"   - Validation: {'✅ PASSED' if metadata.get('validation', {}).get('is_valid', False) else '⚠️ WARNINGS'}")
             
             # 7. Crear objeto de propuesta
-            return self._create_proposal_object(rfx_data, html_final, proposal_request, pricing_calculation)
+            return self._create_proposal_object(
+                rfx_data, html_final, proposal_request, pricing_calculation,
+                proposal_code=proposal_code, rfx_code=rfx_code, proposal_revision=proposal_revision
+            )
             
         except Exception as e:
             logger.error(f"❌ Error in AI Agents System: {e}")
@@ -758,7 +897,10 @@ class ProposalGenerationService:
             html_content = await self._generate_with_branding(
                 rfx_data, products_info, pricing_calculation, currency, user_id, branding_config
             )
-            return self._create_proposal_object(rfx_data, html_content, proposal_request, pricing_calculation)
+            return self._create_proposal_object(
+                rfx_data, html_content, proposal_request, pricing_calculation,
+                proposal_code=proposal_code, rfx_code=rfx_code, proposal_revision=proposal_revision
+            )
     
     async def _retry_generation(
         self, issues: List[str], rfx_data: Dict, products_info: List[Dict], 
@@ -889,13 +1031,17 @@ GENERA EL HTML CORREGIDO.
     
     def _create_proposal_object(
         self, rfx_data: Dict[str, Any], html_content: str, 
-        proposal_request: ProposalRequest, pricing_calculation: Any
+        proposal_request: ProposalRequest, pricing_calculation: Any,
+        proposal_code: Optional[str] = None,
+        rfx_code: Optional[str] = None,
+        proposal_revision: Optional[int] = None,
     ) -> GeneratedProposal:
         """Crea objeto GeneratedProposal"""
         
         client_info = rfx_data.get("companies", {}) if isinstance(rfx_data.get("companies"), dict) else {}
         proposal_id = uuid.uuid4()
         rfx_uuid = uuid.UUID(proposal_request.rfx_id) if isinstance(proposal_request.rfx_id, str) else proposal_request.rfx_id
+        html_content = self._inject_proposal_code_in_html(html_content, proposal_code, rfx_code)
         
         # Obtener total del pricing calculation
         total_cost = pricing_calculation.get('total', 0) if isinstance(pricing_calculation, dict) else getattr(pricing_calculation, 'total_cost', 0)
@@ -918,7 +1064,10 @@ GENERA EL HTML CORREGIDO.
                 "generation_method": "refactored_v5_with_scoring",
                 "ai_model": self.openai_config.model,
                 "document_type": "commercial_proposal",
-                "generation_version": "5.0_refactored"
+                "generation_version": "5.0_refactored",
+                "proposal_code": proposal_code,
+                "rfx_code": rfx_code,
+                "proposal_revision": proposal_revision,
             }
         )
     
@@ -934,7 +1083,10 @@ GENERA EL HTML CORREGIDO.
             "total_cost": proposal.total_cost,
             "created_at": proposal.created_at.isoformat(),
             "metadata": proposal.metadata,
-            "version": 1
+            "version": 1,
+            "proposal_code": (proposal.metadata or {}).get("proposal_code"),
+            "rfx_code_snapshot": (proposal.metadata or {}).get("rfx_code"),
+            "proposal_revision": (proposal.metadata or {}).get("proposal_revision"),
         }
         
         try:

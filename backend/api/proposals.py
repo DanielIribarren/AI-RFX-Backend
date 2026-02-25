@@ -263,6 +263,13 @@ def generate_proposal():
             pdf_url=f"/api/download/{documento_id}",
             proposal=propuesta_generada
         ).model_dump()
+
+        proposal_metadata = propuesta_generada.metadata or {}
+        response_data["codes"] = {
+            "proposal_code": proposal_metadata.get("proposal_code"),
+            "rfx_code": proposal_metadata.get("rfx_code"),
+            "proposal_revision": proposal_metadata.get("proposal_revision"),
+        }
         
         # Agregar información de créditos a la respuesta
         response_data["credits_info"] = {
@@ -323,6 +330,9 @@ def get_proposal(proposal_id: str):
                 "content_html": proposal_data.get("content_html", ""),  # ✅ V2.0 field name  
                 "total_cost": proposal_data.get("total_cost", 0.0),  # ✅ V2.0 field name
                 "created_at": proposal_data.get("created_at", ""),  # ✅ V2.0 field name
+                "proposal_code": proposal_data.get("proposal_code") or (proposal_data.get("metadata") or {}).get("proposal_code"),
+                "rfx_code": proposal_data.get("rfx_code_snapshot") or (proposal_data.get("metadata") or {}).get("rfx_code"),
+                "proposal_revision": proposal_data.get("proposal_revision") or (proposal_data.get("metadata") or {}).get("proposal_revision"),
                 "download_url": f"/api/download/{proposal_id}"
             }
         }
@@ -335,6 +345,73 @@ def get_proposal(proposal_id: str):
             "status": "error",
             "message": f"Failed to retrieve proposal {proposal_id}",
             "error": str(e)
+        }), 500
+
+
+@proposals_bp.route("/search/by-code", methods=["GET"])
+@jwt_required
+def search_proposals_by_code():
+    """Buscar propuestas por código corporativo (proposal_code)."""
+    try:
+        code = (request.args.get("code") or "").strip()
+        if not code:
+            return jsonify({
+                "status": "error",
+                "message": "Query parameter 'code' is required",
+                "error": "Missing code"
+            }), 400
+
+        try:
+            limit = int(request.args.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+        limit = max(1, min(limit, 50))
+
+        user_id = get_current_user_id()
+        organization_id = get_current_user_organization_id()
+        db_client = get_database_client()
+
+        raw_results = db_client.search_proposals_by_code(code, limit=limit)
+
+        # Ownership enforcement by validating each proposal RFX.
+        from backend.utils.rfx_ownership import get_and_validate_rfx_ownership
+        results = []
+        for proposal in raw_results:
+            proposal_rfx_id = proposal.get("rfx_id")
+            if not proposal_rfx_id:
+                continue
+            _, err = get_and_validate_rfx_ownership(db_client, proposal_rfx_id, user_id, organization_id)
+            if err:
+                continue
+
+            metadata = proposal.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+
+            results.append({
+                "id": proposal.get("id"),
+                "rfx_id": proposal_rfx_id,
+                "proposal_code": proposal.get("proposal_code") or metadata.get("proposal_code"),
+                "rfx_code": proposal.get("rfx_code_snapshot") or metadata.get("rfx_code"),
+                "proposal_revision": proposal.get("proposal_revision") or metadata.get("proposal_revision"),
+                "created_at": proposal.get("created_at"),
+                "total_cost": proposal.get("total_cost", 0.0),
+                "document_type": proposal.get("document_type", "proposal"),
+                "download_url": f"/api/download/{proposal.get('id')}",
+            })
+
+        return jsonify({
+            "status": "success",
+            "message": f"Found {len(results)} proposals for code '{code}'",
+            "data": results,
+        }), 200
+
+    except Exception as e:
+        logger.error(f"❌ Error searching proposals by code: {e}")
+        return jsonify({
+            "status": "error",
+            "message": "Failed to search proposals by code",
+            "error": str(e),
         }), 500
 
 
@@ -413,6 +490,9 @@ def get_proposals_by_rfx(rfx_id: str):
                 "document_type": proposal.get("document_type", "proposal"),  # ✅ V2.0 field name
                 "created_at": proposal.get("created_at", ""),  # ✅ V2.0 field name
                 "total_cost": proposal.get("total_cost", 0.0),  # ✅ V2.0 field name
+                "proposal_code": proposal.get("proposal_code") or metadata.get("proposal_code"),
+                "rfx_code": proposal.get("rfx_code_snapshot") or metadata.get("rfx_code"),
+                "proposal_revision": proposal.get("proposal_revision") or metadata.get("proposal_revision"),
                 "commercial_status": metadata.get("commercial_status", "generated"),
                 "download_url": f"/api/download/{proposal['id']}"
             })

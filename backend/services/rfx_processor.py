@@ -43,6 +43,7 @@ from backend.core.feature_flags import FeatureFlags
 from backend.services.function_calling_extractor import FunctionCallingRFXExtractor
 from backend.services.catalog_search_service_sync import CatalogSearchServiceSync
 from backend.services.ai_agents.rfx_orchestrator_agent import RFXOrchestratorAgent
+from backend.services.document_code_service import DocumentCodeService
 from backend.utils.retry_decorator import retry_on_failure
 from backend.exceptions import ExternalServiceError
 
@@ -392,6 +393,7 @@ class RFXProcessorService:
             max_retries=0  # ← CRÍTICO: Desactivar reintentos automáticos del SDK
         )
         self.db_client = get_database_client()
+        self.document_code_service = DocumentCodeService(self.db_client)
         
         self.debug_mode = False  # Simplificado - sin feature flags
         
@@ -1446,6 +1448,25 @@ TEXTO: {text[:5000]}"""
                 "requirements": rfx_processed.requirements,
                 "requirements_confidence": rfx_processed.requirements_confidence
             }
+
+            # Corporate-friendly deterministic code for fast lookup and classification.
+            metadata_json = rfx_data.get("metadata_json") if isinstance(rfx_data.get("metadata_json"), dict) else {}
+            existing_rfx_code = metadata_json.get("rfx_code")
+            if existing_rfx_code:
+                rfx_code = str(existing_rfx_code)
+            else:
+                try:
+                    rfx_code = self.document_code_service.generate_rfx_code(rfx_data.get("rfx_type"))
+                except Exception:
+                    # Fallback only if sequence RPC is unavailable.
+                    current_year = datetime.utcnow().year
+                    rfx_code = f"RFX-OTH-{current_year}-{str(rfx_processed.id).split('-')[0].upper()}"
+                    logger.warning(f"⚠️ Using fallback rfx_code generation: {rfx_code}")
+
+            rfx_data["rfx_code"] = rfx_code
+            metadata_json["rfx_code"] = rfx_code
+            rfx_data["metadata_json"] = metadata_json
+            logger.info(f"🏷️ Assigned RFX code: {rfx_code}")
             
             # 🆕 CRITICAL: Add user_id if provided
             if user_id:
@@ -2118,8 +2139,34 @@ TEXTO: {text[:5000]}"""
                 price = item.get("precio_unitario", original.get("precio_unitario", original.get("unit_price")))
                 cost = item.get("costo_unitario", original.get("costo_unitario", original.get("unit_cost")))
                 line_total = item.get("line_total")
+                requires_clarification = bool(item.get("requires_clarification"))
 
-                if item.get("requires_clarification"):
+                # Fallback determinista solicitado: cuando haya variantes o ambigüedad,
+                # usar la variante con mayor confidence (la lista ya viene ordenada desc).
+                product_name = original.get("nombre", "")
+                should_force_top_confidence = requires_clarification or price in (None, 0, 0.0) or cost in (None, 0, 0.0)
+                if self.catalog_search and product_name and should_force_top_confidence:
+                    try:
+                        variants = self.catalog_search.search_product_variants(
+                            query=product_name,
+                            organization_id=organization_id,
+                            max_variants=5,
+                        )
+                        if variants:
+                            best_variant = variants[0]
+                            best_conf = float(best_variant.get("confidence") or 0.0)
+                            price = best_variant.get("unit_price") if best_variant.get("unit_price") is not None else price
+                            cost = best_variant.get("unit_cost") if best_variant.get("unit_cost") is not None else cost
+                            item["catalog_match"] = best_conf >= 0.75
+                            item["catalog_product_name"] = best_variant.get("product_name")
+                            item["catalog_confidence"] = best_conf
+                            item["pricing_source"] = "top_confidence_variant"
+                            # Si ya elegimos top confidence, no bloquear por múltiples variantes.
+                            requires_clarification = False
+                    except Exception as variant_err:
+                        logger.warning(f"⚠️ Top-confidence fallback failed for '{product_name}': {variant_err}")
+
+                if requires_clarification:
                     clarifications += 1
 
                 normalized_products.append(
@@ -2130,6 +2177,7 @@ TEXTO: {text[:5000]}"""
                         "precio_unitario": price,
                         "costo_unitario": cost,
                         "estimated_line_total": line_total,
+                        "requires_clarification": requires_clarification,
                         "pricing_source": item.get("pricing_source", "llm_orchestrated_tools"),
                     }
                 )
@@ -2534,21 +2582,11 @@ TEXTO: {text[:5000]}"""
                 # 2. Seleccionar la mejor variante
                 if variants:
                     if len(variants) > 1:
-                        # Múltiples variantes - usar AI selector
-                        logger.info(f"🤖 Found {len(variants)} variants for '{product_name}', using AI to select best match")
-                        
-                        from backend.services.ai_product_selector import AIProductSelector
-                        from openai import OpenAI
-                        from backend.core.config import get_openai_config
-                        
-                        openai_config = get_openai_config()
-                        openai_client = OpenAI(api_key=openai_config.api_key)
-                        selector = AIProductSelector(openai_client)
-                        catalog_match = selector.select_best_variant(
-                            query=product_name,
-                            variants=variants,
-                            rfx_context=rfx_context
+                        # Regla temporal: elegir siempre la variante con mayor confidence.
+                        logger.info(
+                            f"🎯 Found {len(variants)} variants for '{product_name}', selecting top confidence"
                         )
+                        catalog_match = variants[0]
                         ai_selections += 1
                     else:
                         # Solo 1 variante

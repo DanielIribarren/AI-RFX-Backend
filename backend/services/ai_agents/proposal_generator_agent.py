@@ -89,7 +89,9 @@ class ProposalGeneratorAgent:
             'pricing': pricing,
             'pricing_config': pricing_config,  # ✅ NUEVO: Pasar configuraciones
             'current_date': current_date,
-            'validity_date': validity_date
+            'validity_date': validity_date,
+            'proposal_code': data.get('proposal_code'),
+            'rfx_code': data.get('rfx_code'),
         }
         
         logger.info(f"📋 Data mapped - Client: {client_name}, Products: {len(products)}, Total: {pricing.get('total_formatted', '$0.00')}")
@@ -126,6 +128,8 @@ class ProposalGeneratorAgent:
         solicitud = mapped_data.get('solicitud', 'N/A')
         current_date = mapped_data.get('current_date', 'N/A')
         validity_date = mapped_data.get('validity_date', 'N/A')
+        proposal_code = mapped_data.get('proposal_code') or ''
+        rfx_code = mapped_data.get('rfx_code') or ''
         
         # Cliente (variaciones posibles)
         html = html.replace("{{CLIENT_NAME}}", client_name)
@@ -145,6 +149,13 @@ class ProposalGeneratorAgent:
         html = html.replace("{{VALIDITY_DATE}}", validity_date)
         html = html.replace("{{VIGENCIA}}", validity_date)
         html = html.replace("{{VALIDITY}}", validity_date)
+
+        # Corporate identifiers
+        if proposal_code:
+            html = html.replace("{{PROPOSAL_CODE}}", proposal_code)
+            html = html.replace("[NUMERO]", proposal_code)
+        if rfx_code:
+            html = html.replace("{{RFX_CODE}}", rfx_code)
         
         # Totales y pricing con flags condicionales
         pricing = mapped_data.get('pricing', {})
