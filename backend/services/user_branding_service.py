@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 from typing import Dict, Optional
+from datetime import datetime
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 from uuid import UUID
@@ -105,16 +106,14 @@ class UserBrandingService:
         # 3. Guardar archivos en BD
         await self._save_in_database(user_id, result, analyze_now)
         
-        # 4. Llamar a analyze_template que genera HTML y guarda en BD
+        # 4. Ejecutar análisis de forma síncrona para asegurar consistencia
         if analyze_now and result.get("template_path"):
-            asyncio.create_task(
-                self.vision_service.analyze_template(
-                    result["template_path"],
-                    user_id
-                )
+            await self.vision_service.analyze_template(
+                result["template_path"],
+                user_id
             )
-            result["analysis_status"] = "analyzing"
-            result["message"] = "Files uploaded. Analysis in progress."
+            result["analysis_status"] = "completed"
+            result["message"] = "Files uploaded and analysis completed."
         else:
             result["analysis_status"] = "pending"
             result["message"] = "Files uploaded successfully."
@@ -171,14 +170,12 @@ class UserBrandingService:
         if reanalyze and (template_file or existing.get('template_path')):
             template_path = result.get('template_path') or existing.get('template_path')
             if template_path:
-                asyncio.create_task(
-                    self.vision_service.analyze_template(
-                        template_path,
-                        user_id
-                    )
+                await self.vision_service.analyze_template(
+                    template_path,
+                    user_id
                 )
-                result["analysis_status"] = "analyzing"
-                result["message"] = "Branding updated. Re-analysis in progress."
+                result["analysis_status"] = "completed"
+                result["message"] = "Branding updated and re-analysis completed."
             else:
                 result["analysis_status"] = "pending"
                 result["message"] = "Branding updated successfully."
@@ -466,6 +463,41 @@ class UserBrandingService:
         except Exception as e:
             logger.error(f"❌ Error getting analysis status: {e}")
             return None
+
+    async def reanalyze(self, user_id: str) -> Dict:
+        """
+        Re-analiza el template actual del usuario.
+        """
+        try:
+            UUID(user_id)
+        except ValueError:
+            raise ValueError(f"Invalid user_id format: {user_id}")
+
+        branding = self.get_branding_with_analysis(user_id)
+        if not branding:
+            raise ValueError(f"No branding found for user: {user_id}")
+
+        template_path = branding.get("template_path")
+        if not template_path:
+            raise ValueError(f"No template configured for user: {user_id}")
+
+        self.db.client.table("company_branding_assets")\
+            .update({
+                "analysis_status": "analyzing",
+                "analysis_error": None,
+                "analysis_started_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            })\
+            .eq("user_id", user_id)\
+            .execute()
+
+        await self.vision_service.analyze_template(template_path, user_id)
+
+        return {
+            "user_id": user_id,
+            "analysis_status": "completed",
+            "message": "Re-analysis completed successfully."
+        }
     
     def delete_branding(self, user_id: str) -> bool:
         """

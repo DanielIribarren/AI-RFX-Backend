@@ -263,6 +263,39 @@ def get_analysis_status(user_id: str):
 
 
 # NOTA: Endpoint reanalyze eliminado - funcionalidad no necesaria en flujo simplificado
+@branding_bp.route("/reanalyze/<user_id>", methods=["POST"])
+def reanalyze_branding(user_id: str):
+    """
+    Re-analiza el template existente del usuario.
+    """
+    try:
+        from backend.services.user_branding_service import user_branding_service
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(
+                user_branding_service.reanalyze(user_id)
+            )
+        finally:
+            loop.close()
+
+        return jsonify({
+            "status": "success",
+            **result
+        }), 200
+    except ValueError as e:
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 400
+    except Exception as e:
+        logger.error(f"Error reanalyzing branding for {user_id}: {e}", exc_info=True)
+        return jsonify({
+            "status": "error",
+            "message": "Failed to reanalyze branding",
+            "error": str(e)
+        }), 500
 
 
 @branding_bp.route("/<user_id>", methods=["DELETE"])
