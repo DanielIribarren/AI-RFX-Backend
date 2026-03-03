@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any, List, Union, Callable
 from supabase import create_client, Client
 from backend.core.config import get_database_config
 from uuid import UUID, uuid4
+import json
 import logging
 import time
 import threading
@@ -437,6 +438,10 @@ class DatabaseClient:
     # ========================
     # RFX PRODUCTS OPERATIONS
     # ========================
+
+    def _is_missing_column_error(self, error: Exception, column_name: str) -> bool:
+        message = str(error).lower()
+        return ("42703" in message) and (f"column rfx_products.{column_name}" in message or f"column \"{column_name}\"" in message)
     
     def insert_rfx_products(self, rfx_id: Union[str, UUID], products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Insert structured products for an RFX"""
@@ -457,10 +462,10 @@ class DatabaseClient:
                     logger.warning(f"Product {i} missing product_name, skipping")
                     continue
                     
-                if 'quantity' not in product_data:
+                if 'quantity' not in product_data or product_data.get('quantity') is None:
                     product_data['quantity'] = 1
                     
-                if 'unit' not in product_data:
+                if 'unit' not in product_data or not product_data.get('unit'):
                     product_data['unit'] = 'unidades'
                 
                 # Clean any None values that might cause issues
@@ -476,7 +481,24 @@ class DatabaseClient:
                 return []
             
             logger.info(f"🔄 Inserting {len(products_data)} products for RFX {rfx_id}")
-            response = self.client.table("rfx_products").insert(products_data).execute()
+            try:
+                response = self.client.table("rfx_products").insert(products_data).execute()
+            except Exception as insert_err:
+                # Compatibilidad con esquemas donde rfx_products.specifications no existe.
+                if self._is_missing_column_error(insert_err, "specifications"):
+                    logger.warning("⚠️ rfx_products.specifications column missing - retrying insert without specifications")
+                    retry_data: List[Dict[str, Any]] = []
+                    for row in products_data:
+                        fixed = dict(row)
+                        specs = fixed.pop("specifications", None)
+                        if specs:
+                            note_suffix = f" | bundle_meta={json.dumps(specs, ensure_ascii=True)}"
+                            base_notes = fixed.get("notes") or ""
+                            fixed["notes"] = (base_notes + note_suffix)[:1800]
+                        retry_data.append(fixed)
+                    response = self.client.table("rfx_products").insert(retry_data).execute()
+                else:
+                    raise
             
             if response.data:
                 logger.info(f"✅ {len(response.data)} RFX products inserted successfully for RFX {rfx_id}")
@@ -507,12 +529,24 @@ class DatabaseClient:
         """
         try:
             # Optimized: Select only necessary columns (using real column names)
-            response = self.client.table("rfx_products")\
-                .select("id, rfx_id, product_name, description, quantity, unit, estimated_unit_price, unit_cost, notes, created_at")\
-                .eq("rfx_id", str(rfx_id))\
-                .execute()
-            
-            products = response.data or []
+            try:
+                response = self.client.table("rfx_products")\
+                    .select("id, rfx_id, product_name, description, quantity, unit, estimated_unit_price, unit_cost, specifications, notes, created_at")\
+                    .eq("rfx_id", str(rfx_id))\
+                    .execute()
+                products = response.data or []
+            except Exception as select_err:
+                if self._is_missing_column_error(select_err, "specifications"):
+                    logger.warning("⚠️ rfx_products.specifications column missing - using compatibility SELECT")
+                    response = self.client.table("rfx_products")\
+                        .select("id, rfx_id, product_name, description, quantity, unit, estimated_unit_price, unit_cost, notes, created_at")\
+                        .eq("rfx_id", str(rfx_id))\
+                        .execute()
+                    products = response.data or []
+                    for p in products:
+                        p["specifications"] = {}
+                else:
+                    raise
             logger.info(f"✅ Found {len(products)} products for RFX {rfx_id}")
             return products
         except Exception as e:

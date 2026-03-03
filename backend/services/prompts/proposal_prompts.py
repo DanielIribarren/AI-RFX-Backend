@@ -3,7 +3,8 @@
 Compatible con proposal_generator.py
 """
 
-from typing import Dict, Any
+import json
+from typing import Dict, Any, Optional
 from backend.prompts.template_config import (
     build_template_style_instructions,
     get_template_config,
@@ -13,6 +14,28 @@ from backend.prompts.template_config import (
 
 class ProposalPrompts:
     """Clase que centraliza prompts para generación de propuestas"""
+
+    @staticmethod
+    def _format_decision_context(decision_context: Optional[Dict[str, Any]]) -> str:
+        if not decision_context:
+            return "Sin contexto adicional explícito del usuario."
+
+        must_include = decision_context.get("must_include") or []
+        must_avoid = decision_context.get("must_avoid") or []
+        open_questions = decision_context.get("open_questions") or []
+
+        summary = {
+            "user_goal": decision_context.get("user_goal", ""),
+            "tone_preference": decision_context.get("tone_preference", ""),
+            "must_include": must_include,
+            "must_avoid": must_avoid,
+            "commercial_constraints": decision_context.get("commercial_constraints") or [],
+            "open_questions": open_questions,
+            "history_excerpt": decision_context.get("history_excerpt", ""),
+            "recent_user_messages": decision_context.get("recent_user_messages") or [],
+        }
+
+        return json.dumps(summary, ensure_ascii=False, indent=2)
     
     @staticmethod
     def get_prompt_with_branding(
@@ -22,7 +45,8 @@ class ProposalPrompts:
         rfx_data: Dict[str, Any],
         pricing_data: Dict,
         branding_config: Dict[str, Any] = None,
-        template_type: str = "custom"
+        template_type: str = "custom",
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Prompt con branding personalizado. Si template_type != 'custom', usa estilo del template."""
         
@@ -95,6 +119,11 @@ INSTRUCCIONES SOBRE EL EJEMPLO:
 - Email: {company_info.get('email', '')}"""
         else:
             empresa_block = "EMPRESA: No configurada (NO incluir nombre de empresa en el header, solo mostrar datos del cliente)"
+
+        decision_context_block = ProposalPrompts._format_decision_context(decision_context)
+        requirements = rfx_data.get("requirements", "")
+        location = rfx_data.get("location", "")
+        delivery_date = rfx_data.get("delivery_date", "")
         
         prompt = f"""Genera un presupuesto HTML profesional con el siguiente contenido:
 {template_style_block}
@@ -113,6 +142,14 @@ PRICING:
 {'- Impuestos: ' + tax if show_tax else ''}
 - TOTAL: {total}
 
+CONTEXTO OPERATIVO DEL RFX:
+- Requerimientos detectados: {requirements}
+- Ubicación de entrega/evento: {location}
+- Fecha de entrega/evento: {delivery_date}
+
+CONTEXTO DE DECISIÓN (USUARIO + CHAT):
+{decision_context_block}
+
 BRANDING:
 {'- Logo: ' + logo_endpoint if logo_endpoint else '- Sin logo configurado (NO incluir ningún logo)'}
 - Color primario: {primary_color}
@@ -121,14 +158,26 @@ BRANDING:
 {template_reference_block}
 
 INSTRUCCIONES:
-1. HTML completo con DOCTYPE, head, style y body
-{'2. Logo con altura 80-120px (NO duplicar nombre empresa)' if logo_endpoint else '2. NO incluir ningún logo ni imagen de empresa'}
-3. Usar colores del branding/template consistentemente
-4. Tabla profesional con todos los productos
-5. Espaciado profesional (30px entre secciones)
-6. Diseño limpio y proporcional
-7. Solo mostrar coordinación/impuestos si están activos
-{'8. Seguir EXACTAMENTE el estilo del template ' + tpl_config.get('name', '') + ' descrito arriba' if use_template else ''}
+PRIORIDAD DE DECISIÓN (OBLIGATORIA):
+1. Cumplir intención, restricciones y mensajes adicionales del usuario.
+2. Mantener coherencia comercial y operativa (no inventar condiciones no solicitadas).
+3. Aplicar estilo visual/branding.
+
+SECUENCIA DE RAZONAMIENTO (INTERNA):
+A) Identifica objetivo de propuesta y restricciones obligatorias.
+B) Decide qué destacar, qué omitir y qué supuestos mínimos usar.
+C) Genera HTML final alineado al punto A/B.
+
+REGLAS:
+1. HTML completo con DOCTYPE, head, style y body.
+2. {'Logo con altura 80-120px (NO duplicar nombre empresa).' if logo_endpoint else 'NO incluir ningún logo ni imagen de empresa.'}
+3. Usar colores del branding/template consistentemente.
+4. Tabla profesional con todos los productos.
+5. Espaciado profesional (30px entre secciones).
+6. Diseño limpio y proporcional.
+7. Solo mostrar coordinación/impuestos si están activos.
+8. Si falta un dato crítico, NO inventar; dejar comentario HTML: <!-- DATO_PENDIENTE: ... -->
+{'9. Seguir EXACTAMENTE el estilo del template ' + tpl_config.get('name', '') + ' descrito arriba.' if use_template else ''}
 
 IMPORTANTE: Responde SOLO con HTML, sin ```html``` al inicio o final."""
 
@@ -139,7 +188,8 @@ IMPORTANTE: Responde SOLO con HTML, sin ```html``` al inicio o final."""
         company_info: Dict[str, Any],
         rfx_data: Dict[str, Any],
         pricing_data: Dict,
-        template_type: str = "custom"
+        template_type: str = "custom",
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Prompt sin branding personalizado. Si template_type != 'custom', usa estilo del template."""
         
@@ -214,6 +264,11 @@ INSTRUCCIONES SOBRE EL EJEMPLO:
 - Email: {company_info.get('email', '')}"""
         else:
             empresa_block = "EMPRESA: No configurada (NO incluir nombre de empresa en el header, solo mostrar datos del cliente)"
+
+        decision_context_block = ProposalPrompts._format_decision_context(decision_context)
+        requirements = rfx_data.get("requirements", "")
+        location = rfx_data.get("location", "")
+        delivery_date = rfx_data.get("delivery_date", "")
         
         prompt = f"""Genera un presupuesto HTML profesional con el siguiente contenido:
 {template_style_block}
@@ -232,17 +287,37 @@ PRICING:
 {'- Impuestos: ' + tax if show_tax else ''}
 - TOTAL: {total}
 
+CONTEXTO OPERATIVO DEL RFX:
+- Requerimientos detectados: {requirements}
+- Ubicación de entrega/evento: {location}
+- Fecha de entrega/evento: {delivery_date}
+
+CONTEXTO DE DECISIÓN (USUARIO + CHAT):
+{decision_context_block}
+
 {design_block}
 {template_reference_block}
 
 INSTRUCCIONES:
-1. HTML completo con DOCTYPE, head, style y body
-2. Diseño limpio y profesional
-3. Tabla con todos los productos
-4. Espaciado profesional (30px entre secciones)
-5. Solo mostrar coordinación/impuestos si están activos
-6. NO incluir ningún logo ni imagen de empresa (no hay logo configurado)
-7. Usar colores del template/branding consistentemente{extra_instruction}
+PRIORIDAD DE DECISIÓN (OBLIGATORIA):
+1. Cumplir intención, restricciones y mensajes adicionales del usuario.
+2. Mantener coherencia comercial y operativa.
+3. Aplicar diseño visual.
+
+SECUENCIA DE RAZONAMIENTO (INTERNA):
+A) Identifica objetivo y restricciones.
+B) Define decisiones de contenido (qué enfatizar/omitir).
+C) Genera HTML.
+
+REGLAS:
+1. HTML completo con DOCTYPE, head, style y body.
+2. Diseño limpio y profesional.
+3. Tabla con todos los productos.
+4. Espaciado profesional (30px entre secciones).
+5. Solo mostrar coordinación/impuestos si están activos.
+6. NO incluir ningún logo ni imagen de empresa (no hay logo configurado).
+7. Usar colores del template/branding consistentemente.
+8. Si falta un dato crítico, NO inventar; dejar comentario HTML: <!-- DATO_PENDIENTE: ... -->{extra_instruction}
 
 IMPORTANTE: Responde SOLO con HTML, sin ```html``` al inicio o final."""
 

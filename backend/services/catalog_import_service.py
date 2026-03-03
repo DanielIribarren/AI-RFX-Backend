@@ -3,12 +3,14 @@ Catalog Import Service V2 - AI-First Simple
 El AI mapea columnas del Excel a columnas de BD, luego pandas parsea correctamente.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 import pandas as pd
 import logging
 from datetime import datetime
 from openai import OpenAI
 import json
+import re
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -168,11 +170,15 @@ Responde SOLO con el JSON, sin explicaciones."""
         """Valida que el mapeo sea correcto"""
         
         # Validar columnas críticas
-        required = ['product_code', 'product_name']
+        # product_code es opcional: si no viene en archivo, se autogenera.
+        required = ['product_name']
         missing = [col for col in required if col not in mapping]
         
         if missing:
             raise ValueError(f"AI mapping missing critical columns: {missing}")
+
+        if 'product_code' not in mapping:
+            logger.info("ℹ️ product_code column not mapped by AI - auto-generation will be applied")
         
         # Validar que columnas existen en Excel
         for db_col, excel_col in mapping.items():
@@ -188,12 +194,22 @@ Responde SOLO con el JSON, sin explicaciones."""
         
         for idx, row in df.iterrows():
             try:
+                product_name = self._normalize_cell_value(row[mapping['product_name']])
+                if not product_name:
+                    continue
+
+                product_code = None
+                if 'product_code' in mapping:
+                    product_code = self._normalize_cell_value(row[mapping['product_code']])
+                if not product_code:
+                    product_code = self._generate_product_code(product_name)
+
                 # Extraer con mapeo correcto
                 product = {
                     'organization_id': organization_id,  # Puede ser None
                     'user_id': user_id if not organization_id else None,  # Solo si no hay org
-                    'product_code': str(row[mapping['product_code']]).strip(),
-                    'product_name': str(row[mapping['product_name']]).strip(),
+                    'product_code': product_code,
+                    'product_name': product_name,
                     'is_active': True
                 }
                 
@@ -211,11 +227,12 @@ Responde SOLO con el JSON, sin explicaciones."""
                         product['unit_price'] = 0.0
                 
                 if 'unit' in mapping:
-                    product['unit'] = str(row[mapping['unit']]).strip()
+                    unit_value = self._normalize_cell_value(row[mapping['unit']])
+                    if unit_value:
+                        product['unit'] = unit_value
                 
                 # Validar datos críticos
-                if (product['product_code'] and product['product_code'] != 'nan' and
-                    product['product_name'] and product['product_name'] != 'nan'):
+                if product['product_name']:
                     products.append(product)
                     
             except Exception as e:
@@ -233,21 +250,24 @@ Responde SOLO con el JSON, sin explicaciones."""
         for product in products:
             try:
                 # 1. Buscar por product_code (más confiable)
-                query_builder = self.db.client.table('product_catalog').select('id')
-                
-                # Filtrar por organization_id O user_id
-                if organization_id:
-                    query_builder = query_builder.eq('organization_id', organization_id)
-                else:
-                    query_builder = query_builder.eq('user_id', user_id).is_('organization_id', 'null')
-                
-                existing = query_builder\
-                    .eq('product_code', product['product_code'])\
-                    .limit(1)\
-                    .execute()
+                existing = None
+                product_code = product.get('product_code')
+                if product_code:
+                    query_builder = self.db.client.table('product_catalog').select('id')
+                    
+                    # Filtrar por organization_id O user_id
+                    if organization_id:
+                        query_builder = query_builder.eq('organization_id', organization_id)
+                    else:
+                        query_builder = query_builder.eq('user_id', user_id).is_('organization_id', 'null')
+                    
+                    existing = query_builder\
+                        .eq('product_code', product_code)\
+                        .limit(1)\
+                        .execute()
                 
                 # 2. Fallback: buscar por product_name
-                if not existing.data:
+                if not existing or not existing.data:
                     query_builder = self.db.client.table('product_catalog').select('id')
                     
                     if organization_id:
@@ -275,9 +295,31 @@ Responde SOLO con el JSON, sin explicaciones."""
                     inserted += 1
                     
             except Exception as e:
-                logger.error(f"❌ Failed to save product {product.get('product_code')}: {e}")
+                logger.error(f"❌ Failed to save product {product.get('product_code')} / {product.get('product_name')}: {e}")
                 continue
         
         logger.info(f"✅ Saved {inserted} new, {updated} updated products")
         
         return {'inserted': inserted, 'updated': updated}
+
+    def _normalize_cell_value(self, value) -> Optional[str]:
+        """Normaliza celdas de Excel/CSV a texto limpio o None."""
+        if value is None:
+            return None
+        if pd.isna(value):
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.lower() in {"nan", "none", "null", "n/a", "na"}:
+            return None
+        return text
+
+    def _generate_product_code(self, product_name: str) -> str:
+        """Genera un código estable cuando el archivo no incluye SKU/código."""
+        normalized_name = re.sub(r"\s+", " ", product_name).strip().lower()
+        slug = re.sub(r"[^a-z0-9]+", "-", normalized_name).strip("-")
+        slug = (slug[:12] or "item").upper()
+        digest = hashlib.sha1(normalized_name.encode("utf-8")).hexdigest()[:6].upper()
+        return f"AUTO-{slug}-{digest}"

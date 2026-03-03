@@ -36,14 +36,12 @@ from backend.core.config import get_openai_config
 from backend.services.chat_history import RFXMessageHistory
 from backend.services.rfx_processor import RFXProcessorService  # Legacy import - mantener para compatibilidad
 from backend.utils.chat_logger import get_chat_logger
-from backend.services.tools import (
-    get_request_data_tool,
-    add_products_tool,
-    update_product_tool,
-    delete_product_tool,
-    modify_request_details_tool,
-    parse_file_tool
-)
+from backend.services.tools.get_request_data_tool import get_request_data_tool
+from backend.services.tools.add_products_tool import add_products_tool
+from backend.services.tools.update_product_tool import update_product_tool
+from backend.services.tools.delete_product_tool import delete_product_tool
+from backend.services.tools.modify_request_details_tool import modify_request_details_tool
+from backend.services.tools.parse_file_tool import parse_file_tool
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +169,13 @@ class ChatAgent:
             response_message = None
             intermediate_steps = []
             
-            # Preparar input simple: mensaje + contexto del RFX ID
-            # El agente sabrá que request_id = rfx_id del contexto
+            # Preparar input: mensaje + contexto estructurado (incluye memoria por rfx_id)
             agent_input = {
-                "input": f"{message}\n\n[CONTEXT: request_id={rfx_id}]"
+                "input": (
+                    f"{message}\n\n"
+                    f"[CONTEXT request_id={rfx_id}]\n"
+                    f"{json.dumps(context or {}, ensure_ascii=True)}"
+                )
             }
             
             # Stream execution

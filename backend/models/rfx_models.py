@@ -154,7 +154,7 @@ class RFXProductRequest(BaseModel):
     rfx_id: Optional[UUID] = None
     product_name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
-    quantity: int = Field(..., ge=1)
+    quantity: float = Field(..., gt=0)
     unit: str = Field(..., min_length=1, max_length=50)
     estimated_unit_price: Optional[float] = Field(None, ge=0)
     unit_cost: Optional[float] = Field(None, ge=0)  # Costo del proveedor ⭐ NUEVO

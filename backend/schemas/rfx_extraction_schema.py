@@ -5,7 +5,7 @@ Mapea directamente a la estructura de base de datos V2.2
 
 from typing import Any, Dict, List, Optional, Union
 from datetime import datetime, date, time
-from pydantic import BaseModel, validator, Field
+from pydantic import BaseModel, validator, Field, root_validator
 from enum import Enum
 import json
 
@@ -88,7 +88,7 @@ RFX_EXTRACTION_FUNCTION = {
                 # ============================================================================
                 "title": {
                     "type": "string",
-                    "description": "Título descriptivo del proyecto o solicitud RFX. Ej: 'Evento Corporativo GlobalTech 120 personas'"
+                    "description": "Título corporativo y ejecutivo de la solicitud RFX, generado desde la intención y contexto del documento. Debe ser específico y profesional; evitar genéricos como 'RFX Request' o 'Solicitud de presupuesto'. Ej: 'Servicio Integral de Catering Ejecutivo para Junta Regional - 120 Asistentes'"
                 },
                 "description": {
                     "type": "string",
@@ -216,8 +216,8 @@ RFX_EXTRACTION_FUNCTION = {
                             },
                             "quantity": {
                                 "type": "number",
-                                "minimum": 1,
-                                "description": "Cantidad numérica exacta del producto (convertir palabras a números: 'cien'=100, 'docena'=12)"
+                                "minimum": 0.001,
+                                "description": "Cantidad numérica exacta del producto. Acepta fracciones para kg/litros (ej: 0.5, 0.8) y enteros para unidades/personas."
                             },
                             "unit_of_measure": {
                                 "type": "string",
@@ -455,10 +455,10 @@ class ProductItem(BaseModel):
     product_name: str
     description: Optional[str] = None
     category: str  # ✅ FLEXIBLE: Acepta cualquier categoría que AI determine
-    quantity: float = Field(ge=1)
+    quantity: float = Field(gt=0)
     unit_of_measure: str  # ✅ FLEXIBLE: Acepta cualquier unidad que AI determine
     costo_unitario: Optional[float] = Field(default=0.0, ge=0)
-    specifications: Optional[str] = None
+    specifications: Optional[Union[str, Dict[str, Any], List[Any]]] = None
     is_mandatory: bool = True
     priority_order: int = Field(ge=1, default=1)
 
@@ -486,6 +486,15 @@ class CompanyInfo(BaseModel):
     state: Optional[str] = None
     country: Optional[str] = "Mexico"  # Default según DB
 
+    @root_validator(pre=True)
+    def normalize_aliases(cls, values):
+        values = dict(values or {})
+        if not values.get("company_email") and values.get("email"):
+            values["company_email"] = values.get("email")
+        if not values.get("phone") and values.get("company_phone"):
+            values["phone"] = values.get("company_phone")
+        return values
+
 class RequesterInfo(BaseModel):
     """Información del solicitante"""
     name: Optional[str] = None
@@ -493,6 +502,19 @@ class RequesterInfo(BaseModel):
     phone: Optional[str] = None
     position: Optional[str] = None
     department: Optional[str] = None
+
+    @root_validator(pre=True)
+    def normalize_aliases(cls, values):
+        values = dict(values or {})
+        if not values.get("name") and values.get("requester_name"):
+            values["name"] = values.get("requester_name")
+        if not values.get("email") and values.get("requester_email"):
+            values["email"] = values.get("requester_email")
+        if not values.get("phone") and values.get("requester_phone"):
+            values["phone"] = values.get("requester_phone")
+        if not values.get("position") and values.get("requester_position"):
+            values["position"] = values.get("requester_position")
+        return values
 
 class ExtractionConfidence(BaseModel):
     """Scores de confianza"""
@@ -650,14 +672,24 @@ def function_result_to_db_dict(result: RFXFunctionResult) -> Dict[str, Any]:
     # Productos para tabla rfx_products
     products_data = []
     for i, product in enumerate(result.requested_products, 1):
+        raw_specs = product.specifications
+        if isinstance(raw_specs, dict):
+            normalized_specs = raw_specs
+        elif isinstance(raw_specs, list):
+            normalized_specs = {"details_list": raw_specs}
+        elif raw_specs:
+            normalized_specs = {"details": str(raw_specs)}
+        else:
+            normalized_specs = None
+
         products_data.append({
             "product_name": product.product_name,
             "description": product.description,
             "category": product.category,  # ✅ Ya es string directo
-            "quantity": int(product.quantity),
+            "quantity": round(float(product.quantity), 3),
             "unit_cost": product.costo_unitario if product.costo_unitario and product.costo_unitario > 0 else 0.0,  # ✅ Mapear costo_unitario a unit_cost
             "unit_of_measure": product.unit_of_measure,  # ✅ Ya es string directo
-            "specifications": {"details": product.specifications} if product.specifications else None,
+            "specifications": normalized_specs,
             "is_mandatory": product.is_mandatory,
             "priority_order": product.priority_order,
             "notes": None  # Se puede agregar si se necesita

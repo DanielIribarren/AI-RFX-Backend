@@ -18,6 +18,7 @@ from backend.services.tools.search_catalog_variants_tool import search_catalog_v
 from backend.services.tools.resolve_unit_packaging_tool import resolve_unit_packaging_tool
 from backend.services.tools.calculate_line_price_tool import calculate_line_price_tool
 from backend.services.tools.verify_pricing_totals_tool import verify_pricing_totals_tool
+from backend.services.tools.resolve_complex_bundle_tool import resolve_complex_bundle_tool
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,7 @@ class RFXOrchestratorAgent:
             return search_catalog_variants_tool(
                 product_name=args.get("product_name", ""),
                 organization_id=organization_id,
+                user_id=args.get("user_id"),
                 catalog_search=catalog_search,
                 max_variants=int(args.get("max_variants", 5)),
             )
@@ -135,6 +137,13 @@ class RFXOrchestratorAgent:
 
         if tool_name == "verify_pricing_totals_tool":
             return verify_pricing_totals_tool(items=args.get("items", []))
+
+        if tool_name == "resolve_complex_bundle_tool":
+            return resolve_complex_bundle_tool(
+                bundle_schema=args.get("bundle_schema") or {},
+                requirement_hints=args.get("requirement_hints") or [],
+                fallback_policy=args.get("fallback_policy", "ask_user"),
+            )
 
         return {"status": "error", "message": f"Unknown tool: {tool_name}"}
 
@@ -205,6 +214,29 @@ class RFXOrchestratorAgent:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "resolve_complex_bundle_tool",
+                    "description": "Resolve breakdown for complex bundle/menu products using requirement hints",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "bundle_schema": {"type": "object"},
+                            "requirement_hints": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "fallback_policy": {
+                                "type": "string",
+                                "enum": ["ask_user", "first_option"],
+                                "default": "ask_user",
+                            },
+                        },
+                        "required": ["bundle_schema", "requirement_hints"],
+                    },
+                },
+            },
         ]
 
     def _safe_parse_json(self, content: str) -> Dict[str, Any]:
@@ -245,17 +277,20 @@ class RFXOrchestratorAgent:
             catalog_match = False
             formula = None
             requires_clarification = False
+            bundle_breakdown = None
 
             if catalog_search and name:
                 result = search_catalog_variants_tool(
                     product_name=name,
                     organization_id=organization_id,
+                    user_id=None,
                     catalog_search=catalog_search,
                     max_variants=1,
                 )
                 variants = result.get("variants", [])
                 if variants:
                     top = variants[0]
+                    product_type = top.get("product_type", "simple")
                     unit_price = float(top.get("unit_price") or unit_price or 0)
                     unit_cost = float(top.get("unit_cost") or unit_cost or 0)
                     catalog_name = top.get("product_name")
@@ -263,6 +298,27 @@ class RFXOrchestratorAgent:
                     catalog_match = catalog_conf >= 0.75
                     if catalog_match:
                         matched += 1
+
+                    bundle_breakdown = None
+                    if product_type in {"complex_bundle", "service_bundle"} and top.get("bundle_schema"):
+                        hint_source = " ".join(
+                            [
+                                str(p.get("descripcion", "")),
+                                str(p.get("notas", "")),
+                                str(p.get("notes", "")),
+                            ]
+                        ).strip()
+                        bundle_result = resolve_complex_bundle_tool(
+                            bundle_schema=top.get("bundle_schema") or {},
+                            requirement_hints=[hint_source] if hint_source else [name],
+                            fallback_policy="ask_user",
+                        )
+                        bundle_breakdown = bundle_result.get("breakdown", [])
+                        requires_clarification = requires_clarification or bool(
+                            bundle_result.get("requires_clarification")
+                        )
+                        if requires_clarification:
+                            clarifications += 1
 
                     unit_res = resolve_unit_packaging_tool(
                         requested_quantity=qty,
@@ -298,6 +354,7 @@ class RFXOrchestratorAgent:
                     "pricing_source": "fallback_orchestrator",
                     "requires_clarification": requires_clarification,
                     "formula": formula or f"{qty} * {unit_price}",
+                    "bundle_breakdown": bundle_breakdown,
                 }
             )
 

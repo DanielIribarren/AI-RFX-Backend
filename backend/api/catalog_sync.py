@@ -109,6 +109,12 @@ def import_catalog():
         
         return jsonify(result), 200
         
+    except ValueError as e:
+        logger.error(f"❌ Import validation failed: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 400
     except Exception as e:
         logger.error(f"❌ Import failed: {e}", exc_info=True)
         return jsonify({

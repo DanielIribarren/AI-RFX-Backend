@@ -12,6 +12,7 @@ from typing import Dict, Any
 import logging
 
 from backend.core.database import get_database_client
+from backend.services.rfx_processing_session_service import RFXProcessingSessionService
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,65 @@ def get_request_data_tool(data_type: str, request_id: str) -> Dict[str, Any]:
         logger.info(f"🔍 get_request_data_tool called: data_type={data_type}, request_id={request_id}")
         
         db = get_database_client()
-        
+        session_service = RFXProcessingSessionService()
+        session = session_service.get_session(request_id)
+
+        if session:
+            preview_data = session.get("preview_data") or {}
+            session_products = preview_data.get("products") or []
+
+            normalized_products = []
+            for p in session_products:
+                normalized_products.append({
+                    "id": p.get("id"),
+                    "product_name": p.get("product_name") or p.get("nombre"),
+                    "description": p.get("description") or p.get("descripcion"),
+                    "quantity": p.get("quantity", p.get("cantidad", 1)),
+                    "unit": p.get("unit", p.get("unidad", "unidades")),
+                    "estimated_unit_price": p.get("estimated_unit_price", p.get("precio_unitario", 0)),
+                    "unit_cost": p.get("unit_cost", p.get("costo_unitario", 0)),
+                    "notes": p.get("notes", p.get("notas")),
+                    "specifications": p.get("specifications") or {
+                        "is_bundle": bool(p.get("bundle_breakdown")),
+                        "inferred_bundle": False,
+                        "requires_clarification": bool(p.get("requires_clarification", False)),
+                        "bundle_breakdown": p.get("bundle_breakdown") or [],
+                    },
+                })
+
+            if data_type == "products":
+                return {
+                    "status": "success",
+                    "products": normalized_products,
+                    "count": len(normalized_products),
+                    "source": "processing_session",
+                }
+
+            elif data_type == "summary":
+                total = sum(
+                    float(p.get("estimated_unit_price", 0) or 0) * float(p.get("quantity", 0) or 0)
+                    for p in normalized_products
+                )
+                return {
+                    "status": "success",
+                    "product_count": len(normalized_products),
+                    "total": round(total, 2),
+                    "currency": preview_data.get("currency", "USD"),
+                    "source": "processing_session",
+                }
+
+            elif data_type == "details":
+                return {
+                    "status": "success",
+                    "title": preview_data.get("title") or "RFX en revisión",
+                    "event_date": preview_data.get("delivery_date"),
+                    "location": preview_data.get("location"),
+                    "city": preview_data.get("city"),
+                    "status_value": session.get("status", "clarification"),
+                    "description": preview_data.get("description") or preview_data.get("requirements") or "",
+                    "source": "processing_session",
+                }
+
         if data_type == "products":
             # Obtener lista completa de productos
             products = db.get_rfx_products(request_id)

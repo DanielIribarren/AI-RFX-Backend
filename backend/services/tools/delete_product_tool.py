@@ -12,6 +12,7 @@ from typing import Dict, Any
 import logging
 
 from backend.core.database import get_database_client
+from backend.services.rfx_processing_session_service import RFXProcessingSessionService
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +53,15 @@ def delete_product_tool(request_id: str, product_id: str) -> Dict[str, Any]:
         logger.info(f"🔧 delete_product_tool called: request_id={request_id}, product_id={product_id}")
         
         db = get_database_client()
-        
-        # Verificar que el producto existe
-        products = db.get_rfx_products(request_id)
+        session_service = RFXProcessingSessionService()
+        session = session_service.get_session(request_id)
+
+        if session:
+            preview_data = session.get("preview_data") or {}
+            validated_data = session.get("validated_data") or {}
+            products = list(preview_data.get("products") or [])
+        else:
+            products = db.get_rfx_products(request_id)
         product = next((p for p in products if p.get('id') == product_id), None)
         
         if not product:
@@ -67,6 +74,25 @@ def delete_product_tool(request_id: str, product_id: str) -> Dict[str, Any]:
         
         product_name = product.get('product_name', 'Unknown')
         
+        if session:
+            new_products = [p for p in products if str(p.get("id")) != str(product_id)]
+            preview_data["products"] = new_products
+            validated_data["productos"] = new_products
+            session_service.update_session(
+                request_id,
+                {
+                    "preview_data": preview_data,
+                    "validated_data": validated_data,
+                }
+            )
+            logger.info(f"✅ Session product {product_id} ({product_name}) deleted successfully")
+            return {
+                "status": "success",
+                "product_id": product_id,
+                "message": f"Producto '{product_name}' eliminado exitosamente",
+                "source": "processing_session",
+            }
+
         # Eliminar de BD
         try:
             db.delete_rfx_product(request_id, product_id)

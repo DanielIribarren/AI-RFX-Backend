@@ -641,19 +641,24 @@ DOCUMENTO(S) A ANALIZAR:
 - Identifica cuál es la LISTA DE PRECIOS/CATÁLOGO (contiene precios por producto)
 - Si hay múltiples documentos, analiza TODOS antes de extraer
 
-**2. EXTRACCIÓN DE PRODUCTOS:**
+**2. TÍTULO CORPORATIVO (OBLIGATORIO):**
+- Genera `title` con lenguaje corporativo y enfoque ejecutivo, alineado con la intención y contexto real de la solicitud
+- Incluye señales útiles como tipo de servicio/alcance, cliente o ubicación cuando estén disponibles
+- Evita títulos genéricos como: "RFX Request", "Solicitud de presupuesto", "Evento corporativo"
+
+**3. EXTRACCIÓN DE PRODUCTOS:**
 - Extrae TODOS los productos mencionados en la solicitud
 - Para CADA producto, busca su precio en la lista de precios
 - Usa matching flexible: ignora mayúsculas, acentos, plurales, palabras similares
 - Ejemplo: "Tequeños" puede coincidir con "Tequeño Premium", "Mini Tequeños", etc.
 
-**3. ASIGNACIÓN DE COSTOS UNITARIOS (CRÍTICO):**
+**4. ASIGNACIÓN DE COSTOS UNITARIOS (CRÍTICO):**
 - Si encuentras el producto en la lista → usa ese costo_unitario
 - Si el producto es similar pero no exacto → usa el costo más cercano
 - Si NO encuentras el producto en la lista → costo_unitario = 0.0
 - NUNCA inventes costos, NUNCA dejes costo_unitario vacío (usa 0.0)
 
-**4. INFORMACIÓN ADICIONAL:**
+**5. INFORMACIÓN ADICIONAL:**
 - Identifica empresa solicitante y persona de contacto
 - Extrae fechas, ubicación y requerimientos especiales
 - Asigna categorías apropiadas a cada producto

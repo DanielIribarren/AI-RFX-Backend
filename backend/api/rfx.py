@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any, List
 import logging
 import time
 import random
+import asyncio
 from datetime import datetime, timedelta
 
 from backend.models.rfx_models import (
@@ -18,6 +19,8 @@ from backend.models.rfx_models import (
     TipoRFX
 )
 from backend.services.rfx_processor import RFXProcessorService
+from backend.services.rfx_conversation_state_service import RFXConversationStateService
+from backend.services.rfx_processing_session_service import RFXProcessingSessionService
 from backend.services.credits_service import get_credits_service
 from backend.core.config import get_file_upload_config
 from backend.core.database import get_database_client
@@ -248,69 +251,44 @@ def process_rfx():
         except Exception as e:
             logger.warning(f"⚠️ Catalog service not available: {e}")
 
-        # 🔒 Pipeline único: RFXProcessorService
+        # 🔒 Pipeline único: extracción/resolución para preview (sin persistir rfx_v2 aún)
         processor_service = RFXProcessorService(catalog_search_service=catalog_service)
-        # IMPORTANTE: process_rfx_case() guarda el RFX en BD internamente
-        rfx_processed = processor_service.process_rfx_case(
+        preview_result = processor_service.process_rfx_case_preview(
             rfx_input,
             valid_files,
             user_id=current_user_id,
             organization_id=organization_id
         )
-        
-        # ✅ AHORA el RFX existe en BD, usar su ID real (no el generado al inicio)
-        actual_rfx_id = str(rfx_processed.id)
-        logger.info(f"✅ RFX saved with ID: {actual_rfx_id}")
-        
-        # 💳 CONSUMIR CRÉDITOS (5 créditos: solo extracción)
-        # Usuario organizacional → consumir de organización
-        # Usuario personal → consumir de user_credits
-        try:
-            consume_result = credits_service.consume_credits(
-                organization_id=organization_id,  # None para usuarios personales
-                operation='extraction',  # Solo extracción (5 créditos)
-                rfx_id=actual_rfx_id,  # ← CRÍTICO: Usar ID del RFX guardado
-                user_id=current_user_id,  # Requerido para usuarios personales
-                description=f"RFX data extraction from documents"
-            )
-            
-            if consume_result["status"] == "success":
-                context = "organization" if organization_id else "personal"
-                logger.info(f"✅ Credits consumed ({context}): 5 (remaining: {consume_result['credits_remaining']})")
-            else:
-                logger.error(f"❌ Failed to consume credits: {consume_result.get('message')}")
-        except Exception as e:
-            logger.error(f"❌ Error consuming credits (non-critical): {e}")
-            # No fallar el request - el RFX ya se procesó exitosamente
-        
-        # 📊 ACTUALIZAR PROCESSING STATUS
-        try:
-            db.upsert_processing_status(actual_rfx_id, {  # ← Usar ID real
-                "has_extracted_data": True,
-                "has_generated_proposal": False,  # No se genera propuesta automáticamente
-                "extraction_completed_at": datetime.now().isoformat(),
-                "generation_completed_at": None,  # No hay generación aún
-                "extraction_credits_consumed": 5,
-                "generation_credits_consumed": 0  # No se consumieron créditos de generación
-            })
-        except Exception as e:
-            logger.error(f"❌ Error updating processing status (non-critical): {e}")
-            # No fallar el request - el RFX ya se procesó exitosamente
-        
-        # NOTE: Proposal generation is now handled separately by user request
-        # The user will review extracted data, set product costs, then request proposal generation
-        
-        # Create response using new models (without automatic proposal)
-        response = RFXResponse(
-            status="success",
-            message="RFX data extracted and saved successfully. Review the extracted data and set product costs to generate proposal.",
-            data=rfx_processed,
-            propuesta_id=None,  # No automatic proposal generated
-            propuesta_url=None  # User will generate proposal manually
+        preview_data = preview_result.get("preview_data") or {}
+        validated_data = preview_result.get("validated_data") or {}
+        evaluation_metadata = preview_result.get("evaluation_metadata") or {}
+
+        session_service = RFXProcessingSessionService()
+        session_record = session_service.create_session(
+            user_id=current_user_id,
+            organization_id=organization_id,
+            preview_data=preview_data,
+            validated_data=validated_data,
+            evaluation_metadata=evaluation_metadata,
         )
-        
-        logger.info(f"✅ RFX processed successfully: {actual_rfx_id}")
-        return jsonify({"status":"success","data":rfx_processed.model_dump(mode='json')}), 200
+        session_id = str(session_record.get("id"))
+
+        logger.info(f"✅ Preview session created: {session_id} (no final RFX persisted yet)")
+
+        return jsonify({
+            "status": "success",
+            "message": "Extracción completada. Revisión conversacional requerida antes de crear el RFX final.",
+            "entity_type": "session",
+            "session_id": session_id,
+            "data": {
+                **preview_data,
+                "id": session_id,
+            },
+            "review_required": True,
+            "workflow_status": "extracted_pending_review",
+            "next_step": "review_chat",
+            "can_proceed_without_answers": True,
+        }), 200
     except ExternalServiceError as e:
         logger.error(f"❌ External service error processing RFX: {e}")
         return jsonify({
@@ -505,7 +483,7 @@ def get_rfx_history():
                 "company_name": company_data.get("name", "Unknown Company"),
                 "requester_name": requester_data.get("name", "Unknown Requester"),
                 "rfx_type": record.get("rfx_type", "catering"),
-                "title": record.get("title", f"RFX Request - {record.get('rfx_type', 'catering')}"),
+                "title": record.get("title") or f"RFX: {company_data.get('name', 'Unknown Company')}",
                 "status": rfx_status,
                 "location": record.get("location", ""),
                 "delivery_date": record.get("delivery_date"),
@@ -691,7 +669,8 @@ def get_rfx_by_id(rfx_id: str):
                 "cantidad": p.get("quantity", 0),
                 "unidad": p.get("unit", ""),
                 "precio_unitario": p.get("estimated_unit_price"),
-                "subtotal": p.get("total_estimated_cost")
+                "subtotal": p.get("total_estimated_cost"),
+                "specifications": p.get("specifications") or {},
             } for p in structured_products]
         else:
             # Fallback to requested_products JSONB (without real IDs)
@@ -703,7 +682,7 @@ def get_rfx_by_id(rfx_id: str):
             "company_id": rfx_record.get("company_id"),
             "requester_id": rfx_record.get("requester_id"),
             "rfx_type": rfx_record.get("rfx_type", "catering"),
-            "title": rfx_record.get("title", "RFX Request"),
+            "title": rfx_record.get("title") or "RFX",
             "location": rfx_record.get("location", ""),
             "delivery_date": rfx_record.get("delivery_date"),
             "delivery_time": rfx_record.get("delivery_time"),
@@ -829,7 +808,7 @@ def get_rfx_products(rfx_id: str):
                 "description": product.get("description"),
                 "category": product.get("category"),
                 "quantity": quantity,
-                "unit_of_measure": product.get("unit_of_measure"),
+                "unit_of_measure": product.get("unit"),
                 "estimated_unit_price": unit_price,
                 "total_estimated_cost": product.get("total_estimated_cost"),
 
@@ -842,7 +821,11 @@ def get_rfx_products(rfx_id: str):
                 "total_profit": round(total_profit_product, 2),
                 "profit_margin": round(profit_margin_product, 2),
 
-                "specifications": product.get("specifications"),
+                "specifications": product.get("specifications") or {},
+                "is_bundle": bool((product.get("specifications") or {}).get("is_bundle")),
+                "inferred_bundle": bool((product.get("specifications") or {}).get("inferred_bundle")),
+                "requires_clarification": bool((product.get("specifications") or {}).get("requires_clarification")),
+                "bundle_breakdown": (product.get("specifications") or {}).get("bundle_breakdown", []),
                 "is_mandatory": product.get("is_mandatory"),
                 "notes": product.get("notes"),
                 "created_at": product.get("created_at"),

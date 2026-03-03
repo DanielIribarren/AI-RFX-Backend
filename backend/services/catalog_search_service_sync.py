@@ -184,7 +184,7 @@ class CatalogSearchServiceSync:
         
         try:
             query_builder = self.db.client.table("product_catalog")\
-                .select("id, product_name, product_code, unit_cost, unit_price, unit")
+                .select("id, product_name, product_code, unit_cost, unit_price, unit, product_type, bundle_schema, constraint_rules, semantic_tags")
             
             # Filtrar por organization_id O user_id
             if organization_id:
@@ -234,7 +234,7 @@ class CatalogSearchServiceSync:
             
             # Construir query con OR para cada palabra
             query_builder = self.db.client.table("product_catalog")\
-                .select("id, product_name, product_code, unit_cost, unit_price, unit")
+                .select("id, product_name, product_code, unit_cost, unit_price, unit, product_type, bundle_schema, constraint_rules, semantic_tags")
             
             # Filtrar por organization_id O user_id
             if organization_id:
@@ -298,7 +298,7 @@ class CatalogSearchServiceSync:
             
             # Construir query
             query_builder = self.db.client.table("product_catalog")\
-                .select("id, product_name, product_code, unit_cost, unit_price, unit")
+                .select("id, product_name, product_code, unit_cost, unit_price, unit, product_type, bundle_schema, constraint_rules, semantic_tags")
             
             # Filtrar por organization_id O user_id
             if organization_id:

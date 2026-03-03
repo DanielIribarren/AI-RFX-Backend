@@ -1,6 +1,7 @@
 from backend.services.tools.resolve_unit_packaging_tool import resolve_unit_packaging_tool
 from backend.services.tools.calculate_line_price_tool import calculate_line_price_tool
 from backend.services.tools.verify_pricing_totals_tool import verify_pricing_totals_tool
+from backend.services.tools.resolve_complex_bundle_tool import resolve_complex_bundle_tool
 
 
 def test_resolve_units_kg_direct():
@@ -39,3 +40,38 @@ def test_verify_totals():
     assert result["status"] == "success"
     assert result["is_valid"] is True
     assert abs(result["subtotal"] - 51.0) < 1e-9
+
+
+def test_resolve_complex_bundle_low_carb():
+    bundle_schema = {
+        "slots": [
+            {
+                "slot": "lunes",
+                "required": True,
+                "options": [
+                    {"name": "Pasta bolognesa", "tags": ["carb"]},
+                    {"name": "Pollo con ensalada", "tags": ["low_carb", "protein"]},
+                ],
+            },
+            {
+                "slot": "martes",
+                "required": True,
+                "options": [
+                    {"name": "Arroz con pollo", "tags": ["carb"]},
+                    {"name": "Salmon con vegetales", "tags": ["low_carb", "protein"]},
+                ],
+            },
+        ]
+    }
+
+    res = resolve_complex_bundle_tool(
+        bundle_schema=bundle_schema,
+        requirement_hints=["Quiero menú bajo en carbohidratos para toda la semana"],
+        fallback_policy="ask_user",
+    )
+
+    assert res["status"] == "success"
+    assert res["requires_clarification"] is False
+    assert len(res["breakdown"]) == 2
+    assert res["breakdown"][0]["selected"]["name"] == "Pollo con ensalada"
+    assert res["breakdown"][1]["selected"]["name"] == "Salmon con vegetales"

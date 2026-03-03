@@ -16,6 +16,7 @@ from backend.core.config import get_openai_config, USE_AI_AGENTS
 from backend.core.database import get_database_client
 from backend.services.unified_budget_configuration_service import unified_budget_service
 from backend.services.prompts.proposal_prompts import ProposalPrompts
+from backend.prompts.template_config import normalize_template_type
 from backend.utils.html_validator import HTMLValidator
 from backend.utils.branding_validator import BrandingValidator  # ✅ MEJORA #5
 from backend.services.document_code_service import DocumentCodeService
@@ -125,6 +126,14 @@ class ProposalGenerationService:
             # 3.5. Obtener configuraciones detalladas de pricing para el agente
             pricing_config = unified_budget_service.get_rfx_effective_config(proposal_request.rfx_id)
             logger.info(f"📋 Pricing config retrieved for RFX {proposal_request.rfx_id}")
+
+            # 3.6. Contexto de decisión: intención + restricciones desde request/chat
+            decision_context = self._build_decision_context_bundle(
+                rfx_id=proposal_request.rfx_id,
+                rfx_data=rfx_data,
+                proposal_request=proposal_request,
+            )
+            rfx_data["decision_context"] = decision_context
             
             # 4. Obtener configuración y moneda
             unified_config = unified_budget_service.get_user_unified_config(user_id)
@@ -134,7 +143,8 @@ class ProposalGenerationService:
             has_branding = self._has_complete_branding(user_id)
             
             # 5.5. Extraer template_type del request
-            template_type = getattr(proposal_request, 'template_type', 'custom') or 'custom'
+            raw_template_type = getattr(proposal_request, 'template_type', 'custom') or 'custom'
+            template_type = normalize_template_type(raw_template_type).value
             logger.info(f"🎨 Template type: {template_type}")
             
             # ✅ NUEVO: Usar sistema de 3 agentes AI si está activado
@@ -142,7 +152,8 @@ class ProposalGenerationService:
                 logger.info("🤖 Using AI Agents System (3-Agent Architecture)")
                 proposal = await self._generate_with_ai_agents(
                     rfx_data, products_info, pricing_calculation, currency, user_id, proposal_request, pricing_config,
-                    proposal_code=proposal_code, rfx_code=rfx_code, proposal_revision=proposal_revision
+                    proposal_code=proposal_code, rfx_code=rfx_code, proposal_revision=proposal_revision,
+                    decision_context=decision_context,
                 )
                 
                 # 🔧 FIX: Guardar en BD antes de retornar
@@ -157,22 +168,27 @@ class ProposalGenerationService:
                 logger.info(f"✅ Using BRANDING PROMPT (with logo)")
                 branding_config = self._get_branding_config(user_id)
                 html_content = await self._generate_with_branding(
-                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config, template_type
+                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config, template_type,
+                    decision_context=decision_context,
                 )
             else:
                 logger.info(f"📄 No branding found for user {user_id}")
                 logger.info(f"📄 Using DEFAULT PROMPT (no branding)")
                 html_content = await self._generate_default(
-                    rfx_data, products_info, pricing_calculation, currency, template_type
+                    rfx_data, products_info, pricing_calculation, currency, template_type,
+                    decision_context=decision_context,
                 )
             
             # 7. Validar HTML con sistema de scoring
             validation_result = self._validate_html(html_content, products_info)
             
-            # 7.5. ✅ MEJORA #5: Validar branding si existe configuración
+            # 7.5. ✅ MEJORA #5: Validar branding solo para template personalizado
+            # En templates predefinidos (invoice, celebration, etc.) NO se debe validar
+            # contra colores/constraints del branding del usuario porque son estilos distintos.
             branding_valid = True
             branding_issues = []
-            if has_branding:
+            should_validate_branding = has_branding and template_type == "custom"
+            if should_validate_branding:
                 logger.info("🎨 Validating branding consistency...")
                 branding_config = self._get_branding_config(user_id)
                 branding_valid, branding_issues = BrandingValidator.validate_branding_consistency(
@@ -185,7 +201,7 @@ class ProposalGenerationService:
                         logger.warning(f"   - {issue}")
             
             # 8. Retry si la validación HTML o branding falla
-            needs_retry = not validation_result['is_valid'] or (has_branding and not branding_valid)
+            needs_retry = not validation_result['is_valid'] or (should_validate_branding and not branding_valid)
             
             if needs_retry:
                 logger.warning(f"⚠️ Validation failed, attempting retry with corrections...")
@@ -201,17 +217,18 @@ class ProposalGenerationService:
                 html_content = await self._retry_generation(
                     issues=all_issues, rfx_data=rfx_data, products_info=products_info,
                     pricing_calculation=pricing_calculation, currency=currency,
-                    user_id=user_id, has_branding=has_branding, branding_config=branding_config
+                    user_id=user_id, has_branding=has_branding, branding_config=branding_config,
+                    template_type=template_type, decision_context=decision_context,
                 )
                 
                 # Validar nuevamente (HTML + Branding)
                 validation_result = self._validate_html(html_content, products_info)
-                if has_branding:
+                if should_validate_branding:
                     branding_valid, branding_issues = BrandingValidator.validate_branding_consistency(
                         html_content, branding_config
                     )
                 
-                if validation_result['is_valid'] and (not has_branding or branding_valid):
+                if validation_result['is_valid'] and (not should_validate_branding or branding_valid):
                     logger.info(f"✅ Retry successful - all validations passed")
                 else:
                     logger.error(f"❌ Retry failed - validation still failing")
@@ -584,6 +601,106 @@ class ProposalGenerationService:
                 'cost_per_person_enabled': False,
                 'show_cost_per_person': False
             }
+
+    def _build_decision_context_bundle(
+        self,
+        rfx_id: str,
+        rfx_data: Dict[str, Any],
+        proposal_request: ProposalRequest,
+    ) -> Dict[str, Any]:
+        """
+        Construye contexto de decisión para prompts de propuesta.
+        Une: instrucciones explícitas del request + estado/eventos del chat + requisitos del RFX.
+        """
+        history_text = (proposal_request.history or "").strip()
+
+        notes = proposal_request.notes
+        notes_parts: List[str] = []
+        if notes:
+            modality = getattr(notes, "modality_description", "") or ""
+            coordination = getattr(notes, "coordination", "") or ""
+            additional_notes = getattr(notes, "additional_notes", "") or ""
+            if modality:
+                notes_parts.append(f"Modalidad solicitada: {modality}")
+            if coordination:
+                notes_parts.append(f"Coordinación solicitada: {coordination}")
+            if additional_notes:
+                notes_parts.append(f"Notas adicionales: {additional_notes}")
+
+        user_goal = str(rfx_data.get("title") or "Generar propuesta alineada al requerimiento del cliente")
+        must_include: List[str] = []
+        must_avoid: List[str] = []
+        open_questions: List[str] = []
+        recent_user_messages: List[str] = []
+
+        # Señales del request explícito
+        requirements = str(rfx_data.get("requirements") or rfx_data.get("description") or "").strip()
+        if requirements:
+            must_include.append(f"Requerimientos del RFX: {requirements}")
+
+        if history_text:
+            must_include.append("Considerar historial conversacional provisto por el usuario")
+
+        # Señales de conversación (si existen)
+        try:
+            state_res = (
+                self.db_client.client
+                .table("rfx_conversation_state")
+                .select("status, requires_clarification, last_intent, last_user_message")
+                .eq("rfx_id", rfx_id)
+                .limit(1)
+                .execute()
+            )
+            if state_res.data:
+                state = state_res.data[0]
+                if state.get("requires_clarification"):
+                    open_questions.append("Hay clarificaciones pendientes según estado conversacional.")
+                if state.get("last_intent"):
+                    must_include.append(f"Última intención detectada en chat: {state.get('last_intent')}")
+                if state.get("last_user_message"):
+                    recent_user_messages.append(str(state.get("last_user_message")))
+
+            events_res = (
+                self.db_client.client
+                .table("rfx_conversation_events")
+                .select("role, message, created_at")
+                .eq("rfx_id", rfx_id)
+                .order("created_at", desc=True)
+                .limit(8)
+                .execute()
+            )
+            events = list(reversed(events_res.data or []))
+            for ev in events:
+                if ev.get("role") == "user" and ev.get("message"):
+                    recent_user_messages.append(str(ev.get("message")))
+        except Exception as e:
+            logger.warning(f"⚠️ Could not load conversation context for proposal: {e}")
+
+        # Detectar señales de restricciones simples en historial/mensajes
+        combined_text = " ".join([history_text] + notes_parts + recent_user_messages).lower()
+        if "no incluir" in combined_text or "evitar" in combined_text:
+            must_avoid.append("Respetar exclusiones explícitas del usuario detectadas en historial/chat")
+        if "urgente" in combined_text or "rápido" in combined_text:
+            must_include.append("Priorizar claridad y ejecutabilidad por urgencia operativa")
+        if "formal" in combined_text:
+            must_include.append("Usar redacción formal y profesional")
+        if "creativ" in combined_text:
+            must_include.append("Presentar propuesta con diferenciadores y valor agregado")
+
+        # Recortar ruido
+        recent_user_messages = recent_user_messages[-6:]
+        history_excerpt = history_text[:1200]
+
+        return {
+            "user_goal": user_goal,
+            "tone_preference": "formal_comercial",
+            "must_include": must_include,
+            "must_avoid": must_avoid,
+            "commercial_constraints": notes_parts,
+            "open_questions": open_questions,
+            "history_excerpt": history_excerpt,
+            "recent_user_messages": recent_user_messages,
+        }
     
     def _has_complete_branding(self, user_id: str) -> bool:
         """
@@ -644,7 +761,8 @@ class ProposalGenerationService:
     async def _generate_with_branding(
         self, rfx_data: Dict, products_info: List[Dict], 
         pricing_calculation: Dict, currency: str, user_id: str, branding_config: Dict,
-        template_type: str = "custom"
+        template_type: str = "custom",
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """🎨 Genera propuesta CON branding usando ProposalPrompts"""
         logger.info(f"🎨 Building prompt with branding for user {user_id}")
@@ -699,7 +817,10 @@ class ProposalGenerationService:
             'products': products_info,
             'user_id': rfx_data.get('user_id'),
             'current_date': datetime.now().strftime('%Y-%m-%d'),
-            'validity_date': (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+            'validity_date': (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d'),
+            'requirements': rfx_data.get('requirements') or rfx_data.get('description') or '',
+            'location': rfx_data.get('location') or '',
+            'delivery_date': rfx_data.get('delivery_date') or '',
         }
         
         logger.info(f"✅ Mapped data - client: {client_name}, products: {len(products_info)}")
@@ -712,7 +833,8 @@ class ProposalGenerationService:
             rfx_data=mapped_rfx_data,
             pricing_data=pricing_data,
             branding_config=branding_config,
-            template_type=template_type
+            template_type=template_type,
+            decision_context=decision_context,
         )
         
         return await self._call_ai(prompt)
@@ -720,7 +842,8 @@ class ProposalGenerationService:
     async def _generate_default(
         self, rfx_data: Dict, products_info: List[Dict], 
         pricing_calculation: Dict, currency: str,
-        template_type: str = "custom"
+        template_type: str = "custom",
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """📋 Genera propuesta sin branding personalizado usando ProposalPrompts"""
         logger.info(f"📋 Building default prompt (no branding)")
@@ -741,7 +864,10 @@ class ProposalGenerationService:
             'products': products_info,
             'user_id': rfx_data.get('user_id'),
             'current_date': datetime.now().strftime('%Y-%m-%d'),
-            'validity_date': (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+            'validity_date': (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d'),
+            'requirements': rfx_data.get('requirements') or rfx_data.get('description') or '',
+            'location': rfx_data.get('location') or '',
+            'delivery_date': rfx_data.get('delivery_date') or '',
         }
         
         # Llamar al prompt con los parámetros correctos
@@ -749,7 +875,8 @@ class ProposalGenerationService:
             company_info=company_info,
             rfx_data=mapped_rfx_data,
             pricing_data=pricing_data,
-            template_type=template_type
+            template_type=template_type,
+            decision_context=decision_context,
         )
         
         return await self._call_ai(prompt)
@@ -761,6 +888,7 @@ class ProposalGenerationService:
         proposal_code: Optional[str] = None,
         rfx_code: Optional[str] = None,
         proposal_revision: Optional[int] = None,
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> GeneratedProposal:
         """
         🤖 Genera propuesta usando el sistema de 3 agentes AI
@@ -786,7 +914,8 @@ class ProposalGenerationService:
                 # Fallback al sistema antiguo
                 branding_config = self._get_branding_config(user_id)
                 html_content = await self._generate_with_branding(
-                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config
+                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config,
+                    decision_context=decision_context,
                 )
                 return self._create_proposal_object(
                     rfx_data, html_content, proposal_request, pricing_calculation,
@@ -850,6 +979,10 @@ class ProposalGenerationService:
                 "pricing_config": pricing_detailed_config,  # ✅ NUEVO: Configuraciones detalladas
                 "proposal_code": proposal_code,
                 "rfx_code": rfx_code,
+                "decision_context": decision_context or rfx_data.get("decision_context") or {},
+                "requirements": rfx_data.get("requirements") or rfx_data.get("description") or "",
+                "location": rfx_data.get("location") or "",
+                "delivery_date": rfx_data.get("delivery_date") or "",
             }
             
             # 4. Llamar al orquestador de agentes
@@ -868,7 +1001,8 @@ class ProposalGenerationService:
                 logger.warning("⚠️ Falling back to old system...")
                 branding_config_old = self._get_branding_config(user_id)
                 html_content = await self._generate_with_branding(
-                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config_old
+                    rfx_data, products_info, pricing_calculation, currency, user_id, branding_config_old,
+                    decision_context=decision_context,
                 )
                 return self._create_proposal_object(
                     rfx_data, html_content, proposal_request, pricing_calculation,
@@ -895,7 +1029,8 @@ class ProposalGenerationService:
             # Fallback al sistema antiguo en caso de error
             branding_config = self._get_branding_config(user_id)
             html_content = await self._generate_with_branding(
-                rfx_data, products_info, pricing_calculation, currency, user_id, branding_config
+                rfx_data, products_info, pricing_calculation, currency, user_id, branding_config,
+                decision_context=decision_context,
             )
             return self._create_proposal_object(
                 rfx_data, html_content, proposal_request, pricing_calculation,
@@ -905,7 +1040,9 @@ class ProposalGenerationService:
     async def _retry_generation(
         self, issues: List[str], rfx_data: Dict, products_info: List[Dict], 
         pricing_calculation: Dict, currency: str, user_id: str, 
-        has_branding: bool, branding_config: Optional[Dict] = None
+        has_branding: bool, branding_config: Optional[Dict] = None,
+        template_type: str = "custom",
+        decision_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """🔄 Método de retry unificado para HTML y branding"""
         logger.info(f"🔄 Retrying generation with {len(issues)} issues to fix")
@@ -926,18 +1063,23 @@ class ProposalGenerationService:
             'products': products_info,
             'user_id': rfx_data.get('user_id'),
             'current_date': datetime.now().strftime('%Y-%m-%d'),
-            'validity_date': (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+            'validity_date': (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d'),
+            'requirements': rfx_data.get('requirements') or rfx_data.get('description') or '',
+            'location': rfx_data.get('location') or '',
+            'delivery_date': rfx_data.get('delivery_date') or '',
         }
         
         # Construir prompt original
         if has_branding and branding_config:
             original_prompt = ProposalPrompts.get_prompt_with_branding(
                 user_id=user_id, logo_endpoint=logo_endpoint, company_info=company_info,
-                rfx_data=mapped_rfx_data, pricing_data=pricing_data, branding_config=branding_config
+                rfx_data=mapped_rfx_data, pricing_data=pricing_data, branding_config=branding_config,
+                template_type=template_type, decision_context=decision_context,
             )
         else:
             original_prompt = ProposalPrompts.get_prompt_default(
-                company_info=company_info, rfx_data=mapped_rfx_data, pricing_data=pricing_data
+                company_info=company_info, rfx_data=mapped_rfx_data, pricing_data=pricing_data,
+                template_type=template_type, decision_context=decision_context,
             )
         
         # Crear prompt de retry
@@ -1068,6 +1210,12 @@ GENERA EL HTML CORREGIDO.
                 "proposal_code": proposal_code,
                 "rfx_code": rfx_code,
                 "proposal_revision": proposal_revision,
+                "history_provided": bool((proposal_request.history or "").strip()),
+                "notes_provided": bool(
+                    (getattr(proposal_request.notes, "modality_description", "") or "").strip()
+                    or (getattr(proposal_request.notes, "coordination", "") or "").strip()
+                    or (getattr(proposal_request.notes, "additional_notes", "") or "").strip()
+                ),
             }
         )
     

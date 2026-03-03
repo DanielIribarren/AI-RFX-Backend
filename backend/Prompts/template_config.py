@@ -6,6 +6,7 @@ El LLM usa esta metadata como instrucciones de estilo para generar HTML consiste
 from typing import Dict, Any, List, Optional
 from enum import Enum
 from pathlib import Path
+import unicodedata
 import logging
 
 logger = logging.getLogger(__name__)
@@ -267,23 +268,44 @@ TEMPLATE_CONFIGS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def get_template_config(template_type: str) -> Dict[str, Any]:
-    """Obtiene la configuración de un template por su tipo."""
+TEMPLATE_ALIASES = {
+    # ES -> EN
+    "corporativo": TemplateType.CORPORATE.value,
+    "boda": TemplateType.WEDDING.value,
+    "celebracion": TemplateType.CELEBRATION.value,
+    "fiesta": TemplateType.CELEBRATION.value,
+    "evento": TemplateType.EVENT.value,
+    "factura": TemplateType.INVOICE.value,
+    "cotizacion": TemplateType.INVOICE.value,
+    "personalizado": TemplateType.CUSTOM.value,
+}
+
+
+def normalize_template_type(template_type: Optional[str]) -> TemplateType:
+    """Normaliza alias ES/EN de template_type y retorna un TemplateType válido."""
+    raw = (template_type or "").strip().lower()
+    raw = "".join(
+        ch for ch in unicodedata.normalize("NFKD", raw)
+        if not unicodedata.combining(ch)
+    )
+    normalized = TEMPLATE_ALIASES.get(raw, raw)
+
     try:
-        t_type = TemplateType(template_type)
+        return TemplateType(normalized)
     except ValueError:
         logger.warning(f"⚠️ Unknown template_type '{template_type}', falling back to 'custom'")
-        t_type = TemplateType.CUSTOM
-    
+        return TemplateType.CUSTOM
+
+
+def get_template_config(template_type: str) -> Dict[str, Any]:
+    """Obtiene la configuración de un template por su tipo."""
+    t_type = normalize_template_type(template_type)
     return TEMPLATE_CONFIGS.get(t_type, TEMPLATE_CONFIGS[TemplateType.CUSTOM])
 
 
 def get_template_html_reference(template_type: str) -> Optional[str]:
     """Lee el HTML de referencia del template desde el archivo."""
-    try:
-        t_type = TemplateType(template_type)
-    except ValueError:
-        return None
+    t_type = normalize_template_type(template_type)
     
     filename = TEMPLATE_FILES.get(t_type)
     if not filename:
@@ -327,9 +349,10 @@ def build_template_style_instructions(template_type: str) -> str:
     Esta es la función clave: traduce la metadata del template a instrucciones
     claras que el LLM puede seguir para generar HTML con el estilo correcto.
     """
-    config = get_template_config(template_type)
+    normalized_template = normalize_template_type(template_type)
+    config = get_template_config(normalized_template.value)
     
-    if template_type == TemplateType.CUSTOM or not config.get("colors"):
+    if normalized_template == TemplateType.CUSTOM or not config.get("colors"):
         return ""
     
     colors = config["colors"]

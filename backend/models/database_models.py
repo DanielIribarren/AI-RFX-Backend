@@ -400,7 +400,7 @@ class RFXProduct(TimestampMixin):
     category: Optional[str] = None
     
     # Cantidades
-    quantity: int = Field(..., gt=0)
+    quantity: float = Field(..., gt=0)
     unit_of_measure: str = Field(default="unit")
     specifications: Optional[Dict[str, Any]] = None
     

@@ -29,7 +29,8 @@ Reglas críticas:
       "catalog_confidence": 0.92,
       "pricing_source": "llm_orchestrated_tools",
       "requires_clarification": false,
-      "formula": "(2.3 / 1.0) * 10.0"
+      "formula": "(2.3 / 1.0) * 10.0",
+      "bundle_breakdown": []
     }
   ],
   "summary": {
@@ -41,6 +42,7 @@ Reglas críticas:
 Estrategia recomendada por producto:
 - Llama search_catalog_variants_tool
 - Elige variante con mayor confidence compatible
+- Si la variante es product_type=complex_bundle o service_bundle, llama resolve_complex_bundle_tool
 - Llama resolve_unit_packaging_tool
 - Si compatible, llama calculate_line_price_tool
 - Si no compatible, requires_clarification=true

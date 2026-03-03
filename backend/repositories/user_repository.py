@@ -80,6 +80,7 @@ class UserRepository:
             result = self.db.query_one("""
                 SELECT 
                     id, email, password_hash, full_name, company_name,
+                    organization_id, role,
                     status, email_verified, email_verified_at,
                     phone, timezone, language, last_login_at,
                     created_at, updated_at
@@ -107,6 +108,7 @@ class UserRepository:
             result = self.db.query_one("""
                 SELECT 
                     id, email, password_hash, full_name, company_name,
+                    organization_id, role,
                     status, email_verified, email_verified_at,
                     phone, timezone, language, last_login_at,
                     created_at, updated_at

@@ -43,6 +43,7 @@ from backend.core.feature_flags import FeatureFlags
 from backend.services.function_calling_extractor import FunctionCallingRFXExtractor
 from backend.services.catalog_search_service_sync import CatalogSearchServiceSync
 from backend.services.ai_agents.rfx_orchestrator_agent import RFXOrchestratorAgent
+from backend.services.product_resolution_service import ProductResolutionService
 from backend.services.document_code_service import DocumentCodeService
 from backend.utils.retry_decorator import retry_on_failure
 from backend.exceptions import ExternalServiceError
@@ -66,7 +67,7 @@ class ExtractionConfidence(BaseModel):
 class ProductExtraction(BaseModel):
     """Modelo Pydantic para validación robusta de productos extraídos"""
     nombre: str = Field(..., min_length=1, max_length=200, description="Nombre del producto")
-    cantidad: int = Field(..., ge=1, le=10000, description="Cantidad del producto")
+    cantidad: float = Field(..., gt=0, le=10000, description="Cantidad del producto (permite decimales para kg/l)")
     unidad: str = Field(..., min_length=1, max_length=50, description="Unidad de medida")
     confidence: float = Field(default=0.8, ge=0.0, le=1.0, description="Confidence score")
     costo_unitario: Optional[float] = Field(default=0.0, ge=0, description="Costo unitario del producto")
@@ -224,16 +225,16 @@ class ProductExtractor(BaseExtractor):
                     return name
         return None
     
-    def _extract_product_quantity(self, producto_dict: Dict[str, Any]) -> int:
+    def _extract_product_quantity(self, producto_dict: Dict[str, Any]) -> float:
         """Extrae cantidad del producto con fallback a 1"""
         qty_keys = ["cantidad", "quantity", "qty", "count", "numero"]
         for key in qty_keys:
             if key in producto_dict and producto_dict[key]:
                 try:
-                    return max(1, int(float(producto_dict[key])))
+                    return max(0.001, float(producto_dict[key]))
                 except (ValueError, TypeError):
                     continue
-        return 1
+        return 1.0
     
     def _extract_product_unit(self, producto_dict: Dict[str, Any]) -> str:
         """Extrae unidad del producto con fallback a 'unidades'"""
@@ -407,6 +408,7 @@ class RFXProcessorService:
         # 🚀 FUNCTION CALLING EXTRACTOR (siempre habilitado)
         self.function_calling_extractor = None
         self.rfx_orchestrator_agent = None
+        self.product_resolution_service = None
         try:
             self.function_calling_extractor = FunctionCallingRFXExtractor(
                 openai_client=self.openai_client,
@@ -416,6 +418,10 @@ class RFXProcessorService:
             self.rfx_orchestrator_agent = RFXOrchestratorAgent(
                 openai_client=self.openai_client,
                 model=self.openai_config.chat_model
+            )
+            self.product_resolution_service = ProductResolutionService(
+                catalog_search=self.catalog_search,
+                rfx_orchestrator_agent=self.rfx_orchestrator_agent,
             )
             logger.info("🚀 Function Calling Extractor initialized successfully")
         except Exception as e:
@@ -693,14 +699,27 @@ class RFXProcessorService:
             # Convertir productos del formato BD al formato legacy
             productos_legacy = []
             for product in products_data:
+                raw_specs = product.get("specifications")
+                specs_obj = raw_specs if isinstance(raw_specs, dict) else {}
+                specs_text = ""
+                if isinstance(raw_specs, str):
+                    specs_text = raw_specs.strip()
+                elif isinstance(specs_obj.get("details"), str):
+                    specs_text = str(specs_obj.get("details")).strip()
+
+                description = product.get("description", "") or ""
+                if not description and specs_text:
+                    # Preservar señal textual útil para inferencia de bundles.
+                    description = specs_text
+
                 producto_legacy = {
                     "nombre": product.get('product_name', ''),
-                    "descripcion": product.get('description', ''),
+                    "descripcion": description,
                     "categoria": product.get('category', 'otro'),
                     "cantidad": product.get('quantity', 1),
                     "unidad": product.get('unit_of_measure', 'unidades'),
                     "costo_unitario": product.get('unit_cost', 0.0),  # ✅ COSTOS UNITARIOS
-                    "especificaciones": product.get('specifications', ''),
+                    "especificaciones": specs_obj or specs_text,
                     "es_obligatorio": product.get('is_mandatory', True),
                     "orden_prioridad": product.get('priority_order', len(productos_legacy) + 1),
                     "notas": product.get('notes', '')
@@ -710,6 +729,7 @@ class RFXProcessorService:
             # Construir resultado en formato legacy
             legacy_result = {
                 # Información básica del RFX
+                "title": rfx_data.get('title', ''),
                 "titulo": rfx_data.get('title', ''),
                 "descripcion": rfx_data.get('description', ''),
                 "requirements": rfx_data.get('requirements', ''),
@@ -959,6 +979,7 @@ class RFXProcessorService:
 
 Estructura requerida:
 {{
+    "title": "título corporativo relacionado a la solicitud",
     "nombre_empresa": "nombre de la empresa si se encuentra",
     "nombre_solicitante": "nombre de la persona que solicita",
     "email": "email encontrado", 
@@ -990,6 +1011,7 @@ TEXTO: {text[:5000]}"""
             
             # Map to expected format
             return {
+                "title": result.get("title", ""),
                 "email": result.get("email", ""),
                 "nombre_solicitante": result.get("nombre_solicitante", ""),
                 "nombre_empresa": result.get("nombre_empresa", ""), 
@@ -1004,6 +1026,7 @@ TEXTO: {text[:5000]}"""
         except Exception as e:
             logger.error(f"❌ Legacy fallback failed: {e}")
             return {
+                "title": "",
                 "email": "",
                 "nombre_solicitante": "",
                 "productos": [],
@@ -1226,15 +1249,48 @@ TEXTO: {text[:5000]}"""
         logger.debug(f"📦 Raw data keys: {list(raw_data.keys())}")
         
         # Mapear campos - El LLM retorna con nombres específicos según el prompt
+        requester_name = (
+            raw_data.get('nombre_solicitante')
+            or raw_data.get('requester_name')
+            or ''
+        )
+        company_name = (
+            raw_data.get('nombre_empresa')
+            or raw_data.get('empresa')
+            or raw_data.get('company_name')
+            or ''
+        )
+        # Evitar mezclar empresa y solicitante cuando llegan idénticos por extracción ambigua.
+        if requester_name and company_name and requester_name.strip().lower() == company_name.strip().lower():
+            requester_name = ''
+
+        title_candidate = (
+            raw_data.get('title')
+            or raw_data.get('titulo')
+            or raw_data.get('request_title')
+            or ''
+        )
+        description_candidate = (
+            raw_data.get('description')
+            or raw_data.get('descripcion')
+            or raw_data.get('requirements')
+            or ''
+        )
+
         validated = {
+            # Título y contexto (debe venir del modelo AI)
+            'title': self._sanitize_text_field(title_candidate, max_length=200),
+            'description': self._sanitize_text_field(description_candidate, max_length=2000),
+            'texto_original_relevante': self._sanitize_text_field(raw_data.get('texto_original_relevante', ''), max_length=500),
+
             # Campos del solicitante (persona)
             'email': raw_data.get('email_solicitante') or raw_data.get('email', ''),
-            'nombre_solicitante': raw_data.get('nombre_solicitante') or raw_data.get('nombre', ''),
+            'nombre_solicitante': requester_name,
             'telefono_solicitante': raw_data.get('telefono_solicitante') or raw_data.get('telefono', ''),
             'cargo_solicitante': raw_data.get('cargo_solicitante') or raw_data.get('cargo', ''),
             
             # Campos de empresa (organización)
-            'nombre_empresa': raw_data.get('nombre_empresa') or raw_data.get('empresa', ''),
+            'nombre_empresa': company_name,
             'email_empresa': raw_data.get('email_empresa') or '',
             'telefono_empresa': raw_data.get('telefono_empresa') or '',
             
@@ -1249,18 +1305,110 @@ TEXTO: {text[:5000]}"""
             'requirements': raw_data.get('requirements', ''),
             'requirements_confidence': raw_data.get('requirements_confidence', 0.0)
         }
+
+        # Normalización defensiva de productos: evitar ítems vacíos que rompan persistencia.
+        cleaned_products: List[Dict[str, Any]] = []
+        for product in validated.get("productos") or []:
+            if not isinstance(product, dict):
+                continue
+            name = str(product.get("nombre") or product.get("product_name") or "").strip()
+            if not name:
+                continue
+            normalized = dict(product)
+            normalized["nombre"] = name
+            if normalized.get("cantidad") is None:
+                normalized["cantidad"] = normalized.get("quantity", 1)
+            if normalized.get("unidad") is None:
+                normalized["unidad"] = normalized.get("unit", "unidades")
+            cleaned_products.append(normalized)
+        validated["productos"] = cleaned_products
         
         # Log de campos importantes para debugging
         logger.info(f"✅ Validated: {len(validated.get('productos', []))} products, "
                    f"email={validated.get('email')}, empresa={validated.get('nombre_empresa')}")
         
         return validated
+
+    def _sanitize_text_field(self, value: Any, max_length: int = 200) -> str:
+        """Normalize text fields defensively for storage/display."""
+        if value is None:
+            return ""
+
+        text = re.sub(r"\s+", " ", str(value)).strip()
+        if not text:
+            return ""
+        return text[:max_length]
+
+    def _is_generic_title(self, title: str) -> bool:
+        """Detect generic title patterns that should not be used as final RFX title."""
+        normalized = re.sub(r"\s+", " ", title.strip().lower())
+        if not normalized:
+            return True
+
+        generic_exact = {
+            "rfx",
+            "rfq",
+            "rfp",
+            "rfi",
+            "rfx request",
+            "solicitud",
+            "solicitud de presupuesto",
+            "request for quote",
+            "request for proposal",
+            "request for information",
+            "evento corporativo",
+        }
+        if normalized in generic_exact:
+            return True
+
+        return normalized.startswith("rfx request")
+
+    def _build_contextual_title_fallback(self, validated_data: Dict[str, Any], rfx_input: RFXInput) -> str:
+        """
+        Build a contextual title only when AI title is missing/unusable.
+        Avoid static hardcoded templates like 'RFX Request - ...'.
+        """
+        for candidate in (
+            validated_data.get("description"),
+            validated_data.get("requirements"),
+            validated_data.get("texto_original_relevante"),
+        ):
+            cleaned = self._sanitize_text_field(candidate, max_length=200)
+            if cleaned and len(cleaned) >= 12:
+                return cleaned
+
+        context_parts = [
+            self._sanitize_text_field(validated_data.get("nombre_empresa"), max_length=80),
+            self._sanitize_text_field(validated_data.get("nombre_solicitante"), max_length=80),
+            self._sanitize_text_field(validated_data.get("lugar"), max_length=80),
+        ]
+        context_parts = [part for part in context_parts if part]
+        if context_parts:
+            return " | ".join(context_parts)[:200]
+
+        rfx_type = rfx_input.rfx_type.value if hasattr(rfx_input.rfx_type, "value") else str(rfx_input.rfx_type)
+        return f"Solicitud {rfx_type}".strip()[:200]
+
+    def _resolve_rfx_title(self, validated_data: Dict[str, Any], rfx_input: RFXInput) -> str:
+        """Prefer AI-generated title, with contextual fallback when missing/generic."""
+        ai_title = self._sanitize_text_field(validated_data.get("title"), max_length=200)
+        if ai_title and not self._is_generic_title(ai_title):
+            return ai_title
+
+        if ai_title:
+            logger.warning(f"⚠️ Generic AI title detected, using contextual fallback: '{ai_title}'")
+        else:
+            logger.warning("⚠️ AI title missing, using contextual fallback")
+
+        fallback_title = self._build_contextual_title_fallback(validated_data, rfx_input)
+        return self._sanitize_text_field(fallback_title, max_length=200)
     
     def _create_rfx_processed(self, validated_data: Dict[str, Any], rfx_input: RFXInput, evaluation_metadata: Optional[Dict[str, Any]] = None) -> RFXProcessed:
         """Create RFXProcessed object from validated data and evaluation results"""
         try:
             # 🔍 DEBUG: Log object creation
             logger.info(f"🔨 Creating RFXProcessed object for: {rfx_input.id}")
+            resolved_title = self._resolve_rfx_title(validated_data, rfx_input)
             
             # Convert productos to ProductoRFX objects (map Spanish to English fields)
             productos = [
@@ -1298,7 +1446,9 @@ TEXTO: {text[:5000]}"""
                 "telefono_solicitante": validated_data.get("telefono_solicitante", ""),
                 "cargo_solicitante": validated_data.get("cargo_solicitante", ""),
                 # ✨ MONEDA: Currency extraída por AI
-                "validated_currency": validated_data.get("currency", "USD")
+                "validated_currency": validated_data.get("currency", "USD"),
+                # 🔒 Preservar estructura rica (bundle/specifications) para persistencia final
+                "validated_products_full": validated_data.get("productos", []),
             }
             
             # Integrate intelligent evaluation metadata if available
@@ -1329,7 +1479,8 @@ TEXTO: {text[:5000]}"""
             rfx_processed = RFXProcessed(
                 id=rfx_uuid,
                 rfx_type=rfx_input.rfx_type,
-                title=f"RFX Request - {validated_data.get('nombre_solicitante', 'Unknown')} - {rfx_input.rfx_type.value if hasattr(rfx_input.rfx_type, 'value') else str(rfx_input.rfx_type)}",
+                title=resolved_title,
+                description=validated_data.get("description") or None,
                 location=validated_data["lugar"] or None,
                 delivery_date=validated_data["fecha"] or None,
                 delivery_time=validated_data["hora_entrega"] or None,  # ✅ AI-FIRST: None si vacío
@@ -1463,7 +1614,8 @@ TEXTO: {text[:5000]}"""
                     rfx_code = f"RFX-OTH-{current_year}-{str(rfx_processed.id).split('-')[0].upper()}"
                     logger.warning(f"⚠️ Using fallback rfx_code generation: {rfx_code}")
 
-            rfx_data["rfx_code"] = rfx_code
+            # Backward-compatible: keep canonical code in metadata_json.
+            # Some deployed DBs may not yet have rfx_v2.rfx_code.
             metadata_json["rfx_code"] = rfx_code
             rfx_data["metadata_json"] = metadata_json
             logger.info(f"🏷️ Assigned RFX code: {rfx_code}")
@@ -1488,7 +1640,11 @@ TEXTO: {text[:5000]}"""
             # 5. Insert structured products if available
             if rfx_processed.products:
                 structured_products = []
-                for product in rfx_processed.products:
+                full_products = []
+                if isinstance(rfx_processed.metadata_json, dict):
+                    full_products = list(rfx_processed.metadata_json.get("validated_products_full") or [])
+
+                for idx, product in enumerate(rfx_processed.products):
                     # ✅ FIX: Productos enriquecidos son DICT, no objetos - usar .get() en vez de getattr()
                     # Intentar múltiples nombres de campo para compatibilidad
                     if isinstance(product, dict):
@@ -1518,19 +1674,46 @@ TEXTO: {text[:5000]}"""
                         unit = product.get('unit') or product.get('unidad')
                     else:
                         # Producto es objeto (legacy)
-                        costo = getattr(product, 'costo_unitario', None) or getattr(product, 'unit_cost', None)
-                        precio = getattr(product, 'precio_unitario', None) or getattr(product, 'unit_price', None)
+                        costo = getattr(product, 'costo_unitario', None)
+                        if costo is None:
+                            costo = getattr(product, 'unit_cost', None)
+                        precio = getattr(product, 'precio_unitario', None)
+                        if precio is None:
+                            precio = getattr(product, 'unit_price', None)
                         product_name = product.product_name if hasattr(product, 'product_name') else product.nombre
                         quantity = product.quantity if hasattr(product, 'quantity') else product.cantidad
                         unit = product.unit if hasattr(product, 'unit') else product.unidad
+
+                    full_product = full_products[idx] if idx < len(full_products) and isinstance(full_products[idx], dict) else {}
+                    quantity_final = quantity if quantity is not None else full_product.get("cantidad") or full_product.get("quantity") or 1
+                    unit_final = unit or full_product.get("unidad") or full_product.get("unit") or "unidades"
+                    price_final = precio if precio is not None else (costo if costo is not None else None)
+                    specs_final = (
+                        (product.get("specifications") if isinstance(product, dict) else None)
+                        or full_product.get("specifications")
+                        or full_product.get("especificaciones")
+                        or {}
+                    )
+                    if not isinstance(specs_final, dict):
+                        specs_final = {}
                     
                     product_data = {
                         "product_name": product_name,
-                        "quantity": quantity,
-                        "unit": unit,
-                        "estimated_unit_price": precio if precio is not None else None,  # ✅ FIX: Permitir 0 como valor válido
+                        "quantity": quantity_final,
+                        "unit": unit_final,
+                        "estimated_unit_price": price_final,  # Fallback: si solo hay costo explícito, usarlo como precio comercial base.
                         "unit_cost": costo if costo is not None else None,  # ✅ FIX: Permitir 0 como valor válido
-                        "notes": f"Extracted from RFX processing"
+                        "description": (
+                            product.get("descripcion")
+                            if isinstance(product, dict)
+                            else full_product.get("descripcion")
+                        ),
+                        "specifications": specs_final,
+                        "notes": (
+                            product.get("notas")
+                            if isinstance(product, dict) and product.get("notas")
+                            else full_product.get("notas") or "Extracted from RFX processing"
+                        ),
                     }
                     structured_products.append(product_data)
                     
@@ -1797,6 +1980,8 @@ TEXTO: {text[:5000]}"""
     def _get_empty_extraction_result(self) -> Dict[str, Any]:
         """Return empty result structure for failed extractions"""
         return {
+            "title": "",
+            "description": "",
             "email": "",
             "nombre_solicitante": "",
             "productos": [],
@@ -1877,8 +2062,17 @@ TEXTO: {text[:5000]}"""
         }
 
     # NEW: Multi-file processing
-    def process_rfx_case(self, rfx_input: RFXInput, blobs: List[Dict[str, Any]], user_id: str = None, organization_id: str = None) -> RFXProcessed:
-        """Multi-file processing pipeline with OCR and spreadsheet support"""
+    def _extract_rfx_case_data(
+        self,
+        rfx_input: RFXInput,
+        blobs: List[Dict[str, Any]],
+        user_id: str = None,
+        organization_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Pipeline de extracción/resolución SIN persistencia final.
+        Retorna datos listos para revisión conversacional y/o guardado posterior.
+        """
         logger.info(f"📦 process_rfx_case start: {rfx_input.id} with {len(blobs)} file(s)")
         if user_id:
             logger.info(f"✅ user_id provided for RFX: {user_id}")
@@ -2032,6 +2226,8 @@ TEXTO: {text[:5000]}"""
         if raw_data is None:
             logger.warning(f"⚠️ raw_data is None, creating minimal structure")
             raw_data = {
+                "title": None,
+                "description": None,
                 "productos": [],
                 "email": None,
                 "fecha_entrega": None,
@@ -2051,33 +2247,48 @@ TEXTO: {text[:5000]}"""
         else:
             logger.info(f"📊 USING AI extracted products: {ai_products_count} items")
 
-        # 🛒 ENRIQUECER/ORQUESTAR PRODUCTOS CON CATÁLOGO (si está disponible)
-        if self.catalog_search and organization_id and raw_data.get("productos"):
-            logger.info(f"🛒 Processing {len(raw_data['productos'])} products with catalog pricing...")
-            
-            # Preparar contexto del RFX para selección inteligente de variantes
+        # 🛒 Resolver/Enriquecer productos (con o sin catálogo)
+        if raw_data.get("productos"):
+            # Preparar contexto del RFX para selección inteligente de variantes / bundles.
             rfx_context = {
                 'rfx_type': raw_data.get('tipo_evento', 'catering'),
                 'description': raw_data.get('descripcion', ''),
                 'location': raw_data.get('ubicacion', ''),
-                'event_type': raw_data.get('tipo_evento', '')
+                'event_type': raw_data.get('tipo_evento', ''),
+                'source_text': (combined_text or "")[:8000],
             }
-            
-            if FeatureFlags.rfx_llm_orchestrator_enabled() and self.rfx_orchestrator_agent:
-                raw_data["productos"] = self._orchestrate_products_with_llm_tools(
-                    raw_data["productos"],
-                    organization_id,
-                    rfx_context=rfx_context
+
+            if self.catalog_search and organization_id:
+                logger.info(f"🛒 Processing {len(raw_data['productos'])} products with catalog pricing...")
+                if FeatureFlags.rfx_llm_orchestrator_enabled() and self.rfx_orchestrator_agent:
+                    raw_data["productos"] = self._orchestrate_products_with_llm_tools(
+                        raw_data["productos"],
+                        organization_id,
+                        user_id=user_id,
+                        rfx_context=rfx_context
+                    )
+                else:
+                    raw_data["productos"] = self._enrich_products_with_catalog(
+                        raw_data["productos"],
+                        organization_id,
+                        user_id=user_id,
+                        rfx_context=rfx_context
+                    )
+            elif self.product_resolution_service:
+                logger.info(
+                    "🧠 Resolving products with personal/organization fallback context"
                 )
-            else:
-                raw_data["productos"] = self._enrich_products_with_catalog(
-                    raw_data["productos"],
-                    organization_id,
-                    rfx_context=rfx_context
+                self.product_resolution_service.catalog_search = self.catalog_search
+                self.product_resolution_service.rfx_orchestrator_agent = None
+                raw_data["productos"] = self.product_resolution_service.resolve_for_chat_products(
+                    products=raw_data["productos"],
+                    organization_id=organization_id,
+                    user_id=user_id,
+                    rfx_context=rfx_context,
                 )
-            
-            # 🔍 DEBUG: Verificar que los productos enriquecidos tienen precios
-            logger.info(f"🔍 AFTER ENRICHMENT - Checking first product:")
+
+            # 🔍 DEBUG: Verificar que los productos resueltos tienen precios
+            logger.info("🔍 AFTER RESOLUTION - Checking first product:")
             if raw_data["productos"]:
                 first_product = raw_data["productos"][0]
                 logger.info(f"   📦 Product keys: {list(first_product.keys())}")
@@ -2090,14 +2301,81 @@ TEXTO: {text[:5000]}"""
         
         evaluation_metadata = self._evaluate_rfx_intelligently(validated_data, rfx_input.id)
         rfx_processed = self._create_rfx_processed(validated_data, rfx_input, evaluation_metadata)
+
+        return {
+            "rfx_processed": rfx_processed,
+            "validated_data": validated_data,
+            "evaluation_metadata": evaluation_metadata,
+            "combined_text": combined_text,
+        }
+
+    def process_rfx_case(self, rfx_input: RFXInput, blobs: List[Dict[str, Any]], user_id: str = None, organization_id: str = None) -> RFXProcessed:
+        """Multi-file processing pipeline con persistencia final inmediata (legacy/current flow)."""
+        extracted = self._extract_rfx_case_data(
+            rfx_input=rfx_input,
+            blobs=blobs,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+        rfx_processed: RFXProcessed = extracted["rfx_processed"]
         self._save_rfx_to_database(rfx_processed, user_id=user_id, organization_id=organization_id)
         logger.info(f"✅ process_rfx_case done: {rfx_input.id}")
         return rfx_processed
 
+    def process_rfx_case_preview(
+        self,
+        rfx_input: RFXInput,
+        blobs: List[Dict[str, Any]],
+        user_id: str = None,
+        organization_id: str = None
+    ) -> Dict[str, Any]:
+        """
+        Procesa RFX para revisión conversacional PREVIA a persistencia.
+        No crea registros en rfx_v2 ni rfx_products.
+        """
+        extracted = self._extract_rfx_case_data(
+            rfx_input=rfx_input,
+            blobs=blobs,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+        rfx_processed: RFXProcessed = extracted["rfx_processed"]
+        validated_data: Dict[str, Any] = extracted["validated_data"] or {}
+        combined_text: str = extracted.get("combined_text") or ""
+
+        # Mantener estructura rica de productos para review/chat (incluye specifications/bundles)
+        preview_products = validated_data.get("productos") or []
+
+        preview_data = {
+            "id": str(rfx_processed.id),
+            "title": rfx_processed.title,
+            "description": rfx_processed.description,
+            "email": rfx_processed.email,
+            "requester_name": rfx_processed.requester_name,
+            "company_name": rfx_processed.company_name,
+            "currency": (rfx_processed.metadata_json or {}).get("validated_currency", "USD"),
+            "delivery_date": rfx_processed.delivery_date.isoformat() if rfx_processed.delivery_date else None,
+            "delivery_time": rfx_processed.delivery_time.isoformat() if rfx_processed.delivery_time else None,
+            "location": rfx_processed.location,
+            "requirements": rfx_processed.requirements,
+            "requirements_confidence": rfx_processed.requirements_confidence,
+            "products": preview_products,
+            "metadata_json": rfx_processed.metadata_json or {},
+            "source_text": combined_text,
+            "rfx_type": (rfx_processed.rfx_type.value if hasattr(rfx_processed.rfx_type, "value") else str(rfx_processed.rfx_type)),
+        }
+
+        return {
+            "preview_data": preview_data,
+            "validated_data": validated_data,
+            "evaluation_metadata": extracted.get("evaluation_metadata") or {},
+        }
+
     def _orchestrate_products_with_llm_tools(
         self,
         products: List[Dict[str, Any]],
-        organization_id: str,
+        organization_id: Optional[str],
+        user_id: Optional[str] = None,
         rfx_context: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
@@ -2107,90 +2385,207 @@ TEXTO: {text[:5000]}"""
         if not products:
             return products
 
-        if not self.rfx_orchestrator_agent:
-            logger.warning("⚠️ RFX orchestrator agent unavailable, using legacy catalog enrichment")
-            return self._enrich_products_with_catalog(products, organization_id, rfx_context=rfx_context)
+        if not self.product_resolution_service:
+            logger.warning("⚠️ ProductResolutionService unavailable, using legacy catalog enrichment")
+            return self._enrich_products_with_catalog(products, organization_id, user_id=user_id, rfx_context=rfx_context)
 
-        try:
-            logger.info("🤖 Running LLM pricing orchestrator (tools-based)")
-            result = self.rfx_orchestrator_agent.orchestrate(
-                products=products,
-                organization_id=organization_id,
-                rfx_context=rfx_context or {},
-                catalog_search=self.catalog_search,
+        # Mantener resolver sincronizado con dependencias actuales
+        self.product_resolution_service.catalog_search = self.catalog_search
+        self.product_resolution_service.rfx_orchestrator_agent = self.rfx_orchestrator_agent
+
+        return self.product_resolution_service.resolve_for_rfx_extraction(
+            products=products,
+            organization_id=organization_id,
+            user_id=user_id,
+            rfx_context=rfx_context or {},
+            fallback_resolver=lambda fallback_products: self._enrich_products_with_catalog(
+                fallback_products,
+                organization_id,
+                user_id=user_id,
+                rfx_context=rfx_context,
+            ),
+        )
+
+    def _apply_hybrid_bundle_inference(
+        self,
+        products: List[Dict[str, Any]],
+        organization_id: str,
+        rfx_context: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Modo híbrido:
+        1) Si existe producto padre bundle en inventario, usarlo.
+        2) Si no existe, crear bundle inferido temporal con pricing seguro.
+        """
+        if not products:
+            return products
+
+        source_text = str(rfx_context.get("source_text") or "")
+        lowered = source_text.lower()
+
+        menu_keywords = [
+            "menu ejecutivo", "menú ejecutivo",
+            "menu saludable", "menú saludable",
+            "menu de la semana", "menú de la semana",
+            "plan semanal", "semana",
+        ]
+        weekday_tokens = ["lunes", "martes", "miercoles", "miércoles", "jueves", "viernes"]
+        weekday_hits = sum(1 for d in weekday_tokens if d in lowered)
+        explicit_menu_signal = any(k in lowered for k in menu_keywords)
+        candidate_signal = explicit_menu_signal and weekday_hits >= 2 and len(products) >= 3
+
+        if not candidate_signal:
+            return products
+
+        logger.info("🧠 Hybrid mode: weekly/menu signal detected - trying parent bundle resolution")
+
+        parent_variant = None
+        if self.catalog_search:
+            parent_queries = [
+                "Menú Ejecutivo",
+                "Menu Ejecutivo",
+                "Menú Saludable de la Semana",
+                "Menu Saludable de la Semana",
+                "Plan Semanal",
+            ]
+            for query in parent_queries:
+                try:
+                    variants = self.catalog_search.search_product_variants(
+                        query=query,
+                        organization_id=organization_id,
+                        max_variants=3,
+                    )
+                    if variants:
+                        top = variants[0]
+                        if top.get("product_type") in {"complex_bundle", "service_bundle"}:
+                            parent_variant = top
+                            break
+                except Exception as e:
+                    logger.warning(f"⚠️ Parent bundle search failed for '{query}': {e}")
+
+        breakdown = self._build_weekly_breakdown(products, source_text)
+
+        if parent_variant:
+            price = float(parent_variant.get("unit_price") or 0.0)
+            cost = float(parent_variant.get("unit_cost") or 0.0)
+            requires_clarification = price <= 0.0
+            logger.info(
+                f"✅ Hybrid mode using catalog parent bundle: {parent_variant.get('product_name')} "
+                f"(price={price}, requires_clarification={requires_clarification})"
             )
-
-            if result.get("status") != "success":
-                logger.warning("⚠️ LLM orchestrator returned error status, falling back to legacy enrichment")
-                return self._enrich_products_with_catalog(products, organization_id, rfx_context=rfx_context)
-
-            orchestrated_items = result.get("items", [])
-            if not isinstance(orchestrated_items, list) or not orchestrated_items:
-                logger.warning("⚠️ LLM orchestrator returned empty items, falling back to legacy enrichment")
-                return self._enrich_products_with_catalog(products, organization_id, rfx_context=rfx_context)
-
-            # Normalizar claves para compatibilidad con pipeline actual.
-            normalized_products: List[Dict[str, Any]] = []
-            clarifications = 0
-
-            for idx, original in enumerate(products):
-                item = orchestrated_items[idx] if idx < len(orchestrated_items) else {}
-                qty = item.get("cantidad", original.get("cantidad", 1))
-                price = item.get("precio_unitario", original.get("precio_unitario", original.get("unit_price")))
-                cost = item.get("costo_unitario", original.get("costo_unitario", original.get("unit_cost")))
-                line_total = item.get("line_total")
-                requires_clarification = bool(item.get("requires_clarification"))
-
-                # Fallback determinista solicitado: cuando haya variantes o ambigüedad,
-                # usar la variante con mayor confidence (la lista ya viene ordenada desc).
-                product_name = original.get("nombre", "")
-                should_force_top_confidence = requires_clarification or price in (None, 0, 0.0) or cost in (None, 0, 0.0)
-                if self.catalog_search and product_name and should_force_top_confidence:
-                    try:
-                        variants = self.catalog_search.search_product_variants(
-                            query=product_name,
-                            organization_id=organization_id,
-                            max_variants=5,
-                        )
-                        if variants:
-                            best_variant = variants[0]
-                            best_conf = float(best_variant.get("confidence") or 0.0)
-                            price = best_variant.get("unit_price") if best_variant.get("unit_price") is not None else price
-                            cost = best_variant.get("unit_cost") if best_variant.get("unit_cost") is not None else cost
-                            item["catalog_match"] = best_conf >= 0.75
-                            item["catalog_product_name"] = best_variant.get("product_name")
-                            item["catalog_confidence"] = best_conf
-                            item["pricing_source"] = "top_confidence_variant"
-                            # Si ya elegimos top confidence, no bloquear por múltiples variantes.
-                            requires_clarification = False
-                    except Exception as variant_err:
-                        logger.warning(f"⚠️ Top-confidence fallback failed for '{product_name}': {variant_err}")
-
-                if requires_clarification:
-                    clarifications += 1
-
-                normalized_products.append(
-                    {
-                        **original,
-                        **item,
-                        "cantidad": qty,
-                        "precio_unitario": price,
-                        "costo_unitario": cost,
-                        "estimated_line_total": line_total,
+            return [
+                {
+                    "nombre": parent_variant.get("product_name") or "Menú semanal",
+                    "descripcion": "Producto bundle detectado automáticamente desde solicitud del cliente",
+                    "cantidad": 1.0,
+                    "unidad": parent_variant.get("unit") or "plan",
+                    "precio_unitario": price,
+                    "costo_unitario": cost,
+                    "estimated_line_total": round(price, 2),
+                    "catalog_match": True,
+                    "catalog_product_name": parent_variant.get("product_name"),
+                    "catalog_confidence": float(parent_variant.get("confidence") or 0.0),
+                    "pricing_source": "catalog_parent_bundle",
+                    "requires_clarification": requires_clarification,
+                    "bundle_breakdown": breakdown,
+                    "specifications": {
+                        "is_bundle": True,
+                        "inferred_bundle": False,
                         "requires_clarification": requires_clarification,
-                        "pricing_source": item.get("pricing_source", "llm_orchestrated_tools"),
+                        "bundle_breakdown": breakdown,
+                    },
+                    "notas": "Bundle resuelto con producto padre del inventario",
+                }
+            ]
+
+        # Fallback híbrido: bundle inferido (sin inventar precio)
+        sum_known_sales = 0.0
+        sum_known_cost = 0.0
+        known_price_items = 0
+        for p in products:
+            unit_price = float(p.get("precio_unitario") or 0.0)
+            unit_cost = float(p.get("costo_unitario") or 0.0)
+            qty = float(p.get("cantidad") or 0.0)
+            if unit_price > 0 and qty > 0:
+                sum_known_sales += unit_price * qty
+                sum_known_cost += unit_cost * qty
+                known_price_items += 1
+
+        inferred_price = round(sum_known_sales, 2) if known_price_items > 0 else 0.0
+        inferred_cost = round(sum_known_cost, 2) if known_price_items > 0 else 0.0
+        requires_clarification = known_price_items == 0
+
+        logger.warning(
+            "⚠️ Hybrid mode using inferred bundle (not in catalog). "
+            f"known_price_items={known_price_items}, inferred_price={inferred_price}"
+        )
+
+        return [
+            {
+                "nombre": "Menú semanal (inferido)",
+                "descripcion": "Bundle inferido por IA desde solicitud de menú semanal",
+                "cantidad": 1.0,
+                "unidad": "plan",
+                "precio_unitario": inferred_price,
+                "costo_unitario": inferred_cost,
+                "estimated_line_total": inferred_price,
+                "catalog_match": False,
+                "catalog_product_name": None,
+                "catalog_confidence": 0.0,
+                "pricing_source": "inferred_bundle",
+                "requires_clarification": requires_clarification,
+                "bundle_breakdown": breakdown,
+                "specifications": {
+                    "is_bundle": True,
+                    "inferred_bundle": True,
+                    "requires_clarification": requires_clarification,
+                    "pricing_policy": "sum_known_components_or_clarify",
+                    "bundle_breakdown": breakdown,
+                },
+                "notas": (
+                    "Bundle inferido automáticamente. "
+                    "Requiere confirmación del cliente antes de propuesta final."
+                    if requires_clarification
+                    else "Bundle inferido automáticamente con suma de componentes conocidos."
+                ),
+            }
+        ]
+
+    def _build_weekly_breakdown(self, products: List[Dict[str, Any]], source_text: str) -> List[Dict[str, Any]]:
+        """
+        Construye desglose por día (lunes-viernes) usando texto original y fallback por orden.
+        """
+        day_order = ["lunes", "martes", "miércoles", "jueves", "viernes"]
+        text = source_text or ""
+        breakdown: List[Dict[str, Any]] = []
+
+        # Intento 1: parseo por patrón "Día: plato"
+        for day in day_order:
+            pattern = rf"(?is){day}\s*:\s*(?:\n\s*[\*\-]\s*)?([^\n\*]+)"
+            m = re.search(pattern, text)
+            if m:
+                breakdown.append(
+                    {
+                        "slot": day,
+                        "selected": {"name": m.group(1).strip(), "source": "parsed_text"},
                     }
                 )
 
-            logger.info(
-                "✅ LLM orchestration completed: "
-                f"{len(normalized_products)} items, clarifications={clarifications}"
-            )
-            return normalized_products
+        # Intento 2: fallback por orden de productos extraídos
+        if not breakdown:
+            for idx, product in enumerate(products[:5]):
+                slot = day_order[idx] if idx < len(day_order) else f"dia_{idx+1}"
+                breakdown.append(
+                    {
+                        "slot": slot,
+                        "selected": {
+                            "name": product.get("nombre") or product.get("product_name") or "producto",
+                            "source": "product_order",
+                        },
+                    }
+                )
 
-        except Exception as e:
-            logger.error(f"❌ LLM orchestration failed, fallback to legacy enrichment: {e}")
-            return self._enrich_products_with_catalog(products, organization_id, rfx_context=rfx_context)
+        return breakdown
 
     def _detect_content_type(self, content: bytes, filename: str) -> str:
         """Detect file content type from bytes and filename with improved detection"""
@@ -2533,7 +2928,8 @@ TEXTO: {text[:5000]}"""
     def _enrich_products_with_catalog(
         self, 
         products: List[Dict[str, Any]], 
-        organization_id: str,
+        organization_id: Optional[str],
+        user_id: Optional[str] = None,
         rfx_context: Dict[str, Any] = None
     ) -> List[Dict[str, Any]]:
         """
@@ -2574,8 +2970,9 @@ TEXTO: {text[:5000]}"""
             try:
                 # 1. Buscar variantes en catálogo (retorna múltiples matches)
                 variants = self.catalog_search.search_product_variants(
-                    product_name, 
-                    organization_id,
+                    query=product_name,
+                    organization_id=organization_id,
+                    user_id=user_id,
                     max_variants=5
                 )
                 
