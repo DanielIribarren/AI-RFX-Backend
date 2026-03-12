@@ -2,14 +2,14 @@
 Corporate code generation service for RFX and proposals.
 
 Formats:
-- RFX code: RFX-{DOMAIN}-{YEAR}-{SEQ6}
+- RFX code: SAB-PP-{ORIGIN}-{YY}-{NNN}
 - Proposal code: {RFX_CODE}-R{REV2}
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from uuid import UUID
 import logging
 
@@ -17,37 +17,57 @@ logger = logging.getLogger(__name__)
 
 
 class DocumentCodeService:
-    DOMAIN_PREFIXES = {
-        "catering": "CAT",
-        "construction": "CON",
-        "events": "EVT",
-        "event": "EVT",
-        "supplies": "SUP",
-        "services": "SRV",
-        "maintenance": "MNT",
+    CODE_PREFIX = "SAB"
+    DEFAULT_DOCUMENT_TYPE = "PP"
+    DEFAULT_ORIGIN = "AUT"
+    HUMAN_ORIGIN = "H"
+
+    ORIGIN_ALIASES = {
+        "aut": "AUT",
+        "automation": "AUT",
+        "automatizado": "AUT",
+        "ia": "AUT",
+        "ai": "AUT",
+        "h": "H",
+        "human": "H",
+        "humano": "H",
+        "manual": "H",
     }
 
     def __init__(self, db_client):
         self.db_client = db_client
 
     @classmethod
-    def get_domain_prefix(cls, rfx_type: Optional[str]) -> str:
-        normalized = str(rfx_type or "").strip().lower()
-        return cls.DOMAIN_PREFIXES.get(normalized, "OTH")
+    def normalize_origin(cls, origin: Optional[str]) -> str:
+        normalized = str(origin or "").strip().lower()
+        return cls.ORIGIN_ALIASES.get(normalized, cls.DEFAULT_ORIGIN)
 
     @staticmethod
-    def build_rfx_code(domain_prefix: str, year: int, sequence: int) -> str:
-        return f"RFX-{domain_prefix}-{year}-{sequence:06d}"
+    def build_rfx_code(document_type: str, origin: str, year: int, sequence: int) -> str:
+        yy = int(year) % 100
+        return f"{DocumentCodeService.CODE_PREFIX}-{document_type}-{origin}-{yy:02d}-{int(sequence):03d}"
+
+    @classmethod
+    def build_sequence_scope(cls, document_type: str, origin: str) -> str:
+        return f"{document_type}-{origin}"
 
     @staticmethod
     def build_proposal_code(rfx_code: str, revision: int) -> str:
         return f"{rfx_code}-R{revision:02d}"
 
-    def generate_rfx_code(self, rfx_type: Optional[str], year: Optional[int] = None) -> str:
-        prefix = self.get_domain_prefix(rfx_type)
+    def generate_rfx_code(
+        self,
+        rfx_type: Optional[str],
+        year: Optional[int] = None,
+        origin: Optional[str] = None,
+    ) -> str:
+        # Reserved for future variability per vertical/type.
+        document_type = self.DEFAULT_DOCUMENT_TYPE
+        normalized_origin = self.normalize_origin(origin)
         code_year = int(year or datetime.now(timezone.utc).year)
-        sequence = self._next_document_sequence("rfx", prefix, code_year)
-        return self.build_rfx_code(prefix, code_year, sequence)
+        sequence_scope = self.build_sequence_scope(document_type, normalized_origin)
+        sequence = self._next_document_sequence("rfx", sequence_scope, code_year)
+        return self.build_rfx_code(document_type, normalized_origin, code_year, sequence)
 
     def next_proposal_revision(self, rfx_id: str | UUID) -> int:
         try:

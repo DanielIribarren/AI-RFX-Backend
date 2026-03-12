@@ -151,7 +151,7 @@ class OpenAIConfig:
 class ServerConfig:
     """Flask server configuration"""
     host: str = "0.0.0.0"
-    port: int = 3186
+    port: int = 5001
     debug: bool = False
     cors_origins: List[str] = None
     cors_methods: List[str] = None
@@ -160,7 +160,13 @@ class ServerConfig:
     def __post_init__(self):
         if self.cors_origins is None:
             # Default CORS origins based on environment
-            self.cors_origins = ["http://localhost:3000"]
+            self.cors_origins = [
+                "http://localhost:3000",
+                "http://127.0.0.1:3000",
+                "http://localhost:3001",
+                "http://localhost:3004",
+                "http://127.0.0.1:3004",
+            ]
         
         if self.cors_methods is None:
             self.cors_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]  # ✅ Added PATCH
@@ -234,25 +240,38 @@ class Config:
     
     def _load_server_config(self) -> ServerConfig:
         """Load server configuration from environment"""
-        cors_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+        default_dev_origins = ",".join([
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3001",
+            "http://localhost:3004",
+            "http://127.0.0.1:3004",
+        ])
+        cors_origins = os.getenv("CORS_ORIGINS", default_dev_origins)
         
         # Environment-specific CORS origins
         if self.environment == Environment.PRODUCTION:
             # Add production URLs
             default_origins = ["https://*.vercel.app", "https://*.netlify.app"]
-            if cors_origins == "http://localhost:3000":
+            if cors_origins == default_dev_origins:
                 cors_origins = ",".join(default_origins)
         elif self.environment == Environment.DEVELOPMENT:
             # Development defaults
-            default_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001"]
-            if cors_origins == "http://localhost:3000":
+            default_origins = [
+                "http://localhost:3000",
+                "http://127.0.0.1:3000",
+                "http://localhost:3001",
+                "http://localhost:3004",
+                "http://127.0.0.1:3004",
+            ]
+            if cors_origins == default_dev_origins:
                 cors_origins = ",".join(default_origins)
         
         return ServerConfig(
             host=os.getenv("HOST", "0.0.0.0"),
-            port=int(os.getenv("PORT", "3186")),
+            port=int(os.getenv("PORT", "5001")),
             debug=self.environment == Environment.DEVELOPMENT,
-            cors_origins=cors_origins.split(",") if cors_origins else [],
+            cors_origins=[origin.strip() for origin in cors_origins.split(",") if origin.strip()] if cors_origins else [],
             cors_methods=os.getenv("CORS_METHODS", "GET,POST,PUT,PATCH,DELETE,OPTIONS").split(","),  # ✅ Added PATCH
             cors_headers=os.getenv("CORS_HEADERS", "Content-Type,Authorization,X-Requested-With,Accept").split(",")
         )

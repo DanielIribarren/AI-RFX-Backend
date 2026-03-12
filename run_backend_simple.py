@@ -24,7 +24,7 @@ from backend.app import app
 
 if __name__ == "__main__":
     # Get configuration from environment variables
-    port = int(os.getenv('PORT', '3186'))
+    port = int(os.getenv('PORT', '5001'))
     host = os.getenv('HOST', '0.0.0.0')
     debug = os.getenv('FLASK_DEBUG', 'false').lower() == 'true'
     environment = os.getenv('ENVIRONMENT', 'development')

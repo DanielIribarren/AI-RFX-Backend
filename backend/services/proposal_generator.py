@@ -108,11 +108,19 @@ class ProposalGenerationService:
                 rfx_data=rfx_data
             )
             proposal_revision = self.document_code_service.next_proposal_revision(proposal_request.rfx_id)
-            proposal_code = self.document_code_service.build_proposal_code(rfx_code, proposal_revision)
+            # Business-facing proposal code must follow the requested RFX format
+            # without revision suffix. Keep internal revision code for traceability.
+            proposal_internal_code = self.document_code_service.build_proposal_code(rfx_code, proposal_revision)
+            proposal_code = rfx_code
             rfx_data["rfx_code"] = rfx_code
             rfx_data["proposal_code"] = proposal_code
             rfx_data["proposal_revision"] = proposal_revision
-            logger.info(f"🏷️ Corporate codes - rfx_code={rfx_code}, proposal_code={proposal_code}")
+            rfx_data["proposal_code_internal"] = proposal_internal_code
+            logger.info(
+                "🏷️ Corporate codes - "
+                f"rfx_code={rfx_code}, proposal_code={proposal_code}, "
+                f"proposal_code_internal={proposal_internal_code}"
+            )
             
             # 2. Preparar datos de productos
             products_info = self._prepare_products_data(rfx_data)
@@ -394,10 +402,6 @@ class ProposalGenerationService:
         if metadata_json is None:
             metadata_json = {}
 
-        metadata_code = metadata_json.get("rfx_code")
-        if metadata_code:
-            return str(metadata_code)
-
         # Prefer authoritative DB values to avoid overriding existing metadata.
         db_rfx = self.db_client.client.table("rfx_v2")\
             .select("rfx_code, metadata_json, rfx_type")\
@@ -410,13 +414,33 @@ class ProposalGenerationService:
             return str(db_rfx_code)
 
         db_metadata = db_row.get("metadata_json") if isinstance(db_row.get("metadata_json"), dict) else {}
-        if db_metadata.get("rfx_code"):
-            return str(db_metadata.get("rfx_code"))
-
+        candidate_code = metadata_json.get("rfx_code") or db_metadata.get("rfx_code")
         merged_metadata = {**db_metadata, **metadata_json}
 
+        if candidate_code:
+            rfx_code = str(candidate_code)
+            merged_metadata["rfx_code"] = rfx_code
+            try:
+                self.db_client.client.table("rfx_v2").update(
+                    {
+                        "rfx_code": rfx_code,
+                        "metadata_json": merged_metadata,
+                    }
+                ).eq("id", rfx_id).execute()
+            except Exception as exc:
+                logger.error(f"❌ Failed to sync existing rfx_code for RFX {rfx_id}: {exc}")
+                raise
+
+            rfx_data["rfx_code"] = rfx_code
+            rfx_data["metadata"] = merged_metadata
+            rfx_data["metadata_json"] = merged_metadata
+            return rfx_code
+
         rfx_type = db_row.get("rfx_type") or rfx_data.get("rfx_type", "catering")
-        rfx_code = self.document_code_service.generate_rfx_code(rfx_type)
+        rfx_code = self.document_code_service.generate_rfx_code(
+            rfx_type=rfx_type,
+            origin=self.document_code_service.DEFAULT_ORIGIN,
+        )
 
         # Persist in rfx_v2 and metadata_json for backwards compatibility.
         merged_metadata["rfx_code"] = rfx_code
@@ -431,6 +455,7 @@ class ProposalGenerationService:
             logger.error(f"❌ Failed to persist rfx_code for RFX {rfx_id}: {exc}")
             raise
 
+        rfx_data["rfx_code"] = rfx_code
         rfx_data["metadata"] = merged_metadata
         rfx_data["metadata_json"] = merged_metadata
         return rfx_code
@@ -456,14 +481,14 @@ class ProposalGenerationService:
             # Replace common "Codigo: XYZ" blocks in deterministic way.
             html = re.sub(
                 r"(<strong>\s*C[óo]digo:\s*</strong>\s*)([^<\\n]+)",
-                rf"\\1{proposal_code}",
+                lambda m: f"{m.group(1)}{proposal_code}",
                 html,
                 count=1,
                 flags=re.IGNORECASE,
             )
             html = re.sub(
-                r"(C[óo]digo:\s*)(SABRA-PO-[A-Za-z0-9\\-]+|PROP-[A-Za-z0-9\\-]+|RFX-[A-Za-z0-9\\-]+)",
-                rf"\\1{proposal_code}",
+                r"(C[óo]digo:\s*)([A-Z]{2,5}(?:-[A-Z0-9]{1,8}){2,}(?:-R\d{2})?)",
+                lambda m: f"{m.group(1)}{proposal_code}",
                 html,
                 count=1,
                 flags=re.IGNORECASE,
@@ -473,7 +498,7 @@ class ProposalGenerationService:
             if proposal_code not in html:
                 html = re.sub(
                     r"(<strong>\s*Vigencia:\s*</strong>\s*[^<\\n]*)(</p>)",
-                    rf"\\1\\2\n<p style=\"margin: 0;\"><strong>Código:</strong> {proposal_code}</p>",
+                    f"\\g<1>\\g<2>\n<p style=\"margin: 0;\"><strong>Código:</strong> {proposal_code}</p>",
                     html,
                     count=1,
                     flags=re.IGNORECASE,
@@ -978,6 +1003,11 @@ class ProposalGenerationService:
                 "pricing": self._format_pricing_data(pricing_calculation, currency, proposal_request.rfx_id),
                 "pricing_config": pricing_detailed_config,  # ✅ NUEVO: Configuraciones detalladas
                 "proposal_code": proposal_code,
+                "proposal_code_internal": (
+                    self.document_code_service.build_proposal_code(rfx_code, int(proposal_revision))
+                    if rfx_code and proposal_revision is not None
+                    else proposal_code
+                ),
                 "rfx_code": rfx_code,
                 "decision_context": decision_context or rfx_data.get("decision_context") or {},
                 "requirements": rfx_data.get("requirements") or rfx_data.get("description") or "",
@@ -1184,6 +1214,15 @@ GENERA EL HTML CORREGIDO.
         proposal_id = uuid.uuid4()
         rfx_uuid = uuid.UUID(proposal_request.rfx_id) if isinstance(proposal_request.rfx_id, str) else proposal_request.rfx_id
         html_content = self._inject_proposal_code_in_html(html_content, proposal_code, rfx_code)
+        internal_proposal_code = proposal_code
+        if rfx_code and proposal_revision is not None:
+            try:
+                internal_proposal_code = self.document_code_service.build_proposal_code(
+                    rfx_code,
+                    int(proposal_revision),
+                )
+            except Exception:
+                internal_proposal_code = proposal_code
         
         # Obtener total del pricing calculation
         total_cost = pricing_calculation.get('total', 0) if isinstance(pricing_calculation, dict) else getattr(pricing_calculation, 'total_cost', 0)
@@ -1208,6 +1247,7 @@ GENERA EL HTML CORREGIDO.
                 "document_type": "commercial_proposal",
                 "generation_version": "5.0_refactored",
                 "proposal_code": proposal_code,
+                "proposal_code_internal": internal_proposal_code,
                 "rfx_code": rfx_code,
                 "proposal_revision": proposal_revision,
                 "history_provided": bool((proposal_request.history or "").strip()),
@@ -1232,7 +1272,10 @@ GENERA EL HTML CORREGIDO.
             "created_at": proposal.created_at.isoformat(),
             "metadata": proposal.metadata,
             "version": 1,
-            "proposal_code": (proposal.metadata or {}).get("proposal_code"),
+            "proposal_code": (
+                (proposal.metadata or {}).get("proposal_code_internal")
+                or (proposal.metadata or {}).get("proposal_code")
+            ),
             "rfx_code_snapshot": (proposal.metadata or {}).get("rfx_code"),
             "proposal_revision": (proposal.metadata or {}).get("proposal_revision"),
         }

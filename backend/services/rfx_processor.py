@@ -1600,24 +1600,36 @@ TEXTO: {text[:5000]}"""
                 "requirements_confidence": rfx_processed.requirements_confidence
             }
 
-            # Corporate-friendly deterministic code for fast lookup and classification.
+            # Canonical RFX corporate code for lookup + operational traceability.
             metadata_json = rfx_data.get("metadata_json") if isinstance(rfx_data.get("metadata_json"), dict) else {}
-            existing_rfx_code = metadata_json.get("rfx_code")
+            existing_rfx_code = rfx_data.get("rfx_code") or metadata_json.get("rfx_code")
             if existing_rfx_code:
                 rfx_code = str(existing_rfx_code)
             else:
                 try:
-                    rfx_code = self.document_code_service.generate_rfx_code(rfx_data.get("rfx_type"))
+                    rfx_code = self.document_code_service.generate_rfx_code(
+                        rfx_type=rfx_data.get("rfx_type"),
+                        origin=self.document_code_service.DEFAULT_ORIGIN,
+                    )
                 except Exception:
-                    # Fallback only if sequence RPC is unavailable.
+                    # Non-atomic fallback only when sequence RPC is unavailable.
                     current_year = datetime.utcnow().year
-                    rfx_code = f"RFX-OTH-{current_year}-{str(rfx_processed.id).split('-')[0].upper()}"
+                    fallback_sequence = self._fallback_next_rfx_sequence(
+                        current_year=current_year,
+                        origin=self.document_code_service.DEFAULT_ORIGIN,
+                    )
+                    rfx_code = self.document_code_service.build_rfx_code(
+                        document_type=self.document_code_service.DEFAULT_DOCUMENT_TYPE,
+                        origin=self.document_code_service.DEFAULT_ORIGIN,
+                        year=current_year,
+                        sequence=fallback_sequence,
+                    )
                     logger.warning(f"⚠️ Using fallback rfx_code generation: {rfx_code}")
 
-            # Backward-compatible: keep canonical code in metadata_json.
-            # Some deployed DBs may not yet have rfx_v2.rfx_code.
+            # Persist canonical code in both column + metadata_json for compatibility.
             metadata_json["rfx_code"] = rfx_code
             rfx_data["metadata_json"] = metadata_json
+            rfx_data["rfx_code"] = rfx_code
             logger.info(f"🏷️ Assigned RFX code: {rfx_code}")
             
             # 🆕 CRITICAL: Add user_id if provided
@@ -1748,6 +1760,40 @@ TEXTO: {text[:5000]}"""
         except Exception as e:
             logger.error(f"❌ Failed to save RFX to database: {e}")
             raise
+
+    def _fallback_next_rfx_sequence(self, current_year: int, origin: str) -> int:
+        """
+        Best-effort fallback when DB RPC sequence is unavailable.
+        NOTE: This path is non-atomic and should remain exceptional.
+        """
+        try:
+            normalized_origin = self.document_code_service.normalize_origin(origin)
+            yy = int(current_year) % 100
+            prefix = (
+                f"{self.document_code_service.CODE_PREFIX}-"
+                f"{self.document_code_service.DEFAULT_DOCUMENT_TYPE}-"
+                f"{normalized_origin}-{yy:02d}-"
+            )
+
+            response = (
+                self.db_client.client
+                .table("rfx_v2")
+                .select("rfx_code")
+                .ilike("rfx_code", f"{prefix}%")
+                .order("rfx_code", desc=True)
+                .limit(1)
+                .execute()
+            )
+
+            if response.data:
+                last_code = str((response.data[0] or {}).get("rfx_code") or "")
+                match = re.search(r"-(\d+)$", last_code)
+                if match:
+                    return int(match.group(1)) + 1
+        except Exception as fallback_exc:
+            logger.warning(f"⚠️ Could not derive fallback RFX sequence from DB: {fallback_exc}")
+
+        return 1
     
     # REMOVED: _generate_proposal_automatically
     # La generación de propuestas ahora se maneja por separado cuando el usuario lo solicite

@@ -330,7 +330,7 @@ def get_proposal(proposal_id: str):
                 "content_html": proposal_data.get("content_html", ""),  # ✅ V2.0 field name  
                 "total_cost": proposal_data.get("total_cost", 0.0),  # ✅ V2.0 field name
                 "created_at": proposal_data.get("created_at", ""),  # ✅ V2.0 field name
-                "proposal_code": proposal_data.get("proposal_code") or (proposal_data.get("metadata") or {}).get("proposal_code"),
+                "proposal_code": (proposal_data.get("metadata") or {}).get("proposal_code") or proposal_data.get("proposal_code"),
                 "rfx_code": proposal_data.get("rfx_code_snapshot") or (proposal_data.get("metadata") or {}).get("rfx_code"),
                 "proposal_revision": proposal_data.get("proposal_revision") or (proposal_data.get("metadata") or {}).get("proposal_revision"),
                 "download_url": f"/api/download/{proposal_id}"
@@ -391,7 +391,7 @@ def search_proposals_by_code():
             results.append({
                 "id": proposal.get("id"),
                 "rfx_id": proposal_rfx_id,
-                "proposal_code": proposal.get("proposal_code") or metadata.get("proposal_code"),
+                "proposal_code": metadata.get("proposal_code") or proposal.get("proposal_code"),
                 "rfx_code": proposal.get("rfx_code_snapshot") or metadata.get("rfx_code"),
                 "proposal_revision": proposal.get("proposal_revision") or metadata.get("proposal_revision"),
                 "created_at": proposal.get("created_at"),
@@ -490,7 +490,7 @@ def get_proposals_by_rfx(rfx_id: str):
                 "document_type": proposal.get("document_type", "proposal"),  # ✅ V2.0 field name
                 "created_at": proposal.get("created_at", ""),  # ✅ V2.0 field name
                 "total_cost": proposal.get("total_cost", 0.0),  # ✅ V2.0 field name
-                "proposal_code": proposal.get("proposal_code") or metadata.get("proposal_code"),
+                "proposal_code": metadata.get("proposal_code") or proposal.get("proposal_code"),
                 "rfx_code": proposal.get("rfx_code_snapshot") or metadata.get("rfx_code"),
                 "proposal_revision": proposal.get("proposal_revision") or metadata.get("proposal_revision"),
                 "commercial_status": metadata.get("commercial_status", "generated"),

@@ -428,70 +428,167 @@ def convert_with_pdfkit(html_content: str, client_name: str, document_id: str):
 def optimize_html_for_pdf(html_content: str) -> str:
     """
     Optimizar HTML para máxima fidelidad en PDF.
-    CSS minimalista y compatible con Chromium page.pdf() para evitar 'Target crashed'.
-    NO usar selectores universales (*) con propiedades -webkit- pesadas.
+
+    Hace dos cosas:
+    1. Sanitiza propiedades CSS que causan crashes en Chromium page.pdf().
+    2. Inyecta un bloque CSS normalizador de layout de tablas que actúa como
+       safety net determinístico: independientemente del HTML que genere el LLM,
+       garantiza que las tablas tengan bordes completos (incluyendo el borde
+       derecho), border-collapse correcto y centrado consistente.
+
+    Por qué esto es necesario:
+    - El LLM puede generar `width: calc(100% - 20mm)` con `margin: 5mm 10mm`,
+      lo que en el motor PDF de Chromium recorta el área de contenido y hace
+      que el borde derecho de la última columna quede fuera del clip de la tabla.
+    - Forzar `width: 100%` con `box-sizing: border-box` y dejar que el `@page`
+      margin controle el espacio resuelve ambos problemas (borde + centrado).
+    - `border-collapse: collapse` es obligatorio; sin él, `border: 1pt solid`
+      en celdas individuales produce doble borde o borde faltante en el edge.
+
+    NO usar selectores universales (*) con propiedades -webkit- pesadas
+    (causa 'Target crashed' en Chromium).
     """
-    pdf_optimization_css = """
+    pdf_normalization_css = """
     <style type="text/css">
-        /* PDF: Forzar colores de fondo en impresión (solo en body, no universal) */
+        /* ── PAGE SETUP ─────────────────────────────────────────────────────── */
+        @page {
+            size: A4;
+            margin: 2cm;
+        }
+
+        /* ── BODY: reset LLM-generated fixed dimensions + color preservation ───
+           The LLM often generates body { width: 216mm; height: 279mm; padding: ... }
+           which overflows the @page content area and clips the right side.
+           Page geometry is controlled by @page, NOT body width/height.
+        ──────────────────────────────────────────────────────────────────────── */
         body {
             -webkit-print-color-adjust: exact;
             print-color-adjust: exact;
+            width: auto !important;
+            max-width: 100% !important;
+            height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
         }
-        
-        /* PDF: Imágenes responsivas */
+
+        /* ── TABLE LAYOUT NORMALIZATION (safety net) ─────────────────────────
+           FIX: missing right border + centering issues.
+           width:100% + box-sizing:border-box ensures the table occupies the
+           full content area defined by @page margin, so the rightmost border
+           is always rendered inside the printable area.
+           Explicit border-collapse prevents double/missing edge borders.
+           margin:0 auto centers in the rare case a table has an explicit width.
+        ────────────────────────────────────────────────────────────────────── */
+        table {
+            width: 100% !important;
+            box-sizing: border-box !important;
+            border-collapse: collapse !important;
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+            table-layout: auto;
+        }
+
+        /* Ensure every cell border is visible on all four sides */
+        th, td {
+            box-sizing: border-box;
+        }
+
+        /* ── PAGINATION ──────────────────────────────────────────────────────── */
+        thead {
+            display: table-header-group;
+        }
+
+        tr {
+            page-break-inside: avoid;
+        }
+
+        table {
+            page-break-inside: auto;
+        }
+
+        /* ── IMAGES ──────────────────────────────────────────────────────────── */
         img {
             max-width: 100%;
             height: auto;
             page-break-inside: avoid;
         }
-        
-        /* PDF: Evitar cortes de página en elementos críticos */
-        table, thead, tr, .header {
-            page-break-inside: avoid;
-        }
-        
-        /* PDF: Configuración de página */
-        @page {
-            size: A4;
-            margin: 2cm;
-        }
     </style>
     """
-    
-    # Sanitizar CSS problemático del HTML generado por el LLM
-    # Estas propiedades pueden causar 'Target crashed' en Chromium page.pdf()
-    
-    # 1. Remover image-rendering: -webkit-optimize-contrast (no estándar, causa crash)
+
+    # ── SANITIZE: remove CSS that crashes Chromium page.pdf() ────────────────
+
+    # 1. image-rendering: -webkit-optimize-contrast (non-standard, causes crash)
     html_content = re.sub(
         r'image-rendering:\s*-webkit-optimize-contrast[^;]*;',
         'image-rendering: auto;',
         html_content
     )
-    
-    # 2. Remover selectores universales (*) con -webkit-print-color-adjust
-    #    Esto es el principal causante de 'Target crashed'
+
+    # 2. Universal (*) selectors with -webkit-print-color-adjust — main crash cause
     html_content = re.sub(
         r'\*\s*(?:,\s*\*::before\s*,\s*\*::after\s*)?\{[^}]*-webkit-print-color-adjust[^}]*\}',
         '',
         html_content
     )
-    
-    # 3. Remover propiedades -webkit- problemáticas sueltas en cualquier selector
+
+    # 3. Normalize -webkit-print-color-adjust: exact !important to avoid issues
     html_content = re.sub(
         r'-webkit-print-color-adjust:\s*exact\s*!important\s*;',
         '-webkit-print-color-adjust: exact;',
         html_content
     )
-    
-    # Insertar CSS optimizado
+
+    # 4. Replace calc()-based widths with 100% (unreliable in print media).
+    #    Pattern is self-contained: calc(...) — no [^;]* needed outside the parens.
+    #    Matches: width: calc(100% - 20mm), width: calc(100% - 2cm), etc.
+    html_content = re.sub(
+        r'(width\s*:\s*)calc\([^)]*\)',
+        r'\1100%',
+        html_content,
+        flags=re.IGNORECASE
+    )
+
+    # 5. Strip fixed dimension body properties that overflow the page content area.
+    #    The LLM often generates: body { width: 216mm; height: 279mm; padding: 0 10mm; }
+    #    Page geometry is controlled by @page, NOT body width/height/padding.
+    #
+    #    Strategy: extract the body {} block, sanitize it, put it back.
+    #    This is safer than regex-on-whole-file for multiline blocks.
+    def _sanitize_body_block(match):
+        block = match.group(0)
+        # Remove width with absolute units (mm, cm, in, px, pt)
+        block = re.sub(r'\bwidth\s*:\s*[\d.]+(?:mm|cm|in|px|pt)\s*;', '', block, flags=re.IGNORECASE)
+        # Remove height with absolute units
+        block = re.sub(r'\bheight\s*:\s*[\d.]+(?:mm|cm|in|px|pt)\s*;', '', block, flags=re.IGNORECASE)
+        # Remove padding with any mm/cm/pt values (e.g. "0 10mm", "5mm 10mm", "10mm")
+        block = re.sub(r'\bpadding\s*:[^;]*\d+(?:mm|cm|in|pt)[^;]*;', '', block, flags=re.IGNORECASE)
+        return block
+
+    html_content = re.sub(
+        r'body\s*\{[^}]*\}',
+        _sanitize_body_block,
+        html_content,
+        flags=re.IGNORECASE
+    )
+
+    # 7. Remove explicit mm margins on <table> elements (inline or stylesheet).
+    #    Matches: margin: 5mm 10mm, margin-left: 10mm, margin: 0 10mm, etc.
+    html_content = re.sub(
+        r'(<table[^>]*style\s*=\s*["\'][^"\']*?)margin(?:-(?:left|right|top|bottom))?\s*:\s*[\d.]+(?:mm|cm|in|pt)[^;]*;',
+        r'\1margin: 0;',
+        html_content,
+        flags=re.IGNORECASE
+    )
+
+    # ── INJECT normalization CSS (always last, highest specificity via !important)
     if '</head>' in html_content:
-        html_content = html_content.replace('</head>', pdf_optimization_css + '\n</head>')
+        html_content = html_content.replace('</head>', pdf_normalization_css + '\n</head>')
     elif '<head>' in html_content:
-        html_content = html_content.replace('<head>', '<head>' + pdf_optimization_css)
+        html_content = html_content.replace('<head>', '<head>' + pdf_normalization_css)
     elif '<body>' in html_content:
-        html_content = html_content.replace('<body>', f'<head>{pdf_optimization_css}</head><body>')
-    
+        html_content = html_content.replace('<body>', f'<head>{pdf_normalization_css}</head><body>')
+
+    logger.info("✅ HTML optimized for PDF: table layout normalized, crash-prone CSS sanitized")
     return html_content
 
 

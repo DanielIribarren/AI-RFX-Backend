@@ -154,13 +154,19 @@ Ejemplo de lo que debes ELIMINAR:
 
 ### 2. CSS OBLIGATORIO:
 ```css
-@page { size: letter; margin: 15mm; }
-body { -webkit-print-color-adjust: exact; }
-table { page-break-inside: auto; max-width: 190mm; margin: 0 auto; }
+@page { size: A4; margin: 20mm; }
+body { -webkit-print-color-adjust: exact; print-color-adjust: exact; margin: 0; padding: 0; }
+table { page-break-inside: auto; width: 100%; border-collapse: collapse; box-sizing: border-box; margin: 0; }
 tr { page-break-inside: avoid; }
 thead { display: table-header-group; }
 img { max-width: 100%; page-break-inside: avoid; }
 ```
+
+⚠️ **REGLA CRÍTICA DE TABLA:**
+- ✅ USAR `width: 100%` para la tabla (el margen de página lo controla `@page`, NO la tabla)
+- ❌ NUNCA usar `width: calc(100% - 20mm)` o `margin: 5mm 10mm` en la tabla
+- ❌ NUNCA usar `max-width` en mm fijos para la tabla
+- La razón: `calc()` con unidades mm es poco confiable en el motor PDF de Chromium y hace que el borde derecho de la tabla quede fuera del área visible
 
 ### 3. PRESERVAR:
 - Placeholder {{LOGO_PLACEHOLDER}} sin modificar

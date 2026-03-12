@@ -166,12 +166,10 @@ Usa la MISMA estructura, colores y layout. Reemplaza los datos de ejemplo con lo
 <meta charset="UTF-8">
 <style>
   /* 🎨 COLORES DEL BRANDING - NO CAMBIAR */
-  @page {{ size: letter; margin: 0; }}
+  @page {{ size: A4; margin: 20mm; }}
   body {{ 
     font-family: Arial, sans-serif; 
     color: #333; 
-    width: 216mm; 
-    height: 279mm;
     margin: 0;
     padding: 0;
     -webkit-print-color-adjust: exact;
@@ -182,11 +180,15 @@ Usa la MISMA estructura, colores y layout. Reemplaza los datos de ejemplo con lo
   .header {{ border-bottom: 3pt solid {primary_color}; }}
   .logo {{ height: 15mm; }}
   
-  /* Tabla con colores exactos del branding */
+  /* Tabla con colores exactos del branding.
+     IMPORTANTE: usar width:100% (NO calc) para que el borde derecho
+     siempre se renderice dentro del área imprimible. El margen de la
+     página lo controla @page, no la tabla. */
   table {{ 
-    width: calc(100% - 20mm); 
-    margin: 5mm 10mm; 
+    width: 100%; 
+    margin: 0;
     border-collapse: collapse;
+    box-sizing: border-box;
     page-break-inside: auto;  /* Permitir saltos de página dentro de la tabla */
   }}
   
@@ -232,13 +234,13 @@ Usa la MISMA estructura, colores y layout. Reemplaza los datos de ejemplo con lo
 </head>
 <body>
   <!-- HEADER -->
-  <div class="header" style="display: flex; justify-content: space-between; align-items: center; padding: 5mm 10mm;">
+  <div class="header" style="display: flex; justify-content: space-between; align-items: center; padding: 5mm 0;">
     <img src="{logo_endpoint}" alt="Logo" class="logo">
     <h1 style="font-size: 24pt; color: {primary_color}; margin: 0;">PRESUPUESTO</h1>
   </div>
   
   <!-- INFORMACIÓN DEL CLIENTE -->
-  <div style="padding: 0 10mm; margin: 3mm 0;">
+  <div style="margin: 3mm 0;">
     <span class="info-label">Cliente:</span>
     <span class="info-value">[NOMBRE CLIENTE]</span>
   </div>
@@ -384,45 +386,45 @@ Los ejemplos de código abajo son PLANTILLAS. Cuando generes el HTML final:
 
 ### 1. HEADER (Superior)
 <!-- Logo a la izquierda, título PRESUPUESTO a la derecha -->
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5mm; padding: 5mm 10mm 0 10mm;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5mm;">
     <img src="{logo_endpoint}" alt="Logo" style="height: 15mm;">
     <h1 style="font-size: 24pt; color: {primary_color}; margin: 0;">PRESUPUESTO</h1>
 </div>
 
 <!-- Información de la empresa (dirección, teléfono, etc.) -->
-<div style="font-size: 9pt; margin-bottom: 5mm; padding: 0 10mm;">
+<div style="font-size: 9pt; margin-bottom: 5mm;">
     <p style="margin: 0;">Av. Principal, C.C Mini Centro Principal</p>
     <p style="margin: 0;">Nivel 1, Local 10, Sector el Pedronal</p>
     <p style="margin: 0;">Lechería, Anzoátegui, Zona Postal 6016</p>
 </div>
 
 <!-- Fecha, Vigencia, Código alineados a la derecha -->
-<div style="text-align: right; font-size: 9pt; margin-bottom: 5mm; padding: 0 10mm;">
+<div style="text-align: right; font-size: 9pt; margin-bottom: 5mm;">
     <p style="margin: 0;"><strong>Fecha:</strong> {rfx_data.get('current_date', '2025-10-20')}</p>
     <p style="margin: 0;"><strong>Vigencia:</strong> {rfx_data.get('validity_date', '30 días')}</p>
-    <p style="margin: 0;"><strong>Código:</strong> SABRA-PO-2025-XXX</p>
+    <p style="margin: 0;"><strong>Código:</strong> {{PROPOSAL_CODE}}</p>
 </div>
 
 IMPORTANTE sobre las fechas:
 - Fecha: Usa la fecha actual proporcionada (formato: YYYY-MM-DD)
 - Vigencia: Calcula 30 días desde la fecha actual y muestra la fecha resultante
-- Código: Genera un código único basado en el año actual (ej: SABRA-PO-2025-001)
+- Código: Mantén el placeholder {{PROPOSAL_CODE}}; el backend inyecta el código oficial.
 
 ### 2. INFORMACIÓN DEL CLIENTE (Cajas con colores del branding)
 <!-- Solo incluir: Cliente y Solicitud -->
 
-<div style="padding: 0 10mm; margin-bottom: 3mm;">
+<div style="margin-bottom: 3mm;">
     <div style="background: {primary_color}; color: white; padding: 2mm 3mm; font-weight: bold; display: inline-block; min-width: 30mm;">Cliente:</div>
     <div style="border: 1pt solid {primary_color}; padding: 2mm 3mm; display: inline-block; min-width: 120mm;">{rfx_data.get('client_name', 'N/A')}</div>
 </div>
 
-<div style="padding: 0 10mm; margin-bottom: 3mm;">
+<div style="margin-bottom: 3mm;">
     <div style="background: {primary_color}; color: white; padding: 2mm 3mm; font-weight: bold; display: inline-block; min-width: 30mm;">Solicitud:</div>
     <div style="border: 1pt solid {primary_color}; padding: 2mm 3mm; display: inline-block; min-width: 120mm;">{rfx_data.get('solicitud', 'N/A')}</div>
 </div>
 
 ### 3. TABLA DE PRODUCTOS (Header con colores del branding)
-<table style="width: calc(100% - 20mm); margin: 5mm 10mm; border-collapse: collapse;">
+<table style="width: 100%; margin: 0; border-collapse: collapse; box-sizing: border-box;">
     <thead>
         <tr style="background: {table_header_bg}; color: {table_header_text};">
             <th style="padding: 2mm; border: 1pt solid {table_border}; text-align: center; font-weight: bold;">Item</th>
@@ -458,7 +460,7 @@ IMPORTANTE sobre las fechas:
 </table>
 
 ### 4. COMENTARIOS (Opcional)
-<div style="padding: 0 10mm; margin: 3mm 0;">
+<div style="margin: 3mm 0;">
     <strong>Comentarios:</strong>
     <div style="border: 1pt solid #000; padding: 3mm; min-height: 15mm; margin-top: 2mm;">
         <!-- Espacio para comentarios adicionales -->
@@ -469,12 +471,13 @@ IMPORTANTE sobre las fechas:
 
 # REGLAS TÉCNICAS HTML-TO-PDF
 
-✅ **Unidades:** Solo mm, pt, in (NO px, %, em, rem)
-✅ **Página:** @page {{ size: letter; margin: 0; }}
-✅ **Body:** width: 216mm; height: 279mm;
+✅ **Página:** @page {{ size: A4; margin: 20mm; }} (el margen de página controla el espacio, NO el body)
+✅ **Body:** margin: 0; padding: 0; (NO usar width ni height fijos en mm/px en body)
+✅ **Tabla:** width: 100%; margin: 0; border-collapse: collapse; box-sizing: border-box;
+❌ **PROHIBIDO en tabla:** width: calc(100% - 20mm), margin: 5mm 10mm, max-width en mm
 ✅ **Colores:** -webkit-print-color-adjust: exact; print-color-adjust: exact;
-✅ **Imágenes:** Especificar width y height explícitos
-✅ **Bordes tabla:** 1pt solid #000
+✅ **Bordes tabla:** 1pt solid (border en th y td)
+✅ **Unidades en tabla:** Solo pt para bordes, mm para padding de celdas
 ✅ **Comentarios HTML:** Incluir comentarios explicando cada sección
 
 🚨 **REGLAS CRÍTICAS DE PAGINACIÓN (EVITAR TABLAS CORTADAS):**
@@ -644,7 +647,7 @@ Usa el mismo estilo que el prompt con branding personalizado, CON el logo por de
 
 ### HEADER - Ejemplo con Logo:
 <!-- Logo a la izquierda, título PRESUPUESTO a la derecha -->
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5mm; padding: 5mm 10mm 0 10mm;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5mm;">
     <img src="{default_logo_endpoint}" alt="Logo Sabra" style="height: 15mm;">
     <h1 style="font-size: 24pt; color: #0e2541; margin: 0;">PRESUPUESTO</h1>
 </div>"""
