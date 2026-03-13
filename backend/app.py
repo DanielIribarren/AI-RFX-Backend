@@ -21,7 +21,6 @@ if _env_specific_file.exists():
 # Import new architecture components
 from backend.core.config import config, get_server_config
 from backend.core.database import get_database_client
-from backend.api.rfx import rfx_bp
 from backend.api.proposals import proposals_bp
 from backend.api.download import download_bp
 from backend.api.pricing import pricing_bp
@@ -34,6 +33,11 @@ from backend.api.rfx_secure_patch import rfx_secure_bp  # ✅ Secure RFX endpoin
 from backend.api.user_branding import user_branding_bp  # ✅ User branding
 _optional_import_errors = {}
 try:
+    from backend.api.rfx import rfx_bp
+except Exception as exc:
+    rfx_bp = None
+    _optional_import_errors["rfx"] = exc
+try:
     from backend.api.rfx_chat import rfx_chat_bp  # ✅ RFX Chat conversacional
 except Exception as exc:
     rfx_chat_bp = None
@@ -44,7 +48,11 @@ from backend.api.contact import contact_bp  # ✅ Contact request emails
 from backend.api.health import health_bp  # ✅ Health checks and monitoring
 from backend.api.recommendations import recommendations_bp  # 🧠 AI Learning System recommendations
 from backend.api.subscription import subscription_bp  # ✅ Plan requests & approval
-from backend.api.templates import templates_bp  # 🎨 Proposal templates
+try:
+    from backend.api.templates import templates_bp  # 🎨 Proposal templates
+except Exception as exc:
+    templates_bp = None
+    _optional_import_errors["templates"] = exc
 
 from backend.models.rfx_models import RFXResponse
 
@@ -125,10 +133,22 @@ def _register_blueprints(app: Flask) -> None:
     app.register_blueprint(recommendations_bp)  # 🧠 /api/recommendations/* - AI Learning System
     app.register_blueprint(subscription_bp)  # ✅ /api/subscription/* - Plan requests & approval
     
-    # Original API endpoints (keeping for compatibility)
-    app.register_blueprint(rfx_bp)  # ⚠️ INSECURE - use rfx_secure_bp instead
+    # Keep auth and core endpoints alive even if AI-heavy modules fail to import.
+    if rfx_bp is not None:
+        app.register_blueprint(rfx_bp)  # ⚠️ INSECURE - use rfx_secure_bp instead
+    else:
+        logger.warning(
+            "⚠️ rfx blueprint disabled due import error: %s",
+            _optional_import_errors.get("rfx"),
+        )
     app.register_blueprint(proposals_bp)
-    app.register_blueprint(templates_bp)
+    if templates_bp is not None:
+        app.register_blueprint(templates_bp)
+    else:
+        logger.warning(
+            "⚠️ templates blueprint disabled due import error: %s",
+            _optional_import_errors.get("templates"),
+        )
     app.register_blueprint(download_bp)
     app.register_blueprint(pricing_bp)
     app.register_blueprint(branding_bp)  # ⚠️ OLD - use user_branding_bp instead
