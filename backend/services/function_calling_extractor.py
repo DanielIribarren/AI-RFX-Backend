@@ -246,9 +246,9 @@ PASO 2 - EXTRACCIÓN NUMÉRICA DE COSTO:
 
   // Patrones soportados: $X.XX, $X,XX, X.XX USD, X.XX, $X
   regex_patterns = [
-    \$(\d+\.?\d*),     // $2.10, $2
-    (\d+\.?\d*)\s*USD, // 2.10 USD
-    (\d+\.?\d*)        // 2.10
+    \\$(\\d+\\.?\\d*),     // $2.10, $2
+    (\\d+\\.?\\d*)\\s*USD, // 2.10 USD
+    (\\d+\\.?\\d*)         // 2.10
   ]
 
   FOR pattern in regex_patterns:
