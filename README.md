@@ -113,11 +113,26 @@ CORS_ORIGINS=http://localhost:3000
 
 ```bash
 # Desarrollo
-python backend/app.py
+python3 start_backend.py
 
 # Producción con Gunicorn
 gunicorn backend.wsgi:application --bind 0.0.0.0:5001
 ```
+
+### Deploy en Vercel (recomendado)
+
+```bash
+# 1) Sincronizar variables de entorno (una sola vez)
+./scripts/vercel_sync_env.sh .env production,preview
+
+# 2) Deploy preview
+./scripts/vercel_deploy.sh preview
+
+# 3) Deploy producción
+./scripts/vercel_deploy.sh production
+```
+
+Entry point de Vercel: `api/index.py` (Flask app).
 
 ## 🌐 API Endpoints
 

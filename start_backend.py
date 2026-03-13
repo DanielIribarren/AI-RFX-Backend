@@ -6,11 +6,15 @@ Checks configuration, validates environment, and starts the backend with proper 
 import os
 import sys
 import subprocess
+import argparse
+import hashlib
+import json
 from pathlib import Path
 from dotenv import load_dotenv  # 👈 Agregar esta línea
 
 # Global variable to store virtual environment Python path
 VENV_PYTHON = None
+DEPENDENCY_STAMP_FILE = Path(".cache/dependency-state.json")
 
 def check_python_version():
     """Check if Python version is compatible"""
@@ -157,7 +161,56 @@ def check_virtual_environment():
     print(f"✅ Virtual environment Python found: {venv_python}")
     return True
 
-def install_dependencies():
+def _requirements_hash(requirements_file: Path) -> str:
+    """Return a stable hash of requirements file content."""
+    hasher = hashlib.sha256()
+    hasher.update(requirements_file.read_bytes())
+    return hasher.hexdigest()
+
+
+def _load_dependency_state() -> dict:
+    """Load dependency state file if present."""
+    try:
+        if DEPENDENCY_STAMP_FILE.exists():
+            return json.loads(DEPENDENCY_STAMP_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_dependency_state(requirements_hash: str, python_executable: str) -> None:
+    """Persist dependency state after successful installation."""
+    DEPENDENCY_STAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DEPENDENCY_STAMP_FILE.write_text(
+        json.dumps(
+            {
+                "requirements_hash": requirements_hash,
+                "python_executable": python_executable,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _dependencies_need_install(requirements_file: Path, python_executable: str, force_install: bool) -> bool:
+    """Install only when dependencies changed or when forced."""
+    if force_install:
+        return True
+
+    if not requirements_file.exists():
+        return False
+
+    current_hash = _requirements_hash(requirements_file)
+    state = _load_dependency_state()
+
+    return (
+        state.get("requirements_hash") != current_hash
+        or state.get("python_executable") != python_executable
+    )
+
+
+def install_dependencies(force_install: bool = False, skip_install: bool = False):
     """Install required dependencies"""
     requirements_file = Path("requirements.txt")
     
@@ -167,6 +220,20 @@ def install_dependencies():
     
     # Use virtual environment Python if available
     python_executable = VENV_PYTHON if VENV_PYTHON else sys.executable
+
+    if skip_install:
+        print("⏭️  Skipping dependency installation (--skip-deps)")
+        return True
+
+    needs_install = _dependencies_need_install(
+        requirements_file=requirements_file,
+        python_executable=python_executable,
+        force_install=force_install,
+    )
+    if not needs_install:
+        print("✅ Dependencies unchanged - skipping installation")
+        print("💡 Use --force-install-deps to reinstall anyway")
+        return True
     
     print("📦 Installing dependencies...")
     print(f"🐍 Using Python: {python_executable}")
@@ -175,6 +242,10 @@ def install_dependencies():
         subprocess.run([
             python_executable, "-m", "pip", "install", "-r", "requirements.txt"
         ], check=True)
+        _save_dependency_state(
+            requirements_hash=_requirements_hash(requirements_file),
+            python_executable=python_executable,
+        )
         print("✅ Dependencies installed")
         return True
     except subprocess.CalledProcessError as e:
@@ -378,6 +449,31 @@ def start_backend():
 
 def main():
     """Main startup sequence"""
+    parser = argparse.ArgumentParser(
+        description="AI-RFX backend bootstrap and startup script"
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Run startup checks without starting the backend server",
+    )
+    parser.add_argument(
+        "--prompt",
+        action="store_true",
+        help="Ask for confirmation before starting the backend (legacy behavior)",
+    )
+    parser.add_argument(
+        "--force-install-deps",
+        action="store_true",
+        help="Force reinstalling Python dependencies even when unchanged",
+    )
+    parser.add_argument(
+        "--skip-deps",
+        action="store_true",
+        help="Skip dependency installation step",
+    )
+    args = parser.parse_args()
+
     print("🚀 AI-RFX Backend Startup Script")
     print("=" * 40)
     
@@ -389,7 +485,13 @@ def main():
         ("Python Version", check_python_version),
         ("System Environment", configure_cairo_environment),
         ("Virtual Environment", check_virtual_environment),
-        ("Dependencies", install_dependencies),
+        (
+            "Dependencies",
+            lambda: install_dependencies(
+                force_install=args.force_install_deps,
+                skip_install=args.skip_deps,
+            ),
+        ),
         ("System Dependencies", check_system_dependencies),
         ("Environment Configuration", check_environment_file),
         ("Backend Startup Test", test_backend_startup)
@@ -403,17 +505,25 @@ def main():
     
     print("\n✅ All checks passed!")
     print("🎯 Ready to start backend")
-    
-    # Ask user if they want to start the server
-    try:
-        start_now = input("\n🚀 Start backend server now? (y/N): ").lower().strip()
-        if start_now in ['y', 'yes']:
-            start_backend()
-        else:
-            print("👋 Startup cancelled by user")
-            print("💡 Run 'python3 start_backend.py' to start the server when ready")
-    except KeyboardInterrupt:
-        print("\n👋 Startup cancelled by user")
+
+    if args.check_only:
+        print("✅ Check-only mode completed successfully")
+        return True
+
+    # New default behavior: start automatically to simplify local workflow
+    if args.prompt:
+        try:
+            start_now = input("\n🚀 Start backend server now? (y/N): ").lower().strip()
+            if start_now in ['y', 'yes']:
+                start_backend()
+            else:
+                print("👋 Startup cancelled by user")
+                print("💡 Run 'python3 start_backend.py' to start the server when ready")
+        except KeyboardInterrupt:
+            print("\n👋 Startup cancelled by user")
+    else:
+        print("▶️  Auto-start enabled (use --prompt to ask before starting)")
+        start_backend()
 
 if __name__ == "__main__":
     main()

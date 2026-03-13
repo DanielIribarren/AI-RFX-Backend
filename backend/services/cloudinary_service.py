@@ -25,12 +25,28 @@ def _configure_cloudinary():
     
     try:
         import cloudinary
+
+        cloud_name = os.getenv('CLOUDINARY_CLOUD_NAME')
+        api_key = os.getenv('CLOUDINARY_API_KEY')
+        api_secret = os.getenv('CLOUDINARY_API_SECRET')
+
+        missing = [
+            key for key, value in [
+                ("CLOUDINARY_CLOUD_NAME", cloud_name),
+                ("CLOUDINARY_API_KEY", api_key),
+                ("CLOUDINARY_API_SECRET", api_secret),
+            ] if not value
+        ]
+        if missing:
+            raise ValueError(
+                f"Missing required Cloudinary env vars: {', '.join(missing)}"
+            )
         
         # Configuración desde variables de entorno
         cloudinary.config(
-            cloud_name=os.getenv('CLOUDINARY_CLOUD_NAME', 'dffys3mxv'),
-            api_key=os.getenv('CLOUDINARY_API_KEY', '287712473884852'),
-            api_secret=os.getenv('CLOUDINARY_API_SECRET')
+            cloud_name=cloud_name,
+            api_key=api_key,
+            api_secret=api_secret,
         )
         
         _cloudinary_configured = True
@@ -97,7 +113,7 @@ def upload_logo(user_id: str, logo_file) -> str:
         
     Example:
         url = upload_logo("user-123", logo_file)
-        # Returns: https://res.cloudinary.com/dffys3mxv/image/upload/v123/logos/user-123/logo.png
+        # Returns: https://res.cloudinary.com/<cloud-name>/image/upload/v123/logos/user-123/logo.png
     """
     _configure_cloudinary()
     return _upload_to_cloudinary(user_id, logo_file)
