@@ -15,23 +15,52 @@ import random
 import time
 from datetime import datetime
 
-from backend.services.chat_agent import ChatAgent
-from backend.services.rfx_chat_service import RFXChatService
 from backend.services.rfx_conversation_state_service import RFXConversationStateService
 from backend.services.rfx_processing_session_service import RFXProcessingSessionService
-from backend.services.rfx_processor import RFXProcessorService
-from backend.services.credits_service import get_credits_service
-from backend.models.rfx_models import RFXInput, RFXType
-from backend.models.chat_models import ChatRequest, ChatContext
 from backend.utils.auth_middleware import jwt_required, get_current_user, get_current_user_organization_id
-from backend.core.database import get_database_client
-from backend.utils.rfx_ownership import get_and_validate_rfx_ownership
-from backend.exceptions import InsufficientCreditsError
 
 logger = logging.getLogger(__name__)
 
 # Crear blueprint
 rfx_chat_bp = Blueprint('rfx_chat', __name__, url_prefix='/api/rfx')
+
+
+def _create_chat_agent():
+    """Importar el agente solo cuando un endpoint de chat lo necesita."""
+    from backend.services.chat_agent import ChatAgent
+
+    return ChatAgent()
+
+
+def _create_chat_service():
+    from backend.services.rfx_chat_service import RFXChatService
+
+    return RFXChatService()
+
+
+def _get_credits_service_instance():
+    from backend.services.credits_service import get_credits_service
+
+    return get_credits_service()
+
+
+def _get_database_client_instance():
+    from backend.core.database import get_database_client
+
+    return get_database_client()
+
+
+def _get_rfx_ownership_validator():
+    from backend.utils.rfx_ownership import get_and_validate_rfx_ownership
+
+    return get_and_validate_rfx_ownership
+
+
+def _get_rfx_processing_types():
+    from backend.models.rfx_models import RFXInput, RFXType
+    from backend.services.rfx_processor import RFXProcessorService
+
+    return RFXInput, RFXType, RFXProcessorService
 
 
 def _is_review_phase(conversation_state: dict) -> bool:
@@ -295,8 +324,7 @@ def send_chat_message(rfx_id):
         # 🔒 VALIDAR OWNERSHIP DEL RFX
         organization_id = get_current_user_organization_id()
         
-        from ..core.database import get_database_client
-        db = get_database_client()
+        db = _get_database_client_instance()
         
         rfx = db.get_rfx_by_id(rfx_id)
         if not rfx:
@@ -360,7 +388,7 @@ def send_chat_message(rfx_id):
         in_review_phase = _is_review_phase(conversation_state)
 
         # 💳 VERIFICAR CRÉDITOS DISPONIBLES (chat normal); en review no consume créditos
-        credits_service = get_credits_service()
+        credits_service = _get_credits_service_instance()
         if in_review_phase:
             logger.info(f"✅ Review phase chat for RFX {rfx_id}: credits bypass enabled")
         else:
@@ -393,7 +421,7 @@ def send_chat_message(rfx_id):
         }
         
         # 2. Llamar al agente de IA (ÉL DECIDE TODO)
-        chat_agent = ChatAgent()
+        chat_agent = _create_chat_agent()
         
         # Ejecutar async en sync context
         loop = asyncio.new_event_loop()
@@ -411,7 +439,7 @@ def send_chat_message(rfx_id):
         loop.close()
         
         # 3. Guardar en historial
-        chat_service = RFXChatService()
+        chat_service = _create_chat_service()
         
         # Convertir files a formato serializable (sin bytes)
         files_metadata = [
@@ -556,7 +584,7 @@ def get_chat_history(rfx_id):
     try:
         limit = request.args.get('limit', 20, type=int)  # Default 20 mensajes (10 turnos)
         
-        chat_service = RFXChatService()
+        chat_service = _create_chat_service()
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -597,7 +625,7 @@ def get_review_state(rfx_id):
         user_id = user.get('id') or user.get('sub')
         organization_id = get_current_user_organization_id()
 
-        db = get_database_client()
+        db = _get_database_client_instance()
         rfx = db.get_rfx_by_id(rfx_id)
         if not rfx:
             # Compatibilidad: session_id llegando por endpoint legacy de RFX.
@@ -613,7 +641,7 @@ def get_review_state(rfx_id):
                 )
                 return get_session_review_state(rfx_id)
 
-        _, error = get_and_validate_rfx_ownership(db, rfx_id, user_id, organization_id)
+        _, error = _get_rfx_ownership_validator()(db, rfx_id, user_id, organization_id)
         if error:
             return error
 
@@ -653,7 +681,7 @@ def confirm_review(rfx_id):
         user_id = user.get('id') or user.get('sub')
         organization_id = get_current_user_organization_id()
 
-        db = get_database_client()
+        db = _get_database_client_instance()
         rfx = db.get_rfx_by_id(rfx_id)
         if not rfx:
             # Compatibilidad: session_id llegando por endpoint legacy de RFX.
@@ -669,7 +697,7 @@ def confirm_review(rfx_id):
                 )
                 return confirm_session_review(rfx_id)
 
-        rfx, error = get_and_validate_rfx_ownership(db, rfx_id, user_id, organization_id)
+        rfx, error = _get_rfx_ownership_validator()(db, rfx_id, user_id, organization_id)
         if error:
             return error
 
@@ -763,8 +791,8 @@ def reopen_review(rfx_id):
         user_id = user.get('id') or user.get('sub')
         organization_id = get_current_user_organization_id()
 
-        db = get_database_client()
-        _, error = get_and_validate_rfx_ownership(db, rfx_id, user_id, organization_id)
+        db = _get_database_client_instance()
+        _, error = _get_rfx_ownership_validator()(db, rfx_id, user_id, organization_id)
         if error:
             return error
 
@@ -872,7 +900,7 @@ def send_session_chat_message(session_id):
             "source_text": preview_data.get("source_text", ""),
         }
 
-        chat_agent = ChatAgent()
+        chat_agent = _create_chat_agent()
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         response = loop.run_until_complete(
@@ -1047,6 +1075,7 @@ def confirm_session_review(session_id):
 
         rfx_temp_id = f"RFX-{int(time.time())}-{random.randint(1000, 9999)}"
         rfx_type_raw = str(preview_data.get("rfx_type") or "catering").lower()
+        RFXInput, RFXType, RFXProcessorService = _get_rfx_processing_types()
         try:
             rfx_type = RFXType(rfx_type_raw)
         except Exception:
@@ -1084,7 +1113,7 @@ def confirm_session_review(session_id):
         loop.close()
 
         # Consumir créditos de extracción al confirmar persistencia
-        credits_service = get_credits_service()
+        credits_service = _get_credits_service_instance()
         try:
             consume_result = credits_service.consume_credits(
                 organization_id=organization_id,
@@ -1098,7 +1127,7 @@ def confirm_session_review(session_id):
         except Exception as consume_err:
             logger.error(f"❌ Error consuming extraction credits on confirm: {consume_err}")
 
-        db = get_database_client()
+        db = _get_database_client_instance()
         db.upsert_processing_status(final_rfx_id, {
             "has_extracted_data": True,
             "has_generated_proposal": False,
