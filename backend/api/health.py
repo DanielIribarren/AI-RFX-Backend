@@ -16,7 +16,7 @@ import os
 import logging
 from datetime import datetime
 from typing import Dict, Any
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, current_app
 
 from backend.utils.api_response import success_response, error_response
 from backend.core.database import get_database_client
@@ -366,6 +366,7 @@ def dependencies_check():
     return success_response(
         data={
             "dependencies": dependencies,
+            "optional_components": current_app.extensions.get("optional_components", {}),
             "timestamp": datetime.utcnow().isoformat() + "Z"
         },
         message="Dependencies status retrieved"

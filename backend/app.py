@@ -64,6 +64,33 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _build_optional_component_statuses() -> dict:
+    """Describe optional blueprints/components without crashing startup."""
+    component_sources = {
+        "rfx": rfx_bp,
+        "rfx_chat": rfx_chat_bp,
+        "templates": templates_bp,
+    }
+    component_statuses = {}
+
+    for name, blueprint in component_sources.items():
+        import_error = _optional_import_errors.get(name)
+        if blueprint is not None and import_error is None:
+            component_statuses[name] = {
+                "status": "enabled",
+                "message": "Component loaded successfully",
+            }
+            continue
+
+        component_statuses[name] = {
+            "status": "disabled",
+            "message": str(import_error) if import_error else "Component unavailable",
+            "error_type": type(import_error).__name__ if import_error else None,
+        }
+
+    return component_statuses
+
+
 def create_app(config_name: str = None) -> Flask:
     """
     🏗️ Application Factory - Creates Flask app with proper configuration
@@ -95,6 +122,18 @@ def create_app(config_name: str = None) -> Flask:
          supports_credentials=True,
          expose_headers=["Content-Disposition", "Content-Type"]
     )
+
+    optional_components = _build_optional_component_statuses()
+    app.extensions["optional_components"] = optional_components
+    disabled_components = [
+        name for name, info in optional_components.items()
+        if info.get("status") != "enabled"
+    ]
+    if disabled_components:
+        logger.warning(
+            "⚠️ Optional components disabled at startup: %s",
+            ", ".join(sorted(disabled_components)),
+        )
     
     # Register blueprints
     _register_blueprints(app)
