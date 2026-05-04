@@ -15,6 +15,7 @@ from flask import Blueprint, request, jsonify
 import logging
 from backend.utils.auth_middleware import jwt_required, get_current_user_id, get_current_user_organization_id
 from backend.core.database import get_database_client
+from backend.services.budy_domain_service import is_virtual_business_unit_id
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,11 @@ def _apply_owner_filter(query_builder, owner_field, owner_id):
 
 
 def _validate_business_unit_access(organization_id: str, business_unit_id: str):
+    if is_virtual_business_unit_id(business_unit_id):
+        raise ValueError(
+            "La organización no tiene una business unit persistida. "
+            "Configure el service_role de Supabase antes de importar al catálogo."
+        )
     db = get_database_client()
     response = (
         db.client.table("business_units")

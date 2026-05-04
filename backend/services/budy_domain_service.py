@@ -34,6 +34,15 @@ SALES_STAGES = {
     "cancelled",
 }
 
+VIRTUAL_BUSINESS_UNIT_PREFIX = "virtual-"
+
+
+def is_virtual_business_unit_id(business_unit_id: Optional[str]) -> bool:
+    # Virtual ids (e.g. "virtual-<org-id>") are placeholders returned when the
+    # backend can't persist a real business_units row (RLS / no service_role).
+    # They aren't UUIDs, so forwarding them to Postgres triggers 22P02.
+    return bool(business_unit_id) and business_unit_id.startswith(VIRTUAL_BUSINESS_UNIT_PREFIX)
+
 
 class BudyDomainService:
     """Business operations for the Budy workspace and public proposal flow."""
@@ -130,6 +139,11 @@ class BudyDomainService:
             raise
 
     def _ensure_business_unit_access(self, organization_id: str, business_unit_id: str) -> Dict[str, Any]:
+        if is_virtual_business_unit_id(business_unit_id):
+            raise ValueError(
+                "La organización no tiene una business unit persistida. "
+                "Configure el service_role de Supabase para crear una antes de continuar."
+            )
         response = (
             self.db.client.table("business_units")
             .select("*")
@@ -178,6 +192,8 @@ class BudyDomainService:
         return response.data or []
 
     def list_payment_methods(self, organization_id: str, business_unit_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        if is_virtual_business_unit_id(business_unit_id):
+            business_unit_id = None
         query = (
             self.db.client.table("payment_methods")
             .select("*, business_units(id, name, slug)")
@@ -580,6 +596,8 @@ class BudyDomainService:
     # Catalog items
     # ------------------------------------------------------------------
     def list_catalog_items(self, organization_id: str, business_unit_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        if is_virtual_business_unit_id(business_unit_id):
+            business_unit_id = None
         query = (
             self.db.client.table("catalog_items")
             .select("*, business_units(id, name, slug, industry_context)")
@@ -759,6 +777,8 @@ class BudyDomainService:
         business_unit_id: Optional[str] = None,
         sales_stage: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        if is_virtual_business_unit_id(business_unit_id):
+            business_unit_id = None
         records = self.db.get_rfx_history(
             user_id=user_id,
             organization_id=organization_id,

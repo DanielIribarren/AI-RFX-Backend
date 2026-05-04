@@ -23,6 +23,7 @@ from backend.services.rfx_processor import RFXProcessorService
 from backend.services.rfx_conversation_state_service import RFXConversationStateService
 from backend.services.rfx_processing_session_service import RFXProcessingSessionService
 from backend.services.credits_service import get_credits_service
+from backend.services.budy_domain_service import is_virtual_business_unit_id
 from backend.core.config import get_file_upload_config
 from backend.core.database import get_database_client
 from backend.utils.auth_middleware import jwt_required, get_current_user_id, get_current_user_organization_id
@@ -44,6 +45,12 @@ def _resolve_business_unit_context(organization_id: Optional[str], business_unit
     if not business_unit_id:
         raise BadRequest("business_unit_id is required for organization RFX creation")
 
+    if is_virtual_business_unit_id(business_unit_id):
+        raise BadRequest(
+            "La organización no tiene una business unit persistida. "
+            "Configure el service_role de Supabase antes de crear RFX."
+        )
+
     db = get_database_client()
     response = (
         db.client
@@ -62,7 +69,11 @@ def _resolve_business_unit_context(organization_id: Optional[str], business_unit
 
 def _resolve_rfx_type_for_industry(industry_context: Optional[str]) -> str:
     normalized = str(industry_context or "services").strip().lower()
-    return "catering" if normalized == "corporate_catering" else "services"
+    if normalized == "corporate_catering":
+        return "catering"
+    if normalized in {"construction", "construction_ve"}:
+        return "construction"
+    return "services"
 
 
 def _extract_commercial_status(latest_proposal: Optional[Dict[str, Any]]) -> str:

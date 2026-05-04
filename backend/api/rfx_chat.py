@@ -17,6 +17,7 @@ from datetime import datetime
 
 from backend.services.rfx_conversation_state_service import RFXConversationStateService
 from backend.services.rfx_processing_session_service import RFXProcessingSessionService
+from backend.services.budy_domain_service import is_virtual_business_unit_id
 from backend.utils.auth_middleware import jwt_required, get_current_user, get_current_user_organization_id
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,12 @@ def _resolve_business_unit_context(organization_id: str | None, business_unit_id
 
     if not business_unit_id:
         return None
+
+    if is_virtual_business_unit_id(business_unit_id):
+        raise ValueError(
+            "La organización no tiene una business unit persistida. "
+            "Configure el service_role de Supabase antes de continuar."
+        )
 
     db = _get_database_client_instance()
     response = (

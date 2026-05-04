@@ -5,7 +5,7 @@ os.environ.setdefault("SUPABASE_ANON_KEY", "test-key")
 os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 os.environ.setdefault("SECRET_KEY", "test-secret")
 
-from backend.services.budy_domain_service import BudyDomainService
+from backend.services.budy_domain_service import BudyDomainService, is_virtual_business_unit_id
 import pytest
 
 
@@ -114,6 +114,123 @@ def test_list_opportunities_passes_business_unit_and_stage_filters_to_db():
     assert captured["organization_id"] == "org-1"
     assert captured["business_unit_id"] == "bu-1"
     assert captured["sales_stage"] == "sent"
+
+
+def test_list_opportunities_drops_virtual_business_unit_id_filter():
+    service = BudyDomainService()
+    captured = {}
+
+    class FakeDB:
+        def get_rfx_history(self, **kwargs):
+            captured.update(kwargs)
+            return []
+
+    service.db = FakeDB()  # type: ignore[assignment]
+    service._batch_latest_proposals = lambda _rfx_ids: {}  # type: ignore[assignment]
+    service._map_rfx_to_opportunity = lambda record, _proposal: {"id": record["id"]}  # type: ignore[assignment]
+
+    service.list_opportunities(
+        user_id="user-1",
+        organization_id="org-1",
+        business_unit_id="virtual-org-1",
+    )
+
+    assert captured["business_unit_id"] is None
+
+
+def test_is_virtual_business_unit_id_helper():
+    assert is_virtual_business_unit_id("virtual-abc") is True
+    assert is_virtual_business_unit_id("abc-virtual") is False
+    assert is_virtual_business_unit_id("") is False
+    assert is_virtual_business_unit_id(None) is False
+
+
+def test_list_catalog_items_drops_virtual_business_unit_id_filter():
+    service = BudyDomainService()
+    captured = {"eq_calls": []}
+
+    class FakeQuery:
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, field, value):
+            captured["eq_calls"].append((field, value))
+            return self
+
+        def execute(self):
+            class R:
+                data = []
+            return R()
+
+    class FakeTable:
+        def __call__(self, _name):
+            return FakeQuery()
+
+    class FakeClient:
+        def table(self, name):
+            return FakeQuery()
+
+    class FakeDB:
+        client = FakeClient()
+
+    service.db = FakeDB()  # type: ignore[assignment]
+
+    service.list_catalog_items("org-1", business_unit_id="virtual-org-1")
+
+    eq_fields = [field for field, _ in captured["eq_calls"]]
+    assert "business_unit_id" not in eq_fields
+    assert ("organization_id", "org-1") in captured["eq_calls"]
+
+
+def test_list_payment_methods_drops_virtual_business_unit_id_filter():
+    service = BudyDomainService()
+    captured = {"eq_calls": []}
+
+    class FakeQuery:
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, field, value):
+            captured["eq_calls"].append((field, value))
+            return self
+
+        def execute(self):
+            class R:
+                data = []
+            return R()
+
+    class FakeClient:
+        def table(self, _name):
+            return FakeQuery()
+
+    class FakeDB:
+        client = FakeClient()
+
+    service.db = FakeDB()  # type: ignore[assignment]
+
+    service.list_payment_methods("org-1", business_unit_id="virtual-org-1")
+
+    eq_fields = [field for field, _ in captured["eq_calls"]]
+    assert "business_unit_id" not in eq_fields
+    assert ("organization_id", "org-1") in captured["eq_calls"]
+
+
+def test_ensure_business_unit_access_rejects_virtual_id():
+    service = BudyDomainService()
+
+    class FakeDB:
+        client = None
+
+    service.db = FakeDB()  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="business unit persistida"):
+        service._ensure_business_unit_access("org-1", "virtual-org-1")
 
 
 def test_publish_proposal_rejects_zero_priced_contract():
