@@ -54,6 +54,11 @@ try:
 except Exception as exc:
     templates_bp = None
     _optional_import_errors["templates"] = exc
+try:
+    from backend.api.apu import apu_bp  # APU generator (Venezuelan construction)
+except Exception as exc:
+    apu_bp = None
+    _optional_import_errors["apu"] = exc
 
 from backend.models.rfx_models import RFXResponse
 
@@ -71,6 +76,7 @@ def _build_optional_component_statuses() -> dict:
         "rfx": rfx_bp,
         "rfx_chat": rfx_chat_bp,
         "templates": templates_bp,
+        "apu": apu_bp,
     }
     component_statuses = {}
 
@@ -188,6 +194,13 @@ def _register_blueprints(app: Flask) -> None:
         logger.warning(
             "⚠️ templates blueprint disabled due import error: %s",
             _optional_import_errors.get("templates"),
+        )
+    if apu_bp is not None:
+        app.register_blueprint(apu_bp)  # /api/apu/* — APU generator
+    else:
+        logger.warning(
+            "⚠️ apu blueprint disabled due import error: %s",
+            _optional_import_errors.get("apu"),
         )
     app.register_blueprint(download_bp)
     app.register_blueprint(pricing_bp)
