@@ -44,6 +44,7 @@ env/
 # 📊 IDEs and Editors
 .vscode/
 .idea/
+.windsurf/
 *.swp
 *.swo
 *~
