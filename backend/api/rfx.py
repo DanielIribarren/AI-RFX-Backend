@@ -10,6 +10,7 @@ import logging
 import time
 import random
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from backend.models.rfx_models import (
@@ -28,9 +29,40 @@ from backend.utils.auth_middleware import jwt_required, get_current_user_id, get
 from backend.exceptions import InsufficientCreditsError, ExternalServiceError
 
 logger = logging.getLogger(__name__)
+PREVIEW_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rfx-preview")
 
 # Create blueprint
 rfx_bp = Blueprint("rfx_api", __name__, url_prefix="/api/rfx")
+
+
+def _resolve_business_unit_context(organization_id: Optional[str], business_unit_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not organization_id:
+        if business_unit_id:
+            raise BadRequest("business_unit_id requires an organization")
+        return None
+
+    if not business_unit_id:
+        raise BadRequest("business_unit_id is required for organization RFX creation")
+
+    db = get_database_client()
+    response = (
+        db.client
+        .table("business_units")
+        .select("id, organization_id, name, slug, industry_context, is_default, is_active")
+        .eq("organization_id", organization_id)
+        .eq("id", business_unit_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        raise BadRequest("Invalid business_unit_id for the current organization")
+    return response.data[0]
+
+
+def _resolve_rfx_type_for_industry(industry_context: Optional[str]) -> str:
+    normalized = str(industry_context or "services").strip().lower()
+    return "catering" if normalized == "corporate_catering" else "services"
 
 
 def _extract_commercial_status(latest_proposal: Optional[Dict[str, Any]]) -> str:
@@ -66,6 +98,104 @@ def _resolve_agentic_status(rfx_status: str, latest_proposal: Optional[Dict[str,
     if latest_proposal or str(rfx_status).lower() == "completed":
         return "processed"
     return "in_progress"
+
+
+def _process_preview_session(
+    session_id: str,
+    rfx_input: RFXInput,
+    valid_files: List[Dict[str, Any]],
+    user_id: str,
+    organization_id: Optional[str],
+) -> None:
+    session_service = RFXProcessingSessionService()
+    try:
+        catalog_service = None
+        try:
+            from backend.services.catalog_helpers import get_catalog_search_service_for_rfx
+
+            catalog_service = get_catalog_search_service_for_rfx()
+            logger.info("🛒 Catalog service initialized for async preview processing")
+        except Exception as e:
+            logger.warning(f"⚠️ Catalog service not available during async preview processing: {e}")
+
+        processor_service = RFXProcessorService(catalog_search_service=catalog_service)
+        preview_result = processor_service.process_rfx_case_preview(
+            rfx_input,
+            valid_files,
+            user_id=user_id,
+            organization_id=organization_id,
+        )
+        preview_data = preview_result.get("preview_data") or {}
+        validated_data = preview_result.get("validated_data") or {}
+        evaluation_metadata = preview_result.get("evaluation_metadata") or {}
+        kickoff_message = session_service._build_first_message(preview_data)
+
+        session_service.update_session(
+            session_id,
+            {
+                "status": "clarification",
+                "preview_data": preview_data,
+                "validated_data": validated_data,
+                "evaluation_metadata": evaluation_metadata,
+                "conversation_state": {
+                    "workflow_status": "extracted_pending_review",
+                    "review_required": True,
+                    "review_confirmed": False,
+                    "can_proceed_without_answers": True,
+                    "suggested_first_message": kickoff_message,
+                },
+                "recent_events": [
+                    {
+                        "role": "assistant",
+                        "message": kickoff_message,
+                        "payload": {"event_type": "review_kickoff"},
+                        "created_at": datetime.utcnow().isoformat(),
+                    }
+                ],
+            },
+        )
+        logger.info("✅ Async preview session ready for review: %s", session_id)
+    except Exception as exc:
+        logger.error("❌ Async preview processing failed for session %s: %s", session_id, exc, exc_info=True)
+        session_service.update_session(
+            session_id,
+            {
+                "status": "clarification",
+                "conversation_state": {
+                    "workflow_status": "preview_failed",
+                    "review_required": True,
+                    "review_confirmed": False,
+                    "can_proceed_without_answers": False,
+                    "suggested_first_message": (
+                        "We could not finish extracting this request automatically. "
+                        "Refresh the review or retry the upload."
+                    ),
+                },
+            },
+        )
+        session_service.append_event(
+            session_id=session_id,
+            role="system",
+            message="Preview processing failed. Please retry the upload or refresh the review state.",
+            payload={"event_type": "preview_failed", "error": str(exc)},
+        )
+
+
+def _submit_preview_processing(
+    session_id: str,
+    rfx_input: RFXInput,
+    valid_files: List[Dict[str, Any]],
+    user_id: str,
+    organization_id: Optional[str],
+):
+    return PREVIEW_EXECUTOR.submit(
+        _process_preview_session,
+        session_id,
+        rfx_input,
+        valid_files,
+        user_id,
+        organization_id,
+    )
 
 
 
@@ -198,29 +328,39 @@ def process_rfx():
         if total_size > getattr(upload_config, "max_total_size", 32*1024*1024):
             return jsonify({"status":"error","message":"Total upload too large. Maximum total size: 32MB","error":"Total size exceeded"}), 413
         
-        # 🆔 Generar ID y configuración RFX
-        rfx_id = request.form.get('id', f"RFX-{int(time.time())}-{random.randint(1000, 9999)}")
-        tipo_rfx = request.form.get('tipo_rfx', 'catering')
-        
-        # 🔒 USAR user_id del token JWT (YA OBTENIDO ARRIBA)
-        # No necesitamos obtenerlo del request.form, viene del token autenticado
-        logger.info(f"✅ Using authenticated user_id: {current_user_id}")
-        
-        rfx_input = RFXInput(id=rfx_id, rfx_type=RFXType(tipo_rfx))
-
-        logger.info(f"🚀 Starting RFX processing: {rfx_id} (type: {tipo_rfx})")
-        logger.info(f"📊 Processing summary: {len(valid_files)} files, total_size: {total_size} bytes")
-        logger.info(f"👤 Processing for user: {current_user_id}")
-
         # 💳 VERIFICAR CRÉDITOS DISPONIBLES
         # Usuario puede estar en organización O ser usuario personal
         organization_id = get_current_user_organization_id()  # Puede ser None
         
         logger.info(f"🔍 User context - org_id: {organization_id}, user_id: {current_user_id}")
         
-        credits_service = get_credits_service()
-        db = get_database_client()
+        # 🆔 Generar ID y configuración RFX
+        rfx_id = request.form.get('id', f"RFX-{int(time.time())}-{random.randint(1000, 9999)}")
+        business_unit_id = (request.form.get("business_unit_id") or "").strip() or None
+        business_unit = _resolve_business_unit_context(organization_id, business_unit_id)
+        industry_context = (business_unit or {}).get("industry_context") or "services"
+        requested_rfx_type = (request.form.get('tipo_rfx') or '').strip()
+        tipo_rfx = (
+            _resolve_rfx_type_for_industry(industry_context)
+            if business_unit_id
+            else (requested_rfx_type or _resolve_rfx_type_for_industry(industry_context))
+        )
         
+        # 🔒 USAR user_id del token JWT (YA OBTENIDO ARRIBA)
+        logger.info(f"✅ Using authenticated user_id: {current_user_id}")
+        
+        rfx_input = RFXInput(
+            id=rfx_id,
+            rfx_type=RFXType(tipo_rfx),
+            business_unit_id=business_unit_id,
+            industry_context=industry_context,
+        )
+
+        logger.info(f"🚀 Starting RFX processing: {rfx_id} (type: {tipo_rfx}, industry_context: {industry_context})")
+        logger.info(f"📊 Processing summary: {len(valid_files)} files, total_size: {total_size} bytes")
+        logger.info(f"👤 Processing for user: {current_user_id}")
+        
+        credits_service = get_credits_service()
         # Verificar créditos según contexto del usuario
         has_credits, available, msg = credits_service.check_credits_available(
             organization_id,  # None para usuarios personales
@@ -242,53 +382,59 @@ def process_rfx():
         context = "organization" if organization_id else "personal"
         logger.info(f"✅ Credits verified ({context}): {available} available")
 
-        # 🛒 Inicializar servicio de catálogo (opcional)
-        catalog_service = None
-        try:
-            from backend.services.catalog_helpers import get_catalog_search_service_for_rfx
-            catalog_service = get_catalog_search_service_for_rfx()
-            logger.info("🛒 Catalog service initialized - products will be enriched")
-        except Exception as e:
-            logger.warning(f"⚠️ Catalog service not available: {e}")
-
-        # 🔒 Pipeline único: extracción/resolución para preview (sin persistir rfx_v2 aún)
-        processor_service = RFXProcessorService(catalog_search_service=catalog_service)
-        preview_result = processor_service.process_rfx_case_preview(
-            rfx_input,
-            valid_files,
-            user_id=current_user_id,
-            organization_id=organization_id
-        )
-        preview_data = preview_result.get("preview_data") or {}
-        validated_data = preview_result.get("validated_data") or {}
-        evaluation_metadata = preview_result.get("evaluation_metadata") or {}
-
         session_service = RFXProcessingSessionService()
         session_record = session_service.create_session(
             user_id=current_user_id,
             organization_id=organization_id,
-            preview_data=preview_data,
-            validated_data=validated_data,
-            evaluation_metadata=evaluation_metadata,
+            preview_data={},
+            validated_data={},
+            evaluation_metadata={},
+            status="active",
+            conversation_state={
+                "workflow_status": "processing_preview",
+                "review_required": True,
+                "review_confirmed": False,
+                "can_proceed_without_answers": False,
+                "suggested_first_message": (
+                    "We received your request and started the extraction preview. "
+                    "You can stay on this review while we finish the analysis."
+                ),
+            },
         )
         session_id = str(session_record.get("id"))
 
-        logger.info(f"✅ Preview session created: {session_id} (no final RFX persisted yet)")
+        _submit_preview_processing(
+            session_id,
+            rfx_input,
+            valid_files,
+            current_user_id,
+            organization_id,
+        )
+
+        logger.info(f"✅ Preview session created and processing in background: {session_id}")
 
         return jsonify({
             "status": "success",
-            "message": "Extracción completada. Revisión conversacional requerida antes de crear el RFX final.",
+            "message": "Preview started. Review will unlock automatically when extraction is ready.",
             "entity_type": "session",
             "session_id": session_id,
             "data": {
-                **preview_data,
                 "id": session_id,
+                "business_unit_id": business_unit_id,
+                "industry_context": industry_context,
             },
             "review_required": True,
-            "workflow_status": "extracted_pending_review",
+            "workflow_status": "processing_preview",
             "next_step": "review_chat",
-            "can_proceed_without_answers": True,
+            "can_proceed_without_answers": False,
         }), 200
+    except BadRequest as e:
+        logger.error(f"❌ Invalid RFX request: {e.description}")
+        return jsonify({
+            "status": "error",
+            "message": e.description,
+            "error": "bad_request",
+        }), 400
     except ExternalServiceError as e:
         logger.error(f"❌ External service error processing RFX: {e}")
         return jsonify({

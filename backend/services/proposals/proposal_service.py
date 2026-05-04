@@ -122,6 +122,7 @@ class ProposalService:
             
             # PASO 4: Obtener branding del usuario
             branding = user_branding_service.get_branding_with_analysis(user_id)
+            company_info = self._resolve_company_info(rfx_data)
             
             # PASO 5: Construir prompt según branding
             if branding:
@@ -136,12 +137,13 @@ class ProposalService:
                     products_formatted=products_formatted,
                     pricing_data=pricing_data,
                     branding=branding,
+                    company_info=company_info,
                     user_id=user_id
                 )
             else:
                 logger.info("🎨 Using default branding")
                 prompt = self._build_prompt_default(
-                    rfx_data, products_formatted, pricing_data
+                    rfx_data, products_formatted, pricing_data, company_info
                 )
             
             # PASO 6: Generar HTML con AI (con retry automático)
@@ -188,6 +190,59 @@ class ProposalService:
         except Exception as e:
             logger.error(f"❌ Error getting RFX data: {e}")
             return None
+
+    def _get_business_unit(self, business_unit_id: Optional[str]) -> Dict[str, Any]:
+        if not business_unit_id:
+            return {}
+        try:
+            result = self.db.client.table('business_units')\
+                .select('*')\
+                .eq('id', business_unit_id)\
+                .limit(1)\
+                .execute()
+            return result.data[0] if result.data else {}
+        except Exception as e:
+            logger.warning(f"⚠️ Could not load business unit context for proposal generation: {e}")
+            return {}
+
+    def _resolve_company_info(self, rfx_data: Dict[str, Any]) -> Dict[str, str]:
+        organization_id = rfx_data.get('organization_id')
+        business_unit_id = rfx_data.get('business_unit_id')
+
+        organization = self.db.get_organization(organization_id) if organization_id else {}
+        business_unit = self._get_business_unit(business_unit_id)
+        business_unit_metadata = business_unit.get('metadata') or {}
+        if not isinstance(business_unit_metadata, dict):
+            business_unit_metadata = {}
+
+        company_name = (
+            business_unit.get('brand_name')
+            or business_unit.get('name')
+            or organization.get('name')
+            or 'Your Company'
+        )
+        company_email = (
+            business_unit.get('support_email')
+            or organization.get('billing_email')
+            or ''
+        )
+        company_phone = (
+            business_unit.get('support_phone')
+            or organization.get('phone')
+            or ''
+        )
+        company_address = (
+            business_unit_metadata.get('address')
+            or organization.get('address')
+            or 'Address available upon request'
+        )
+
+        return {
+            'name': company_name,
+            'address': company_address,
+            'phone': company_phone,
+            'email': company_email,
+        }
     
     def _format_products(self, products: List[Dict[str, Any]]) -> str:
         """
@@ -294,6 +349,7 @@ class ProposalService:
         products_formatted: str,
         pricing_data: Dict[str, Any],
         branding: Dict[str, Any],
+        company_info: Dict[str, str],
         user_id: str
     ) -> str:
         """Construye prompt con branding personalizado."""
@@ -309,14 +365,6 @@ class ProposalService:
         
         # Logo endpoint
         logo_endpoint = f"/api/branding/files/{user_id}/logo"
-        
-        # Información de la empresa
-        company_info = {
-            'name': 'Sabra Corporation',
-            'address': 'Dirección de la empresa',
-            'phone': '+1 (555) 123-4567',
-            'email': 'contacto@sabracorp.com'
-        }
         
         # Parse JSON strings si es necesario
         import json
@@ -384,7 +432,8 @@ class ProposalService:
         self,
         rfx_data: Dict[str, Any],
         products_formatted: str,
-        pricing_data: Dict[str, Any]
+        pricing_data: Dict[str, Any],
+        company_info: Dict[str, str],
     ) -> str:
         """Construye prompt con branding por defecto."""
         
@@ -394,14 +443,6 @@ class ProposalService:
             'solicitud': rfx_data.get('description', rfx_data.get('title', 'Solicitud de presupuesto')),
             'current_date': datetime.now().strftime('%Y-%m-%d'),
             'products': products_formatted
-        }
-        
-        # Información de la empresa
-        company_info = {
-            'name': 'Sabra Corporation',
-            'address': 'Dirección de la empresa',
-            'phone': '+1 (555) 123-4567',
-            'email': 'contacto@sabracorp.com'
         }
         
         return ProposalPrompts.get_prompt_default(

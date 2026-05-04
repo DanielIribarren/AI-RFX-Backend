@@ -61,7 +61,14 @@ class FunctionCallingRFXExtractor:
         if debug_mode:
             logger.debug(f"🔍 Debug mode ACTIVE - detailed logging enabled")
     
-    def extract_rfx_data(self, document_text: str, max_retries: int = 5) -> Dict[str, Any]:
+    def extract_rfx_data(
+        self,
+        document_text: str,
+        max_retries: int = 5,
+        *,
+        industry_context: Optional[str] = None,
+        extraction_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Extraer datos de RFX usando function calling
         
@@ -85,7 +92,11 @@ class FunctionCallingRFXExtractor:
             
             # Preparar prompt optimizado para function calling
             system_prompt = self._get_system_prompt()
-            user_prompt = self._get_user_prompt(document_text)
+            user_prompt = self._get_user_prompt(
+                document_text,
+                industry_context=industry_context,
+                extraction_context=extraction_context,
+            )
             
             # Log información de entrada
             logger.info(f"🚀 Starting function calling extraction")
@@ -620,15 +631,28 @@ TAKEAWAY: Cantidades exactas + costos precisos + matching perfecto.
         
         return intro
     
-    def _get_user_prompt(self, document_text: str) -> str:
+    def _get_user_prompt(
+        self,
+        document_text: str,
+        *,
+        industry_context: Optional[str] = None,
+        extraction_context: Optional[str] = None,
+    ) -> str:
         """User prompt para function calling con instrucciones específicas para costos unitarios"""
         # Detectar si hay múltiples documentos
         has_multiple_docs = "### SOURCE:" in document_text
         doc_count = document_text.count("### SOURCE:")
+        normalized_context = str(industry_context or "services").strip().lower()
+        resolved_extraction_context = str(extraction_context or "professional services requests").strip()
         
         intro = f"""Analiza el siguiente documento RFX y extrae toda la información utilizando la función extract_rfx_data.
 
 {'⚠️ ATENCIÓN: Tienes ' + str(doc_count) + ' DOCUMENTOS DIFERENTES separados por "### SOURCE:". Analiza TODOS antes de extraer.' if has_multiple_docs else ''}
+
+CONTEXTO DE NEGOCIO ACTIVO:
+- industry_context = {normalized_context}
+- Trata este documento como: {resolved_extraction_context}
+- No lo interpretes como catering a menos que el contenido lo confirme explícitamente o el industry_context sea corporate_catering.
 
 DOCUMENTO(S) A ANALIZAR:
 {document_text}

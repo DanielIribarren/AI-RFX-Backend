@@ -11,6 +11,7 @@ import logging
 import time
 import threading
 from functools import wraps
+from urllib.parse import urlparse, unquote
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +91,15 @@ class DatabaseClient:
         """Get or create Supabase client instance"""
         if self._client is None:
             try:
+                api_key = self._config.service_role_key or self._config.anon_key
                 self._client = create_client(
                     self._config.url,
-                    self._config.anon_key
+                    api_key
                 )
-                logger.info("✅ Database client connected successfully")
+                logger.info(
+                    "✅ Database client connected successfully (%s)",
+                    "service_role" if self._config.service_role_key else "anon",
+                )
             except Exception as e:
                 logger.error(f"❌ Failed to connect to database: {e}")
                 raise
@@ -272,7 +277,9 @@ class DatabaseClient:
         user_id: str,
         organization_id: Optional[str] = None,
         limit: int = 50, 
-        offset: int = 0
+        offset: int = 0,
+        business_unit_id: Optional[str] = None,
+        sales_stage: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Get RFX history with pagination and data isolation.
@@ -307,6 +314,11 @@ class DatabaseClient:
                 # Usuario personal - ver SOLO sus RFX personales
                 logger.info(f"🔍 Filtering RFX by user (personal): {user_id}")
                 query = query.eq("user_id", user_id).is_("organization_id", "null")
+
+            if business_unit_id:
+                query = query.eq("business_unit_id", business_unit_id)
+            if sales_stage:
+                query = query.eq("sales_stage", sales_stage)
             
             response = query.order("created_at", desc=True)\
                 .range(offset, offset + limit - 1)\
@@ -763,6 +775,7 @@ class DatabaseClient:
         logger.debug(f"🔄 Mapped document data: {list(field_mapping.keys())} -> {list(mapped_data.keys())}")
         return mapped_data
     
+    @retry_on_connection_error(max_retries=3, initial_delay=0.3, backoff_factor=2.0)
     def get_document_by_id(self, doc_id: Union[str, UUID]) -> Optional[Dict[str, Any]]:
         """Get generated document by ID"""
         try:
@@ -778,6 +791,7 @@ class DatabaseClient:
             logger.error(f"❌ Failed to get document {doc_id}: {e}")
             raise
     
+    @retry_on_connection_error(max_retries=3, initial_delay=0.3, backoff_factor=2.0)
     def get_proposals_by_rfx_id(self, rfx_id: Union[str, UUID]) -> List[Dict[str, Any]]:
         """Get all proposals for a specific RFX"""
         try:
@@ -927,7 +941,14 @@ class DatabaseClient:
     # STORAGE OPERATIONS
     # ========================
     
-    def upload_file_to_storage(self, bucket: str, file_path: str, file_data: bytes) -> str:
+    def upload_file_to_storage(
+        self,
+        bucket: str,
+        file_path: str,
+        file_data: bytes,
+        *,
+        content_type: str = "application/pdf",
+    ) -> str:
         """Upload file to Supabase storage"""
         try:
             # Create bucket if it doesn't exist
@@ -940,16 +961,58 @@ class DatabaseClient:
             response = self.client.storage.from_(bucket).upload(
                 file_path, 
                 file_data,
-                {"content-type": "application/pdf"}
+                {"content-type": content_type}
             )
             
             # Get public URL
             public_url = self.client.storage.from_(bucket).get_public_url(file_path)
+            if isinstance(public_url, str):
+                public_url = public_url.rstrip("?")
             logger.info(f"✅ File uploaded to storage: {file_path}")
             return public_url
             
         except Exception as e:
             logger.error(f"❌ Failed to upload file to storage: {e}")
+            raise
+
+    def extract_storage_path_from_url(self, bucket: str, storage_url: Optional[str]) -> Optional[str]:
+        """Extract the bucket-relative object path from a Supabase storage URL or storage reference."""
+        if not storage_url or not isinstance(storage_url, str):
+            return None
+
+        if storage_url.startswith("storage://"):
+            prefix = f"storage://{bucket}/"
+            if storage_url.startswith(prefix):
+                return storage_url[len(prefix):]
+            return None
+
+        if storage_url.startswith(f"{bucket}/"):
+            return storage_url[len(bucket) + 1 :]
+
+        parsed = urlparse(storage_url)
+        path = parsed.path or ""
+        prefixes = [
+            f"/storage/v1/object/public/{bucket}/",
+            f"/storage/v1/object/sign/{bucket}/",
+            f"/storage/v1/render/image/public/{bucket}/",
+            f"/storage/v1/render/image/sign/{bucket}/",
+        ]
+        for prefix in prefixes:
+            if path.startswith(prefix):
+                return unquote(path[len(prefix):])
+        return None
+
+    def create_signed_storage_url(self, bucket: str, file_path: str, expires_in: int = 3600) -> str:
+        """Create a signed URL for a private object in Supabase storage."""
+        try:
+            response = self.client.storage.from_(bucket).create_signed_url(file_path, expires_in)
+            if isinstance(response, dict):
+                signed_url = response.get("signedURL") or response.get("signedUrl")
+                if isinstance(signed_url, str) and signed_url:
+                    return signed_url
+            raise RuntimeError("Signed URL was not returned by storage provider")
+        except Exception as e:
+            logger.error(f"❌ Failed to create signed URL for {bucket}/{file_path}: {e}")
             raise
     
     # ========================

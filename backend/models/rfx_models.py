@@ -188,6 +188,8 @@ class RFXInput(BaseModel):
     rfx_type: RFXType = RFXType.CATERING
     pdf_url: Optional[str] = None
     extracted_content: Optional[str] = None
+    business_unit_id: Optional[str] = None
+    industry_context: Optional[str] = None
     # 🆕 MVP: Campo opcional para requirements específicos del cliente
     requirements: Optional[str] = Field(None, max_length=2000, description="Specific client requirements or instructions")
 

@@ -135,6 +135,7 @@ class FeatureFlags:
             "function_calling": FeatureFlags.function_calling_enabled(),
             "json_mode_fallback": FeatureFlags.json_mode_fallback_enabled(),
             "rfx_llm_orchestrator": FeatureFlags.rfx_llm_orchestrator_enabled(),
+            "budy_workspace": FeatureFlags.budy_workspace_enabled(),
         }
 
     @staticmethod
@@ -152,3 +153,27 @@ class FeatureFlags:
             FeatureFlags.meta_prompting_enabled() or 
             FeatureFlags.vertical_agent_enabled()
         )
+
+    @staticmethod
+    def budy_workspace_enabled() -> bool:
+        """
+        Check if the Budy workspace rollout is enabled.
+
+        Defaults to true because the APP-Sabra repo is the Budy migration target.
+        """
+        import os
+        return os.getenv("ENABLE_BUDY_WORKSPACE", "true").lower() == "true"
+
+    @staticmethod
+    def budy_allowed_org_slugs() -> set[str]:
+        """
+        Organizations allowed to see the Budy workspace.
+
+        Empty set means "all organizations" while keeping the feature flag on.
+        """
+        import os
+
+        raw = os.getenv("BUDY_ALLOWED_ORG_SLUGS", "sabra,sabra-corporation").strip()
+        if not raw:
+            return set()
+        return {slug.strip().lower() for slug in raw.split(",") if slug.strip()}

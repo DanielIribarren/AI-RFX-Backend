@@ -35,6 +35,10 @@ class RFXProcessingSessionService:
         preview_data: Dict[str, Any],
         validated_data: Dict[str, Any],
         evaluation_metadata: Optional[Dict[str, Any]] = None,
+        *,
+        status: str = "clarification",
+        conversation_state: Optional[Dict[str, Any]] = None,
+        recent_events: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         session_id = str(uuid4())
         now = datetime.utcnow()
@@ -44,31 +48,45 @@ class RFXProcessingSessionService:
             "review_required": True,
             "review_confirmed": False,
             "can_proceed_without_answers": True,
-            "suggested_first_message": self._build_first_message(preview_data),
         }
+        state.update(conversation_state or {})
 
         preview_copy = dict(preview_data or {})
-        preview_copy["products"] = self._ensure_preview_product_ids(preview_copy.get("products") or [])
+        if preview_copy.get("products"):
+            preview_copy["products"] = self._ensure_preview_product_ids(preview_copy.get("products") or [])
 
-        payload = {
-            "id": session_id,
-            "user_id": user_id,
-            "organization_id": organization_id,
-            "status": "clarification",
-            "review_required": True,
-            "review_confirmed": False,
-            "preview_data": preview_copy,
-            "validated_data": validated_data or {},
-            "evaluation_metadata": evaluation_metadata or {},
-            "conversation_state": state,
-            "recent_events": [
+        if not state.get("suggested_first_message"):
+            if preview_copy:
+                state["suggested_first_message"] = self._build_first_message(preview_copy)
+            else:
+                state["suggested_first_message"] = (
+                    "We received your request and are preparing the extraction preview. "
+                    "This usually takes a few seconds."
+                )
+
+        initial_events = list(recent_events or [])
+        if not initial_events:
+            initial_events = [
                 {
                     "role": "assistant",
                     "message": state["suggested_first_message"],
                     "payload": {"event_type": "review_kickoff"},
                     "created_at": now.isoformat(),
                 }
-            ],
+            ]
+
+        payload = {
+            "id": session_id,
+            "user_id": user_id,
+            "organization_id": organization_id,
+            "status": status,
+            "review_required": True,
+            "review_confirmed": False,
+            "preview_data": preview_copy,
+            "validated_data": validated_data or {},
+            "evaluation_metadata": evaluation_metadata or {},
+            "conversation_state": state,
+            "recent_events": initial_events,
             "expires_at": expires_at.isoformat(),
         }
 
@@ -202,10 +220,10 @@ class RFXProcessingSessionService:
         product_preview = ", ".join(names) if names else "sin productos claros"
 
         return (
-            f"Identifiqué una solicitud para {requester_name}. "
-            f"Contexto preliminar: entrega {delivery_date} en {location}. "
-            f"Productos detectados: {product_preview}. "
-            f"Confírmame si esto es correcto o indícame ajustes antes de continuar."
+            f"I identified a request for {requester_name}. "
+            f"Preliminary context: delivery on {delivery_date} in {location}. "
+            f"Detected products: {product_preview}. "
+            f"Confirm whether this looks correct or tell me what should change before we continue."
         )
 
     def _ensure_preview_product_ids(self, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

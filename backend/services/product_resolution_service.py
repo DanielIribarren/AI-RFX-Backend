@@ -84,6 +84,7 @@ class ProductResolutionService:
                 orchestrated_items=items,
                 organization_id=organization_id,
                 user_id=user_id,
+                rfx_context=rfx_context,
             )
 
             return self._apply_hybrid_bundle_inference(normalized, organization_id, user_id, rfx_context)
@@ -109,6 +110,7 @@ class ProductResolutionService:
             return []
 
         rfx_context = rfx_context or {}
+        business_unit_id = str(rfx_context.get("business_unit_id") or "").strip() or None
         resolved: List[Dict[str, Any]] = []
 
         for product in products:
@@ -138,9 +140,11 @@ class ProductResolutionService:
         orchestrated_items: List[Dict[str, Any]],
         organization_id: Optional[str],
         user_id: Optional[str],
+        rfx_context: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         normalized_products: List[Dict[str, Any]] = []
         clarifications = 0
+        business_unit_id = str((rfx_context or {}).get("business_unit_id") or "").strip() or None
 
         for idx, original in enumerate(original_products):
             item = orchestrated_items[idx] if idx < len(orchestrated_items) else {}
@@ -161,6 +165,7 @@ class ProductResolutionService:
                         query=product_name,
                         organization_id=organization_id,
                         user_id=user_id,
+                        business_unit_id=business_unit_id,
                         max_variants=5,
                     )
                     if variants:
@@ -263,6 +268,7 @@ class ProductResolutionService:
                 breakdown=provided_breakdown,
                 organization_id=organization_id,
                 user_id=user_id,
+                business_unit_id=str((rfx_context or {}).get("business_unit_id") or "").strip() or None,
             )
 
         catalog_variant: Optional[Dict[str, Any]] = None
@@ -481,6 +487,7 @@ class ProductResolutionService:
         if len(products) < 2:
             return products
 
+        business_unit_id = str((rfx_context or {}).get("business_unit_id") or "").strip() or None
         parent_variant = None
         if self.catalog_search:
             parent_queries = [
@@ -496,6 +503,7 @@ class ProductResolutionService:
                         query=query,
                         organization_id=organization_id,
                         user_id=user_id,
+                        business_unit_id=business_unit_id,
                         max_variants=3,
                     )
                     if variants:
@@ -787,6 +795,7 @@ class ProductResolutionService:
         breakdown: List[Dict[str, Any]],
         organization_id: Optional[str],
         user_id: Optional[str],
+        business_unit_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         if not breakdown:
             return []
@@ -816,6 +825,7 @@ class ProductResolutionService:
                         query=name,
                         organization_id=organization_id,
                         user_id=user_id,
+                        business_unit_id=business_unit_id,
                         max_variants=3,
                     )
                 except Exception:

@@ -46,6 +46,78 @@ def _apply_owner_filter(query_builder, owner_field, owner_id):
     return query_builder
 
 
+def _validate_business_unit_access(organization_id: str, business_unit_id: str):
+    db = get_database_client()
+    response = (
+        db.client.table("business_units")
+        .select("id")
+        .eq("organization_id", organization_id)
+        .eq("id", business_unit_id)
+        .eq("is_active", True)
+        .limit(1)
+        .execute()
+    )
+    if not response.data:
+        raise ValueError("Invalid business_unit_id for the current organization")
+
+
+def _get_catalog_scope_context():
+    organization_id = get_current_user_organization_id()
+    user_id = get_current_user_id()
+    payload = request.get_json(silent=True) or {}
+
+    scope = str(
+        request.args.get("scope")
+        or request.form.get("scope")
+        or payload.get("scope")
+        or ("business_unit" if organization_id else "personal")
+    ).strip().lower()
+    business_unit_id = str(
+        request.args.get("business_unit_id")
+        or request.form.get("business_unit_id")
+        or payload.get("business_unit_id")
+        or ""
+    ).strip() or None
+
+    if organization_id:
+        if scope not in {"business_unit", "shared"}:
+            raise ValueError("scope must be 'business_unit' or 'shared'")
+        if scope == "business_unit":
+            if not business_unit_id:
+                raise ValueError("business_unit_id is required when scope is 'business_unit'")
+            _validate_business_unit_access(organization_id, business_unit_id)
+        return {
+            "organization_id": organization_id,
+            "user_id": user_id,
+            "scope": scope,
+            "business_unit_id": business_unit_id if scope == "business_unit" else None,
+        }
+
+    return {
+        "organization_id": None,
+        "user_id": user_id,
+        "scope": "personal",
+        "business_unit_id": None,
+    }
+
+
+def _apply_catalog_scope_filter(query_builder, scope_context, *, include_shared: bool = False):
+    organization_id = scope_context["organization_id"]
+    user_id = scope_context["user_id"]
+    scope = scope_context["scope"]
+    business_unit_id = scope_context["business_unit_id"]
+
+    if organization_id:
+        query_builder = query_builder.eq("organization_id", organization_id)
+        if scope == "shared":
+            return query_builder.is_("business_unit_id", "null")
+        if include_shared:
+            return query_builder.or_(f"business_unit_id.eq.{business_unit_id},business_unit_id.is.null")
+        return query_builder.eq("business_unit_id", business_unit_id)
+
+    return query_builder.eq("user_id", user_id).is_("organization_id", "null")
+
+
 @catalog_bp.route('/import', methods=['POST'])
 @jwt_required
 def import_catalog():
@@ -58,6 +130,7 @@ def import_catalog():
     try:
         user_id = get_current_user_id()
         organization_id = get_current_user_organization_id()
+        scope_context = _get_catalog_scope_context()
         
         if 'file' not in request.files:
             return jsonify({
@@ -105,7 +178,13 @@ def import_catalog():
         import_service = CatalogImportService(db, openai_client, redis_client)
         
         # Importar catálogo con AI mapping
-        result = import_service.import_catalog(file, organization_id, user_id)
+        result = import_service.import_catalog(
+            file,
+            organization_id=organization_id,
+            user_id=user_id,
+            scope=scope_context["scope"],
+            business_unit_id=scope_context["business_unit_id"],
+        )
         
         return jsonify(result), 200
         
@@ -140,8 +219,9 @@ def add_product():
     """
     
     try:
-        owner_field, owner_id, user_id = _get_catalog_owner()
+        scope_context = _get_catalog_scope_context()
         organization_id = get_current_user_organization_id()
+        user_id = get_current_user_id()
         
         data = request.get_json()
         if not data or not data.get('product_name', '').strip():
@@ -189,6 +269,8 @@ def add_product():
         # Solo agregar organization_id si existe (usuarios personales no tienen)
         if organization_id:
             new_product['organization_id'] = organization_id
+            new_product['user_id'] = None
+            new_product['business_unit_id'] = scope_context["business_unit_id"] if scope_context["scope"] == "business_unit" else None
         
         result = db.client.table('product_catalog')\
             .insert(new_product)\
@@ -201,7 +283,8 @@ def add_product():
             }), 500
         
         created = result.data[0]
-        logger.info(f"✅ Product created: {product_name} ({owner_field}: {owner_id})")
+        owner_label = organization_id or user_id
+        logger.info(f"✅ Product created: {product_name} (owner: {owner_label})")
         
         return jsonify({
             'status': 'success',
@@ -209,6 +292,12 @@ def add_product():
             'product': created
         }), 201
         
+    except ValueError as e:
+        logger.error(f"❌ Add product validation failed: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 400
     except Exception as e:
         logger.error(f"❌ Add product failed: {e}", exc_info=True)
         return jsonify({
@@ -230,6 +319,7 @@ def list_products():
         from backend.core.database import get_database_client
         
         owner_field, owner_id, user_id = _get_catalog_owner()
+        scope_context = _get_catalog_scope_context()
         
         page = int(request.args.get('page', 1))
         page_size = min(int(request.args.get('page_size', 50)), 100)
@@ -243,8 +333,8 @@ def list_products():
         if search:
             # Para búsqueda con texto, usar query builder con filtro de owner
             q = db.client.table('product_catalog')\
-                .select('id, product_name, product_code, unit_cost, unit_price, unit, created_at')
-            q = _apply_owner_filter(q, owner_field, owner_id)
+                .select('id, product_name, product_code, unit_cost, unit_price, unit, created_at, business_unit_id')
+            q = _apply_catalog_scope_filter(q, scope_context, include_shared=True)
             products_response = q\
                 .eq('is_active', True)\
                 .or_(f'product_name.ilike.%{search}%,product_code.ilike.%{search}%')\
@@ -254,7 +344,7 @@ def list_products():
             
             cq = db.client.table('product_catalog')\
                 .select('id', count='exact')
-            cq = _apply_owner_filter(cq, owner_field, owner_id)
+            cq = _apply_catalog_scope_filter(cq, scope_context, include_shared=True)
             count_response = cq\
                 .eq('is_active', True)\
                 .or_(f'product_name.ilike.%{search}%,product_code.ilike.%{search}%')\
@@ -262,8 +352,8 @@ def list_products():
         else:
             # Sin búsqueda
             q = db.client.table('product_catalog')\
-                .select('id, product_name, product_code, unit_cost, unit_price, unit, created_at')
-            q = _apply_owner_filter(q, owner_field, owner_id)
+                .select('id, product_name, product_code, unit_cost, unit_price, unit, created_at, business_unit_id')
+            q = _apply_catalog_scope_filter(q, scope_context, include_shared=True)
             products_response = q\
                 .eq('is_active', True)\
                 .order('product_name')\
@@ -272,7 +362,7 @@ def list_products():
             
             cq = db.client.table('product_catalog')\
                 .select('id', count='exact')
-            cq = _apply_owner_filter(cq, owner_field, owner_id)
+            cq = _apply_catalog_scope_filter(cq, scope_context, include_shared=True)
             count_response = cq\
                 .eq('is_active', True)\
                 .execute()
@@ -288,6 +378,12 @@ def list_products():
             'total_pages': (total + page_size - 1) // page_size
         }), 200
         
+    except ValueError as e:
+        logger.error(f"❌ List products validation failed: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 400
     except Exception as e:
         logger.error(f"❌ List products failed: {e}", exc_info=True)
         return jsonify({
@@ -308,8 +404,9 @@ def search_product():
     try:
         from backend.services.catalog_helpers import get_catalog_search_service_sync
         
-        owner_field, owner_id, user_id = _get_catalog_owner()
-        organization_id = get_current_user_organization_id()
+        scope_context = _get_catalog_scope_context()
+        organization_id = scope_context["organization_id"]
+        user_id = scope_context["user_id"]
         
         query = request.args.get('query', '').strip()
         
@@ -324,7 +421,8 @@ def search_product():
         result = search_service.search_product(
             query, 
             organization_id=organization_id,
-            user_id=user_id if not organization_id else None
+            user_id=user_id if not organization_id else None,
+            business_unit_id=scope_context["business_unit_id"] if scope_context["scope"] == "business_unit" else None,
         )
         
         if not result:
@@ -335,6 +433,12 @@ def search_product():
         
         return jsonify(result), 200
         
+    except ValueError as e:
+        logger.error(f"❌ Search validation failed: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 400
     except Exception as e:
         logger.error(f"❌ Search failed: {e}", exc_info=True)
         return jsonify({
@@ -537,16 +641,18 @@ def clear_catalog():
         import redis
         from backend.core.config import config
         
-        owner_field, owner_id, user_id = _get_catalog_owner()
-        
+        scope_context = _get_catalog_scope_context()
+        organization_id = scope_context["organization_id"]
+        user_id = scope_context["user_id"]
+
         db = get_database_client()
-        
-        logger.warning(f"⚠️ CLEARING ENTIRE CATALOG for {owner_field}: {owner_id}")
+
+        logger.warning(f"⚠️ CLEARING ENTIRE CATALOG for scope={scope_context['scope']} org={organization_id} user={user_id}")
         
         # Contar productos activos antes de eliminar
         cq = db.client.table('product_catalog')\
             .select('id', count='exact')
-        cq = _apply_owner_filter(cq, owner_field, owner_id)
+        cq = _apply_catalog_scope_filter(cq, scope_context, include_shared=False)
         count_result = cq\
             .eq('is_active', True)\
             .execute()
@@ -563,26 +669,36 @@ def clear_catalog():
         # Soft delete de TODOS los productos
         dq = db.client.table('product_catalog')\
             .update({'is_active': False, 'updated_at': 'now()'})
-        dq = _apply_owner_filter(dq, owner_field, owner_id)
+        dq = _apply_catalog_scope_filter(dq, scope_context, include_shared=False)
         dq.eq('is_active', True).execute()
         
         # Invalidar cache de Redis - opcional
         try:
             redis_client = redis.from_url(config.redis.url, decode_responses=True)
-            redis_client.delete(f"catalog_embeddings:{owner_field}:{owner_id}")
-            logger.info(f"✅ Redis cache invalidated for {owner_field}: {owner_id}")
+            if organization_id:
+                redis_client.delete(f"catalog_embeddings:org:{organization_id}")
+            else:
+                redis_client.delete(f"catalog_embeddings:user:{user_id}")
+            logger.info("✅ Redis cache invalidated for catalog owner")
         except Exception as redis_error:
             # Redis es opcional, no es crítico
             logger.info(f"ℹ️ Redis cache not available (optional): {redis_error}")
         
-        logger.warning(f"✅ CLEARED {products_count} products from catalog ({owner_field}: {owner_id})")
+        logger.warning(f"✅ CLEARED {products_count} products from catalog scope={scope_context['scope']}")
         
         return jsonify({
             'status': 'success',
             'message': f'Catalog cleared successfully. {products_count} products deleted.',
-            'products_deleted': products_count
+            'products_deleted': products_count,
+            'deleted_count': products_count,
         }), 200
         
+    except ValueError as e:
+        logger.error(f"❌ Clear catalog validation failed: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 400
     except Exception as e:
         logger.error(f"❌ Clear catalog failed: {e}", exc_info=True)
         return jsonify({
@@ -603,18 +719,26 @@ def get_stats():
     try:
         from backend.services.catalog_helpers import get_catalog_search_service_sync
         
-        owner_field, owner_id, user_id = _get_catalog_owner()
-        organization_id = get_current_user_organization_id()
+        scope_context = _get_catalog_scope_context()
+        organization_id = scope_context["organization_id"]
+        user_id = scope_context["user_id"]
         
         # Usar servicio SYNC
         search_service = get_catalog_search_service_sync()
         stats = search_service.get_catalog_stats(
             organization_id=organization_id,
-            user_id=user_id if not organization_id else None
+            user_id=user_id if not organization_id else None,
+            business_unit_id=scope_context["business_unit_id"] if scope_context["scope"] == "business_unit" else None,
         )
         
         return jsonify(stats), 200
         
+    except ValueError as e:
+        logger.error(f"❌ Get stats validation failed: {e}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 400
     except Exception as e:
         logger.error(f"❌ Get stats failed: {e}", exc_info=True)
         return jsonify({

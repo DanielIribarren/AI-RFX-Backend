@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-🧪 Startup resilience tests for review routes and optional component reporting.
+🧪 Startup resilience tests for review routes, chat fallback behavior, and
+optional component reporting.
 """
+import json
 import os
 import subprocess
 import sys
@@ -22,8 +24,20 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 # Add backend path to sys.path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
+fake_jose = types.ModuleType("jose")
+fake_jose.JWTError = Exception
+fake_jose.jwt = types.SimpleNamespace(
+    decode=lambda *args, **kwargs: {},
+    encode=lambda *args, **kwargs: "",
+)
+sys.modules.setdefault("jose", fake_jose)
+
 import backend.api.health as health_module
+import backend.api.rfx_chat as rfx_chat_module
+import backend.utils.auth_middleware as auth_module
 from backend.api.health import health_bp
+from backend.api.rfx_chat import rfx_chat_bp
+from backend.models.chat_models import ChatMetadata, ChatResponse, ChangeType, RFXChange
 
 
 class _DummyTableQuery:
@@ -67,6 +81,42 @@ def _fake_sync_playwright():
     return _DummyPlaywrightContext()
 
 
+class _DummyConversationService:
+    async def get_state(self, _rfx_id):
+        return {"state": {}, "status": "active", "requires_clarification": False}
+
+    async def get_recent_events(self, _rfx_id, limit=10):
+        return []
+
+    async def add_event(self, **_kwargs):
+        return None
+
+    async def upsert_state(self, **_kwargs):
+        return None
+
+
+class _DummyCreditsService:
+    def check_credits_available(self, *_args, **_kwargs):
+        return True, 20, None
+
+    def consume_credits(self, *_args, **_kwargs):
+        return {"status": "success", "credits_remaining": 19}
+
+
+class _DummyChatPersistenceService:
+    async def save_chat_message(self, **_kwargs):
+        return {}
+
+
+class _DummyRFXDB:
+    def get_rfx_by_id(self, rfx_id):
+        return {
+            "id": rfx_id,
+            "user_id": "11111111-1111-1111-1111-111111111111",
+            "organization_id": None,
+        }
+
+
 class TestRFXChatStartupResilience:
     def test_review_routes_survive_missing_langchain_openai(self):
         """Review endpoints must remain registered even if chat LLM deps are missing."""
@@ -86,9 +136,43 @@ class TestRFXChatStartupResilience:
             """
             import builtins
             import sys
+            import types
 
             sys.path.insert(0, ".")
             real_import = builtins.__import__
+
+            fake_flask_cors = types.ModuleType("flask_cors")
+            fake_flask_cors.CORS = lambda *args, **kwargs: None
+            sys.modules.setdefault("flask_cors", fake_flask_cors)
+            fake_flask_mail = types.ModuleType("flask_mail")
+            fake_flask_mail.Mail = lambda *args, **kwargs: None
+            fake_flask_mail.Message = type("Message", (), {})
+            sys.modules.setdefault("flask_mail", fake_flask_mail)
+            fake_jose = types.ModuleType("jose")
+            fake_jose.JWTError = Exception
+            fake_jose.jwt = types.SimpleNamespace(
+                decode=lambda *args, **kwargs: {},
+                encode=lambda *args, **kwargs: "",
+            )
+            sys.modules.setdefault("jose", fake_jose)
+            fake_fastapi = types.ModuleType("fastapi")
+            fake_fastapi.FastAPI = lambda *args, **kwargs: None
+            fake_fastapi.HTTPException = Exception
+            fake_fastapi.Depends = lambda dependency=None: dependency
+            fake_fastapi.BackgroundTasks = type("BackgroundTasks", (), {})
+            fake_fastapi.status = types.SimpleNamespace(
+                HTTP_200_OK=200,
+                HTTP_201_CREATED=201,
+                HTTP_400_BAD_REQUEST=400,
+                HTTP_401_UNAUTHORIZED=401,
+                HTTP_404_NOT_FOUND=404,
+                HTTP_500_INTERNAL_SERVER_ERROR=500,
+            )
+            sys.modules.setdefault("fastapi", fake_fastapi)
+            from flask import Blueprint
+            fake_user_branding = types.ModuleType("backend.api.user_branding")
+            fake_user_branding.user_branding_bp = Blueprint("user_branding", __name__)
+            sys.modules.setdefault("backend.api.user_branding", fake_user_branding)
 
             def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
                 if name.startswith("langchain_openai"):
@@ -165,3 +249,114 @@ class TestRFXChatStartupResilience:
         assert payload["data"]["optional_components"]["rfx"]["status"] == "enabled"
         assert payload["data"]["optional_components"]["rfx_chat"]["status"] == "disabled"
         assert payload["data"]["optional_components"]["rfx_chat"]["error_type"] == "ModuleNotFoundError"
+
+    def test_persisted_rfx_chat_falls_back_when_legacy_agent_is_unavailable(self, monkeypatch):
+        """Data View chat should degrade to the lightweight fallback instead of returning 500."""
+        app = Flask(__name__)
+        app.register_blueprint(rfx_chat_bp)
+
+        monkeypatch.setattr(auth_module, "decode_token", lambda _token: {"sub": "11111111-1111-1111-1111-111111111111"})
+        monkeypatch.setattr(
+            auth_module.user_repository,
+            "get_by_id",
+            lambda _user_id: {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "status": "active",
+                "organization_id": None,
+                "email": "test@example.com",
+            },
+        )
+        monkeypatch.setattr(rfx_chat_module, "_get_database_client_instance", lambda: _DummyRFXDB())
+        monkeypatch.setattr(rfx_chat_module, "RFXConversationStateService", _DummyConversationService)
+        monkeypatch.setattr(rfx_chat_module, "_get_credits_service_instance", lambda: _DummyCreditsService())
+        monkeypatch.setattr(rfx_chat_module, "_create_chat_service", lambda: _DummyChatPersistenceService())
+
+        def _raise_legacy_error():
+            raise ModuleNotFoundError("No module named 'langchain_openai'")
+
+        class _FallbackService:
+            def process_message(self, **_kwargs):
+                return ChatResponse(
+                    status="success",
+                    message="Listo, preparé el cambio solicitado.",
+                    confidence=0.82,
+                    changes=[
+                        RFXChange(
+                            type=ChangeType.UPDATE_FIELD,
+                            target="title",
+                            data={"title": "Evento actualizado"},
+                            description="Actualizar titulo",
+                        )
+                    ],
+                    requires_confirmation=False,
+                    options=[],
+                    metadata=ChatMetadata(model_used="gpt-test", processing_time_ms=120),
+                )
+
+        monkeypatch.setattr(rfx_chat_module, "_create_chat_agent", _raise_legacy_error)
+        monkeypatch.setattr(rfx_chat_module, "_create_data_view_chat_service", lambda: _FallbackService())
+
+        response = app.test_client().post(
+            "/api/rfx/rfx-123/chat",
+            data={
+                "message": "Actualiza el titulo",
+                "context": json.dumps({"current_products": []}),
+            },
+            headers={"Authorization": "Bearer test-token"},
+            content_type="multipart/form-data",
+        )
+
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["status"] == "success"
+        assert payload["message"] == "Listo, preparé el cambio solicitado."
+        assert payload["metadata"]["chat_backend"] == "fallback_structured_chat"
+        assert payload["metadata"]["degraded_mode"] is True
+        assert payload["changes"][0]["target"] == "title"
+
+    def test_persisted_rfx_chat_returns_actionable_503_when_all_backends_fail(self, monkeypatch):
+        """If both chat backends fail, the user should get a controlled actionable response."""
+        app = Flask(__name__)
+        app.register_blueprint(rfx_chat_bp)
+
+        monkeypatch.setattr(auth_module, "decode_token", lambda _token: {"sub": "11111111-1111-1111-1111-111111111111"})
+        monkeypatch.setattr(
+            auth_module.user_repository,
+            "get_by_id",
+            lambda _user_id: {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "status": "active",
+                "organization_id": None,
+                "email": "test@example.com",
+            },
+        )
+        monkeypatch.setattr(rfx_chat_module, "_get_database_client_instance", lambda: _DummyRFXDB())
+        monkeypatch.setattr(rfx_chat_module, "RFXConversationStateService", _DummyConversationService)
+        monkeypatch.setattr(rfx_chat_module, "_get_credits_service_instance", lambda: _DummyCreditsService())
+        monkeypatch.setattr(rfx_chat_module, "_create_chat_service", lambda: _DummyChatPersistenceService())
+
+        def _raise_legacy_error():
+            raise ModuleNotFoundError("No module named 'langchain_openai'")
+
+        def _raise_fallback_error():
+            raise RuntimeError("openai unavailable")
+
+        monkeypatch.setattr(rfx_chat_module, "_create_chat_agent", _raise_legacy_error)
+        monkeypatch.setattr(rfx_chat_module, "_create_data_view_chat_service", _raise_fallback_error)
+
+        response = app.test_client().post(
+            "/api/rfx/rfx-123/chat",
+            data={
+                "message": "Actualiza el titulo",
+                "context": json.dumps({"current_products": []}),
+            },
+            headers={"Authorization": "Bearer test-token"},
+            content_type="multipart/form-data",
+        )
+
+        payload = response.get_json()
+        assert response.status_code == 503
+        assert payload["status"] == "error"
+        assert "manual" in payload["message"].lower()
+        assert payload["metadata"]["chat_backend"] == "unavailable"
+        assert payload["metadata"]["retryable"] is True

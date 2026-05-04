@@ -131,6 +131,27 @@ def create_organization():
         new_org = org_result.data[0]
         organization_id = new_org['id']
 
+        # Bootstrap a default business unit for the new organization if none exists yet.
+        existing_units = (
+            db.client.table("business_units")
+            .select("id")
+            .eq("organization_id", organization_id)
+            .limit(1)
+            .execute()
+        )
+        if not existing_units.data:
+            default_unit_payload = {
+                "organization_id": organization_id,
+                "name": name,
+                "slug": slug,
+                "description": f"Default business unit for {name}",
+                "industry_context": "services",
+                "brand_name": name,
+                "is_default": True,
+                "is_active": True,
+            }
+            db.client.table("business_units").insert(default_unit_payload).execute()
+
         # Asignar al usuario como owner de la organización
         db.client.table("users")\
             .update({
@@ -231,59 +252,24 @@ def create_organization():
 @organization_bp.route('/test', methods=['GET'])
 def test_organization_endpoint():
     """
-    🧪 ENDPOINT DE PRUEBA - Sin autenticación
-    
-    Verifica que el backend funciona correctamente.
-    Retorna información de la organización Sabra Corporation (hardcoded).
-    
-    Este endpoint NO requiere autenticación y es solo para testing.
+    🧪 Generic organization endpoint health check.
+
+    Verifica que el backend responde correctamente sin depender de un tenant
+    hardcodeado ni exponer información de una organización real.
     """
     try:
-        # Hardcoded organization ID para testing
-        organization_id = "8ed7f53e-86c7-4dec-861b-822b8a25ed6d"  # Sabra Corporation PRO
-        
         db = get_database_client()
-        
-        # Obtener organización
-        org = db.get_organization(organization_id)
-        if not org:
-            return jsonify({
-                "status": "error",
-                "message": "Test organization not found"
-            }), 404
-        
-        # Obtener plan
-        plan_tier = org.get('plan_tier', 'free')
-        plan = get_plan(plan_tier)
-        
-        # Verificar límites
-        users_limit = db.check_organization_limit(organization_id, 'users')
-        rfx_limit = db.check_organization_limit(organization_id, 'rfx_monthly')
-        
+
+        organizations_response = db.client.table("organizations").select("id", count="exact").limit(1).execute()
+        organizations_count = int(getattr(organizations_response, "count", 0) or 0)
+
         return jsonify({
             "status": "success",
-            "message": "✅ Backend is working! This is a test endpoint without authentication.",
-            "note": "For production, use /api/organization/current with JWT token",
+            "message": "✅ Organization API is reachable.",
+            "note": "For authenticated tenant data, use /api/organization/current with JWT.",
             "data": {
-                "id": org['id'],
-                "name": org['name'],
-                "slug": org['slug'],
-                "is_active": org.get('is_active', True),
-                "trial_ends_at": org.get('trial_ends_at'),
-                "created_at": org.get('created_at'),
-                "plan": plan.to_dict() if plan else None,
-                "usage": {
-                    "users": {
-                        "current": users_limit.get('current_count', 0),
-                        "limit": users_limit.get('limit', 2),
-                        "can_add_more": users_limit.get('can_proceed', False)
-                    },
-                    "rfx_this_month": {
-                        "current": rfx_limit.get('current_count', 0),
-                        "limit": rfx_limit.get('limit', 10),
-                        "can_create_more": rfx_limit.get('can_proceed', False)
-                    }
-                }
+                "organizations_detected": organizations_count,
+                "multi_tenant_ready": True,
             }
         }), 200
         

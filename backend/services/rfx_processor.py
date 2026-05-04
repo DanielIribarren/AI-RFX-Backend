@@ -40,6 +40,7 @@ from backend.core.database import get_database_client
 # ✅ ELIMINADO: from backend.utils.validators import EmailValidator, DateValidator, TimeValidator
 from backend.utils.text_utils import clean_json_string
 from backend.core.feature_flags import FeatureFlags
+from backend.services.business_unit_context import get_industry_profile
 from backend.services.function_calling_extractor import FunctionCallingRFXExtractor
 from backend.services.catalog_search_service_sync import CatalogSearchServiceSync
 from backend.services.ai_agents.rfx_orchestrator_agent import RFXOrchestratorAgent
@@ -599,12 +600,19 @@ class RFXProcessorService:
             logger.error(f"📄 Error type: {type(e).__name__}: {str(e)}")
             raise ValueError(f"Failed to extract text from file: {e}")
     
-    def _process_with_ai(self, text: str) -> Dict[str, Any]:
+    def _resolve_default_rfx_type(self, industry_context: Optional[str]) -> str:
+        normalized = str(industry_context or "services").strip().lower()
+        if normalized == "corporate_catering":
+            return "catering"
+        return "services"
+
+    def _process_with_ai(self, text: str, industry_context: Optional[str] = None) -> Dict[str, Any]:
         """🚀 REFACTORIZADO: Process COMPLETE text with single AI call - NO CHUNKING"""
         try:
             start_time = time.time()
             word_count = len(text.split())
             estimated_tokens = int(word_count * 1.2)  # Conservative estimate
+            industry_profile = get_industry_profile(industry_context)
             
             logger.info(f"🤖 Processing RFX document ({len(text)} chars, ~{estimated_tokens} tokens)")
             
@@ -621,7 +629,11 @@ class RFXProcessorService:
                 logger.info("🚀 Function Calling extraction")
                 try:
                     # Obtener resultado directo de function calling (formato BD)
-                    db_result = self.function_calling_extractor.extract_rfx_data(text)
+                    db_result = self.function_calling_extractor.extract_rfx_data(
+                        text,
+                        industry_context=industry_context,
+                        extraction_context=industry_profile["extraction_context"],
+                    )
                     
                     # 🔄 Convertir formato BD a formato legacy esperado
                     extracted_data = self._convert_db_result_to_legacy_format(db_result)
@@ -967,15 +979,16 @@ class RFXProcessorService:
             logger.error(f"❌ Even fallback processing failed: {e}")
             return self._get_empty_extraction_result()
     
-    def _process_with_ai_legacy(self, text: str) -> Dict[str, Any]:
+    def _process_with_ai_legacy(self, text: str, industry_context: Optional[str] = None) -> Dict[str, Any]:
         """🔧 SIMPLIFIED FALLBACK: No chunking, basic extraction only"""
         logger.warning(f"⚠️ Using SIMPLIFIED LEGACY fallback - no chunking")
         
         try:
+            industry_profile = get_industry_profile(industry_context)
             # Very basic extraction with JSON mode compatible prompt
             system_prompt = """Eres un extractor de datos básico. Responde ÚNICAMENTE en formato JSON válido sin markdown fences."""
             
-            user_prompt = f"""Extrae información básica de este texto de catering en formato JSON:
+            user_prompt = f"""Extrae información básica de este texto de {industry_profile["extraction_context"]} en formato JSON:
 
 Estructura requerida:
 {{
@@ -1439,6 +1452,8 @@ TEXTO: {text[:5000]}"""
                 "validation_status": validated_data.get("validation_metadata", {}),
                 "texto_original_relevante": validated_data.get("texto_original_relevante", ""),
                 "ai_extraction_quality": "high" if validated_data.get("validation_metadata", {}).get("has_original_data", False) else "fallback",
+                "industry_context": rfx_input.industry_context or validated_data.get("industry_context") or "services",
+                "business_unit_id": rfx_input.business_unit_id,
                 # ✨ AÑADIR: Datos de empresa en metadatos para acceso del frontend
                 "nombre_empresa": validated_data.get("nombre_empresa", ""),
                 "email_empresa": validated_data.get("email_empresa", ""),
@@ -1528,7 +1543,14 @@ TEXTO: {text[:5000]}"""
             logger.error(f"❌ Failed to create RFXProcessed object: {e}")
             raise
     
-    def _save_rfx_to_database(self, rfx_processed: RFXProcessed, user_id: str = None, organization_id: str = None) -> None:
+    def _save_rfx_to_database(
+        self,
+        rfx_processed: RFXProcessed,
+        user_id: str = None,
+        organization_id: str = None,
+        business_unit_id: Optional[str] = None,
+        industry_context: Optional[str] = None,
+    ) -> None:
         """Save processed RFX to database V2.0 with normalized structure"""
         try:
             if user_id:
@@ -1599,6 +1621,10 @@ TEXTO: {text[:5000]}"""
                 "requirements": rfx_processed.requirements,
                 "requirements_confidence": rfx_processed.requirements_confidence
             }
+            if business_unit_id:
+                rfx_data["business_unit_id"] = business_unit_id
+            if industry_context:
+                rfx_data["industry_context"] = industry_context
 
             # Canonical RFX corporate code for lookup + operational traceability.
             metadata_json = rfx_data.get("metadata_json") if isinstance(rfx_data.get("metadata_json"), dict) else {}
@@ -1837,12 +1863,16 @@ TEXTO: {text[:5000]}"""
                             "unidad": producto.get("unidad", "unidades")
                         })
             
+            industry_profile = get_industry_profile(
+                rfx_data_raw.get("industry_context") or metadata.get("industry_context")
+            )
+
             # Si aún no hay productos, crear uno por defecto
             if not productos_mapped:
                 productos_mapped = [{
-                    "nombre": "Servicio de Catering",
+                    "nombre": industry_profile["default_product_label"],
                     "cantidad": 1,
-                    "unidad": "servicio"
+                    "unidad": industry_profile["default_unit"]
                 }]
             
             # Estructura mapeada esperada por ProposalGenerationService
@@ -1866,7 +1896,13 @@ TEXTO: {text[:5000]}"""
                 "lugar": rfx_data_raw.get("location", metadata.get("lugar", "Por definir")),
                 "fecha_entrega": rfx_data_raw.get("delivery_date", metadata.get("fecha", "")),
                 "hora_entrega": rfx_data_raw.get("delivery_time", metadata.get("hora_entrega", "")),
-                "tipo": rfx_data_raw.get("rfx_type", metadata.get("tipo_solicitud", "catering")),
+                "tipo": (
+                    rfx_data_raw.get("industry_context")
+                    or rfx_data_raw.get("rfx_type")
+                    or metadata.get("industry_context")
+                    or metadata.get("tipo_solicitud")
+                    or "services"
+                ),
                 
                 # ✅ Información adicional
                 "id": str(rfx_data_raw.get("id", "")),
@@ -1884,11 +1920,11 @@ TEXTO: {text[:5000]}"""
             # Fallback con estructura mínima
             return {
                 "clientes": {"nombre": "Cliente", "email": ""},
-                "productos": [{"nombre": "Servicio de Catering", "cantidad": 1, "unidad": "servicio"}],
+                "productos": [{"nombre": "Service", "cantidad": 1, "unidad": "service"}],
                 "lugar": "Por definir",
                 "fecha_entrega": "",
                 "hora_entrega": "",
-                "tipo": "catering"
+                "tipo": "services"
             }
     
     # REMOVED: _log_proposal_generation_event and _log_proposal_generation_error
@@ -2264,9 +2300,11 @@ TEXTO: {text[:5000]}"""
             raise ValueError("No se pudo extraer texto ni ítems de los archivos proporcionados")
 
         # 3) AI pipeline
+        normalized_industry_context = str(rfx_input.industry_context or "services").strip().lower()
+        rfx_input.industry_context = normalized_industry_context
         rfx_input.extracted_content = combined_text
         logger.info(f"🤖 SENDING TO AI: {len(combined_text)} characters of combined text")
-        raw_data = self._process_with_ai(combined_text)
+        raw_data = self._process_with_ai(combined_text, industry_context=normalized_industry_context)
         
         # 🛡️ SAFETY CHECK: Handle None raw_data before accessing
         if raw_data is None:
@@ -2293,14 +2331,18 @@ TEXTO: {text[:5000]}"""
         else:
             logger.info(f"📊 USING AI extracted products: {ai_products_count} items")
 
+        raw_data["industry_context"] = normalized_industry_context
+
         # 🛒 Resolver/Enriquecer productos (con o sin catálogo)
         if raw_data.get("productos"):
             # Preparar contexto del RFX para selección inteligente de variantes / bundles.
             rfx_context = {
-                'rfx_type': raw_data.get('tipo_evento', 'catering'),
+                'rfx_type': raw_data.get('tipo_evento') or self._resolve_default_rfx_type(normalized_industry_context),
                 'description': raw_data.get('descripcion', ''),
                 'location': raw_data.get('ubicacion', ''),
                 'event_type': raw_data.get('tipo_evento', ''),
+                'industry_context': normalized_industry_context,
+                'business_unit_id': rfx_input.business_unit_id,
                 'source_text': (combined_text or "")[:8000],
             }
 
@@ -2364,7 +2406,13 @@ TEXTO: {text[:5000]}"""
             organization_id=organization_id,
         )
         rfx_processed: RFXProcessed = extracted["rfx_processed"]
-        self._save_rfx_to_database(rfx_processed, user_id=user_id, organization_id=organization_id)
+        self._save_rfx_to_database(
+            rfx_processed,
+            user_id=user_id,
+            organization_id=organization_id,
+            business_unit_id=rfx_input.business_unit_id,
+            industry_context=rfx_input.industry_context,
+        )
         logger.info(f"✅ process_rfx_case done: {rfx_input.id}")
         return rfx_processed
 
@@ -2409,6 +2457,8 @@ TEXTO: {text[:5000]}"""
             "metadata_json": rfx_processed.metadata_json or {},
             "source_text": combined_text,
             "rfx_type": (rfx_processed.rfx_type.value if hasattr(rfx_processed.rfx_type, "value") else str(rfx_processed.rfx_type)),
+            "business_unit_id": rfx_input.business_unit_id,
+            "industry_context": rfx_input.industry_context or (rfx_processed.metadata_json or {}).get("industry_context"),
         }
 
         return {
@@ -2485,6 +2535,7 @@ TEXTO: {text[:5000]}"""
 
         logger.info("🧠 Hybrid mode: weekly/menu signal detected - trying parent bundle resolution")
 
+        business_unit_id = str((rfx_context or {}).get("business_unit_id") or "").strip() or None
         parent_variant = None
         if self.catalog_search:
             parent_queries = [
@@ -2499,6 +2550,7 @@ TEXTO: {text[:5000]}"""
                     variants = self.catalog_search.search_product_variants(
                         query=query,
                         organization_id=organization_id,
+                        business_unit_id=business_unit_id,
                         max_variants=3,
                     )
                     if variants:
@@ -3005,6 +3057,7 @@ TEXTO: {text[:5000]}"""
         matches = 0
         misses = 0
         ai_selections = 0
+        business_unit_id = str((rfx_context or {}).get("business_unit_id") or "").strip() or None
         
         for product in products:
             product_name = product.get('nombre', '')
@@ -3019,6 +3072,7 @@ TEXTO: {text[:5000]}"""
                     query=product_name,
                     organization_id=organization_id,
                     user_id=user_id,
+                    business_unit_id=business_unit_id,
                     max_variants=5
                 )
                 

@@ -76,6 +76,7 @@ from flask import Flask
 from backend.api import proposals as proposals_api
 from backend.api import rfx as rfx_api
 from backend.api import rfx_chat as rfx_chat_api
+from backend.models.chat_models import ChatMetadata, ChatResponse, ChangeType, RFXChange
 from backend.models.proposal_models import GeneratedProposal, ProposalStatus
 from backend.models.rfx_models import RFXProcessed, RFXStatus, RFXType
 from backend.services.document_code_service import DocumentCodeService
@@ -187,20 +188,33 @@ class _FakeDatabaseClient:
 class _FakeSessionService:
     _sessions = {}
 
-    def create_session(self, user_id, organization_id, preview_data, validated_data, evaluation_metadata=None):
+    def _build_first_message(self, preview_data):
+        return f"Review the extracted preview for {preview_data.get('company_name', 'the request')}."
+
+    def create_session(
+        self,
+        user_id,
+        organization_id,
+        preview_data,
+        validated_data,
+        evaluation_metadata=None,
+        status="clarification",
+        conversation_state=None,
+        recent_events=None,
+    ):
         session_id = str(uuid4())
         payload = {
             "id": session_id,
             "user_id": user_id,
             "organization_id": organization_id,
-            "status": "clarification",
+            "status": status,
             "review_required": True,
             "review_confirmed": False,
             "preview_data": dict(preview_data or {}),
             "validated_data": dict(validated_data or {}),
             "evaluation_metadata": dict(evaluation_metadata or {}),
-            "conversation_state": {},
-            "recent_events": [],
+            "conversation_state": dict(conversation_state or {}),
+            "recent_events": list(recent_events or []),
         }
         self._sessions[session_id] = payload
         return payload
@@ -274,7 +288,15 @@ class _PreviewProcessor:
 
     def process_rfx_case_preview(self, rfx_input, blobs, user_id=None, organization_id=None):
         preview_products = [
-            {"id": "prod-1", "nombre": "Coffee break", "cantidad": 1, "unidad": "servicio"},
+            {
+                "id": "prod-1",
+                "nombre": "Coffee break",
+                "cantidad": 1,
+                "unidad": "servicio",
+                "precio_unitario": 120.0,
+                "costo_unitario": 75.0,
+                "total_estimated_cost": 120.0,
+            },
         ]
         preview_data = {
             "id": str(uuid4()),
@@ -430,11 +452,28 @@ def e2e_client(monkeypatch):
     monkeypatch.setattr(rfx_api, "RFXProcessorService", _PreviewProcessor)
     monkeypatch.setattr(rfx_api, "RFXProcessingSessionService", _FakeSessionService)
     monkeypatch.setattr(rfx_api, "get_credits_service", lambda: _FakeCreditsService())
+    monkeypatch.setattr(
+        rfx_api,
+        "_submit_preview_processing",
+        lambda session_id, rfx_input, valid_files, user_id, organization_id: rfx_api._process_preview_session(
+            session_id,
+            rfx_input,
+            valid_files,
+            user_id,
+            organization_id,
+        ),
+    )
     monkeypatch.setattr(rfx_chat_api, "RFXProcessingSessionService", _FakeSessionService)
-    monkeypatch.setattr(rfx_chat_api, "RFXProcessorService", _build_confirm_processor(fake_db))
+    monkeypatch.setattr(
+        rfx_chat_api,
+        "_get_rfx_processing_types",
+        lambda: (__import__("backend.models.rfx_models", fromlist=["RFXInput", "RFXType"]).RFXInput,
+                 __import__("backend.models.rfx_models", fromlist=["RFXInput", "RFXType"]).RFXType,
+                 _build_confirm_processor(fake_db)),
+    )
     monkeypatch.setattr(rfx_chat_api, "RFXConversationStateService", _FakeConversationStateService)
-    monkeypatch.setattr(rfx_chat_api, "get_database_client", lambda: fake_db)
-    monkeypatch.setattr(rfx_chat_api, "get_credits_service", lambda: _FakeCreditsService())
+    monkeypatch.setattr(rfx_chat_api, "_get_database_client_instance", lambda: fake_db)
+    monkeypatch.setattr(rfx_chat_api, "_get_credits_service_instance", lambda: _FakeCreditsService())
 
     monkeypatch.setattr(proposals_api, "get_database_client", lambda: fake_db)
     monkeypatch.setattr(proposals_api, "get_credits_service", lambda: _FakeCreditsService())
@@ -470,8 +509,18 @@ def test_e2e_process_confirm_and_generate_proposal_with_corporate_nomenclature(e
     process_data = process_response.get_json()
     assert process_data["status"] == "success"
     assert process_data["review_required"] is True
+    assert process_data["workflow_status"] == "processing_preview"
     session_id = process_data["session_id"]
     assert session_id
+
+    review_state_response = client.get(
+        f"/api/rfx/session/{session_id}/review/state",
+        headers=headers,
+    )
+    assert review_state_response.status_code == 200
+    review_state = review_state_response.get_json()["data"]
+    assert review_state["workflow_status"] == "extracted_pending_review"
+    assert review_state["preview_ready"] is True
 
     confirm_response = client.post(
         f"/api/rfx/session/{session_id}/review/confirm",
@@ -482,6 +531,16 @@ def test_e2e_process_confirm_and_generate_proposal_with_corporate_nomenclature(e
     assert confirm_data["status"] == "success"
     final_rfx_id = confirm_data["data"]["rfx_id"]
     assert final_rfx_id
+    assert confirm_data["data"]["proposal_generated"] is True
+
+    confirmed_state_response = client.get(
+        f"/api/rfx/session/{session_id}/review/state",
+        headers=headers,
+    )
+    assert confirmed_state_response.status_code == 200
+    confirmed_state = confirmed_state_response.get_json()["data"]
+    assert confirmed_state["review_confirmed"] is True
+    assert confirmed_state["confirmed_rfx_id"] == final_rfx_id
 
     saved_rfx = fake_db.rfx_by_id.get(final_rfx_id)
     assert saved_rfx is not None, "Expected persisted rfx_v2 row in fake DB"
@@ -490,23 +549,201 @@ def test_e2e_process_confirm_and_generate_proposal_with_corporate_nomenclature(e
     assert re.match(r"^SAB-PP-AUT-\d{2}-\d{3}$", saved_rfx_code), f"Unexpected rfx_code: {saved_rfx_code}"
     assert (saved_rfx.get("metadata_json") or {}).get("rfx_code") == saved_rfx_code
 
-    proposal_response = client.post(
-        "/api/proposals/generate",
-        json={"rfx_id": final_rfx_id, "costs": [120.0]},
-        headers=headers,
-    )
-    assert proposal_response.status_code == 200
-    proposal_data = proposal_response.get_json()
-    assert proposal_data["status"] == "success"
-
-    codes = proposal_data.get("codes") or {}
-    assert codes.get("rfx_code") == saved_rfx_code
-    assert re.match(r"^SAB-PP-AUT-\d{2}-\d{3}$", codes.get("proposal_code", "")), (
-        f"Unexpected proposal_code: {codes.get('proposal_code')}"
-    )
-
     saved_docs = list(fake_db.generated_documents.values())
     assert len(saved_docs) == 1
     assert re.match(r"^SAB-PP-AUT-\d{2}-\d{3}-R\d{2}$", saved_docs[0]["proposal_code"])
-    assert (saved_docs[0].get("metadata") or {}).get("proposal_code") == codes["proposal_code"]
+    saved_codes = saved_docs[0].get("metadata") or {}
+    assert saved_codes.get("rfx_code") == saved_rfx_code
+    assert re.match(r"^SAB-PP-AUT-\d{2}-\d{3}$", saved_codes.get("proposal_code", ""))
     assert saved_docs[0]["rfx_code_snapshot"] == saved_rfx_code
+
+
+def test_session_chat_persists_preview_updates_before_confirm(e2e_client, monkeypatch):
+    client, _fake_db = e2e_client
+    headers = {"Authorization": "Bearer integration-test-token"}
+
+    process_response = client.post(
+        "/api/rfx/process",
+        data={
+            "id": "RFX-E2E-CHAT-001",
+            "tipo_rfx": "catering",
+            "contenido_extraido": "Necesitamos un cocktail para 85 personas en La Castellana.",
+        },
+        headers=headers,
+    )
+    assert process_response.status_code == 200
+    session_id = process_response.get_json()["session_id"]
+
+    class _FakeSessionReviewChatService:
+        def process_message(self, **_kwargs):
+            return ChatResponse(
+                status="success",
+                message="I added beverages and updated the delivery location.",
+                confidence=0.92,
+                reasoning=None,
+                changes=[
+                    RFXChange(
+                        type=ChangeType.ADD_PRODUCT,
+                        target="new",
+                        data={
+                            "nombre": "Beverage station",
+                            "cantidad": 3,
+                            "unidad": "servicios",
+                            "precio_unitario": 25.0,
+                            "costo_unitario": 10.0,
+                        },
+                        description="Added beverage station",
+                    ),
+                    RFXChange(
+                        type=ChangeType.UPDATE_FIELD,
+                        target="delivery_location",
+                        data={"delivery_location": "La Castellana"},
+                        description="Updated delivery location",
+                    ),
+                ],
+                requires_confirmation=False,
+                options=[],
+                metadata=ChatMetadata(tokens_used=111, cost_usd=None, processing_time_ms=40, model_used="test-model"),
+            )
+
+    monkeypatch.setattr(
+        rfx_chat_api,
+        "_create_session_review_chat_service",
+        lambda: _FakeSessionReviewChatService(),
+    )
+    monkeypatch.setattr(
+        rfx_chat_api,
+        "_resolve_session_products",
+        lambda products, _preview_data, _organization_id: [
+            {
+                **product,
+                "precio_unitario": product.get("precio_unitario", 0),
+                "costo_unitario": product.get("costo_unitario", 0),
+                "estimated_line_total": float(product.get("cantidad", 0)) * float(product.get("precio_unitario", 0)),
+            }
+            for product in products
+        ],
+    )
+
+    chat_response = client.post(
+        f"/api/rfx/session/{session_id}/chat",
+        data={
+            "id": session_id,
+            "message": "Add three beverage stations and update the delivery location to La Castellana.",
+            "context": "{}",
+        },
+        headers=headers,
+    )
+    assert chat_response.status_code == 200
+    chat_data = chat_response.get_json()
+    assert chat_data["status"] == "success"
+    assert len(chat_data["preview_data"]["products"]) == 2
+    assert chat_data["preview_data"]["location"] == "La Castellana"
+
+    review_state_response = client.get(
+        f"/api/rfx/session/{session_id}/review/state",
+        headers=headers,
+    )
+    assert review_state_response.status_code == 200
+    preview_data = review_state_response.get_json()["data"]["preview_data"]
+    assert len(preview_data["products"]) == 2
+    assert preview_data["location"] == "La Castellana"
+
+
+def test_confirm_session_review_skips_auto_generation_when_preview_has_no_pricing(e2e_client, monkeypatch):
+    client, fake_db = e2e_client
+    headers = {"Authorization": "Bearer integration-test-token"}
+
+    class _ZeroPricingPreviewProcessor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def process_rfx_case_preview(self, rfx_input, blobs, user_id=None, organization_id=None):
+            preview_products = [
+                {
+                    "id": "prod-zero-1",
+                    "nombre": "Cocktail service",
+                    "cantidad": 1,
+                    "unidad": "servicio",
+                    "precio_unitario": 0.0,
+                    "costo_unitario": 0.0,
+                    "total_estimated_cost": 0.0,
+                }
+            ]
+            preview_data = {
+                "id": str(uuid4()),
+                "title": "Evento sin pricing",
+                "description": "QA zero pricing",
+                "email": "qa@sabra.test",
+                "requester_name": "QA User",
+                "company_name": "Sabra QA",
+                "currency": "USD",
+                "delivery_date": "2026-03-10",
+                "location": "Caracas",
+                "requirements": "Servicio completo",
+                "products": preview_products,
+                "source_text": rfx_input.extracted_content or "",
+                "rfx_type": "catering",
+            }
+            validated_data = {
+                "title": "Evento sin pricing",
+                "nombre_empresa": "Sabra QA",
+                "nombre_solicitante": "QA User",
+                "email": "qa@sabra.test",
+                "lugar": "Caracas",
+                "fecha": "2026-03-10",
+                "productos": preview_products,
+            }
+            return {
+                "preview_data": preview_data,
+                "validated_data": validated_data,
+                "evaluation_metadata": {},
+            }
+
+    applied_pricing_payloads = []
+
+    monkeypatch.setattr(rfx_api, "RFXProcessorService", _ZeroPricingPreviewProcessor)
+    monkeypatch.setattr(
+        rfx_chat_api,
+        "_apply_review_pricing_config",
+        lambda rfx_id, pricing_config: applied_pricing_payloads.append((rfx_id, pricing_config)) or True,
+    )
+    monkeypatch.setattr(
+        rfx_chat_api,
+        "_generate_initial_proposal_for_rfx",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Auto-generation should be skipped when total_estimated is zero")),
+    )
+
+    process_response = client.post(
+        "/api/rfx/process",
+        data={
+            "id": "RFX-E2E-ZERO-001",
+            "tipo_rfx": "catering",
+            "contenido_extraido": "Necesitamos un cocktail para 50 personas.",
+        },
+        headers=headers,
+    )
+    assert process_response.status_code == 200
+    session_id = process_response.get_json()["session_id"]
+
+    confirm_response = client.post(
+        f"/api/rfx/session/{session_id}/review/confirm",
+        json={
+            "pricing_config": {
+                "coordination_enabled": True,
+                "coordination_rate": 0.18,
+                "cost_per_person_enabled": True,
+                "headcount": 50,
+            }
+        },
+        headers=headers,
+    )
+    assert confirm_response.status_code == 200
+    confirm_data = confirm_response.get_json()
+    assert confirm_data["status"] == "success"
+    assert confirm_data["data"]["proposal_generated"] is False
+    assert confirm_data["data"]["proposal_skipped"] is True
+    assert confirm_data["data"]["pricing_config_applied"] is True
+    assert confirm_data["data"]["total_estimated"] == 0.0
+    assert applied_pricing_payloads, "Expected review pricing config to be applied before finishing confirmation"
+    assert fake_db.generated_documents == {}

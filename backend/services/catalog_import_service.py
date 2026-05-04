@@ -34,7 +34,14 @@ class CatalogImportService:
         self.openai = openai_client
         self.redis = redis_client
     
-    def import_catalog(self, file, organization_id: str = None, user_id: str = None) -> dict:
+    def import_catalog(
+        self,
+        file,
+        organization_id: str = None,
+        user_id: str = None,
+        scope: str = "business_unit",
+        business_unit_id: str = None,
+    ) -> dict:
         """
         Importa catálogo desde Excel/CSV usando AI para mapeo
         
@@ -45,6 +52,8 @@ class CatalogImportService:
         
         if not organization_id and not user_id:
             raise ValueError("Must provide either organization_id or user_id")
+        if organization_id and scope == "business_unit" and not business_unit_id:
+            raise ValueError("business_unit_id is required when scope is 'business_unit'")
         
         owner_type = "organization" if organization_id else "user"
         owner_id = organization_id or user_id
@@ -64,11 +73,11 @@ class CatalogImportService:
             self._validate_mapping(mapping, df.columns.tolist())
             
             # 4. Extract products con mapeo correcto
-            products = self._extract_products(df, mapping, organization_id, user_id)
+            products = self._extract_products(df, mapping, organization_id, user_id, scope, business_unit_id)
             logger.info(f"✅ Extracted {len(products)} products")
             
             # 5. Upsert inteligente (por código primero, luego nombre)
-            stats = self._smart_upsert(products, organization_id, user_id)
+            stats = self._smart_upsert(products, organization_id, user_id, scope, business_unit_id)
             
             # 6. Invalidate cache
             if self.redis:
@@ -187,7 +196,15 @@ Responde SOLO con el JSON, sin explicaciones."""
         
         logger.info(f"✅ Mapping validation passed")
     
-    def _extract_products(self, df: pd.DataFrame, mapping: dict, organization_id: str = None, user_id: str = None) -> List[dict]:
+    def _extract_products(
+        self,
+        df: pd.DataFrame,
+        mapping: dict,
+        organization_id: str = None,
+        user_id: str = None,
+        scope: str = "business_unit",
+        business_unit_id: str = None,
+    ) -> List[dict]:
         """Extract products usando mapeo AI"""
         
         products = []
@@ -208,6 +225,7 @@ Responde SOLO con el JSON, sin explicaciones."""
                 product = {
                     'organization_id': organization_id,  # Puede ser None
                     'user_id': user_id if not organization_id else None,  # Solo si no hay org
+                    'business_unit_id': business_unit_id if organization_id and scope == "business_unit" else None,
                     'product_code': product_code,
                     'product_name': product_name,
                     'is_active': True
@@ -241,7 +259,14 @@ Responde SOLO con el JSON, sin explicaciones."""
         
         return products
     
-    def _smart_upsert(self, products: List[dict], organization_id: str = None, user_id: str = None) -> dict:
+    def _smart_upsert(
+        self,
+        products: List[dict],
+        organization_id: str = None,
+        user_id: str = None,
+        scope: str = "business_unit",
+        business_unit_id: str = None,
+    ) -> dict:
         """Upsert inteligente: busca por código primero, luego por nombre"""
         
         inserted = 0
@@ -258,6 +283,10 @@ Responde SOLO con el JSON, sin explicaciones."""
                     # Filtrar por organization_id O user_id
                     if organization_id:
                         query_builder = query_builder.eq('organization_id', organization_id)
+                        if scope == "business_unit":
+                            query_builder = query_builder.eq('business_unit_id', business_unit_id)
+                        else:
+                            query_builder = query_builder.is_('business_unit_id', 'null')
                     else:
                         query_builder = query_builder.eq('user_id', user_id).is_('organization_id', 'null')
                     
@@ -272,6 +301,10 @@ Responde SOLO con el JSON, sin explicaciones."""
                     
                     if organization_id:
                         query_builder = query_builder.eq('organization_id', organization_id)
+                        if scope == "business_unit":
+                            query_builder = query_builder.eq('business_unit_id', business_unit_id)
+                        else:
+                            query_builder = query_builder.is_('business_unit_id', 'null')
                     else:
                         query_builder = query_builder.eq('user_id', user_id).is_('organization_id', 'null')
                     

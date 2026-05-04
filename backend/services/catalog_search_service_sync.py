@@ -38,12 +38,44 @@ class CatalogSearchServiceSync:
         self.semantic_threshold = 0.75
         
         logger.info("🛒 CatalogSearchServiceSync initialized (SYNC version)")
+
+    def _apply_catalog_visibility_filter(
+        self,
+        query_builder,
+        organization_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        business_unit_id: Optional[str] = None,
+        *,
+        shared_only: bool = False,
+    ):
+        if organization_id:
+            query_builder = query_builder.eq("organization_id", organization_id)
+            if shared_only:
+                return query_builder.is_("business_unit_id", "null")
+            if business_unit_id:
+                return query_builder.or_(f"business_unit_id.eq.{business_unit_id},business_unit_id.is.null")
+            return query_builder
+
+        return query_builder.eq("user_id", user_id).is_("organization_id", "null")
+
+    def _sort_scope_priority(
+        self,
+        products: List[Dict[str, Any]],
+        business_unit_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if not business_unit_id:
+            return products
+        return sorted(
+            products,
+            key=lambda item: 0 if str(item.get("business_unit_id") or "") == business_unit_id else 1,
+        )
     
     def search_product(
         self, 
         query: str, 
         organization_id: str = None,
         user_id: str = None,
+        business_unit_id: str = None,
         limit: int = 1
     ) -> Optional[Dict[str, Any]]:
         """
@@ -77,19 +109,19 @@ class CatalogSearchServiceSync:
         logger.info(f"🔍 Searching: '{query}' ({owner_type}: {owner_id})")
         
         # 1. EXACT MATCH (más rápido, gratis)
-        exact_match = self._exact_match(query, organization_id, user_id)
+        exact_match = self._exact_match(query, organization_id, user_id, business_unit_id=business_unit_id)
         if exact_match:
             logger.info(f"✅ EXACT match: {exact_match['product_name']}")
             return exact_match
         
         # 2. FUZZY MATCH (rápido, gratis, typos)
-        fuzzy_match = self._fuzzy_match(query, organization_id, user_id)
+        fuzzy_match = self._fuzzy_match(query, organization_id, user_id, business_unit_id=business_unit_id)
         if fuzzy_match:
             logger.info(f"✅ FUZZY match: {fuzzy_match['product_name']} (score: {fuzzy_match['confidence']:.2f})")
             return fuzzy_match
         
         # 3. SEMANTIC SEARCH (lento, cuesta tokens, sinónimos)
-        semantic_match = self._semantic_search(query, organization_id, user_id)
+        semantic_match = self._semantic_search(query, organization_id, user_id, business_unit_id=business_unit_id)
         if semantic_match:
             logger.info(f"✅ SEMANTIC match: {semantic_match['product_name']} (score: {semantic_match['confidence']:.2f})")
             return semantic_match
@@ -102,6 +134,7 @@ class CatalogSearchServiceSync:
         query: str, 
         organization_id: str = None,
         user_id: str = None,
+        business_unit_id: str = None,
         max_variants: int = 5
     ) -> List[Dict[str, Any]]:
         """
@@ -134,13 +167,19 @@ class CatalogSearchServiceSync:
         all_matches = []
         
         # 1. EXACT MATCH
-        exact_match = self._exact_match(query, organization_id, user_id)
+        exact_match = self._exact_match(query, organization_id, user_id, business_unit_id=business_unit_id)
         if exact_match:
             all_matches.append(exact_match)
             logger.info(f"✅ EXACT match: {exact_match['product_name']}")
         
         # 2. FUZZY MATCH (múltiples resultados)
-        fuzzy_matches = self._fuzzy_match_multiple(query, organization_id, user_id, limit=max_variants)
+        fuzzy_matches = self._fuzzy_match_multiple(
+            query,
+            organization_id,
+            user_id,
+            business_unit_id=business_unit_id,
+            limit=max_variants,
+        )
         for match in fuzzy_matches:
             # Evitar duplicados
             if not any(m['id'] == match['id'] for m in all_matches):
@@ -148,13 +187,24 @@ class CatalogSearchServiceSync:
         
         # 3. SEMANTIC SEARCH (si no hay suficientes matches)
         if len(all_matches) < max_variants:
-            semantic_matches = self._semantic_search_multiple(query, organization_id, user_id, limit=max_variants)
+            semantic_matches = self._semantic_search_multiple(
+                query,
+                organization_id,
+                user_id,
+                business_unit_id=business_unit_id,
+                limit=max_variants,
+            )
             for match in semantic_matches:
                 if not any(m['id'] == match['id'] for m in all_matches):
                     all_matches.append(match)
         
-        # Ordenar por confidence (mayor a menor)
-        all_matches.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+        # Ordenar por prioridad de business unit y luego confidence.
+        all_matches.sort(
+            key=lambda x: (
+                0 if business_unit_id and str(x.get("business_unit_id") or "") == business_unit_id else 1,
+                -(x.get('confidence', 0) or 0),
+            )
+        )
         
         # Limitar a max_variants
         result = all_matches[:max_variants]
@@ -172,7 +222,8 @@ class CatalogSearchServiceSync:
         self, 
         query: str, 
         organization_id: str = None,
-        user_id: str = None
+        user_id: str = None,
+        business_unit_id: str = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Búsqueda exact match case-insensitive
@@ -184,22 +235,23 @@ class CatalogSearchServiceSync:
         
         try:
             query_builder = self.db.client.table("product_catalog")\
-                .select("id, product_name, product_code, unit_cost, unit_price, unit, product_type, bundle_schema, constraint_rules, semantic_tags")
+                .select("id, product_name, product_code, unit_cost, unit_price, unit, product_type, bundle_schema, constraint_rules, semantic_tags, business_unit_id")
             
-            # Filtrar por organization_id O user_id
-            if organization_id:
-                query_builder = query_builder.eq("organization_id", organization_id)
-            else:
-                query_builder = query_builder.eq("user_id", user_id).is_("organization_id", "null")
+            query_builder = self._apply_catalog_visibility_filter(
+                query_builder,
+                organization_id=organization_id,
+                user_id=user_id,
+                business_unit_id=business_unit_id,
+            )
             
             response = query_builder\
                 .eq("is_active", True)\
                 .ilike("product_name", query)\
-                .limit(1)\
+                .limit(10 if business_unit_id else 1)\
                 .execute()
             
             if response.data:
-                product = response.data[0]
+                product = self._sort_scope_priority(response.data, business_unit_id)[0]
                 return {
                     **product,
                     'match_type': 'exact',
@@ -216,7 +268,8 @@ class CatalogSearchServiceSync:
         self, 
         query: str, 
         organization_id: str = None,
-        user_id: str = None
+        user_id: str = None,
+        business_unit_id: str = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Búsqueda fuzzy con pg_trgm
@@ -234,13 +287,14 @@ class CatalogSearchServiceSync:
             
             # Construir query con OR para cada palabra
             query_builder = self.db.client.table("product_catalog")\
-                .select("id, product_name, product_code, unit_cost, unit_price, unit, product_type, bundle_schema, constraint_rules, semantic_tags")
+                .select("id, product_name, product_code, unit_cost, unit_price, unit, product_type, bundle_schema, constraint_rules, semantic_tags, business_unit_id")
             
-            # Filtrar por organization_id O user_id
-            if organization_id:
-                query_builder = query_builder.eq("organization_id", organization_id)
-            else:
-                query_builder = query_builder.eq("user_id", user_id).is_("organization_id", "null")
+            query_builder = self._apply_catalog_visibility_filter(
+                query_builder,
+                organization_id=organization_id,
+                user_id=user_id,
+                business_unit_id=business_unit_id,
+            )
             
             response = query_builder\
                 .eq("is_active", True)\
@@ -254,6 +308,7 @@ class CatalogSearchServiceSync:
             # Calcular similitud simple (ratio de palabras coincidentes)
             best_match = None
             best_score = 0
+            best_scope_priority = 99
             
             for product in response.data:
                 product_name = product['product_name'].lower()
@@ -262,8 +317,13 @@ class CatalogSearchServiceSync:
                 matches = sum(1 for word in words if word in product_name)
                 score = matches / len(words)
                 
-                if score > best_score and score >= (self.fuzzy_threshold - 0.2):  # Más flexible
+                scope_priority = 0 if business_unit_id and str(product.get("business_unit_id") or "") == business_unit_id else 1
+                if score >= (self.fuzzy_threshold - 0.2) and (
+                    scope_priority < best_scope_priority or
+                    (scope_priority == best_scope_priority and score > best_score)
+                ):
                     best_score = score
+                    best_scope_priority = scope_priority
                     best_match = product
             
             if best_match and best_score >= 0.7:  # Threshold mínimo
@@ -284,6 +344,7 @@ class CatalogSearchServiceSync:
         query: str, 
         organization_id: str = None,
         user_id: str = None,
+        business_unit_id: str = None,
         limit: int = 5
     ) -> List[Dict[str, Any]]:
         """
@@ -298,13 +359,14 @@ class CatalogSearchServiceSync:
             
             # Construir query
             query_builder = self.db.client.table("product_catalog")\
-                .select("id, product_name, product_code, unit_cost, unit_price, unit, product_type, bundle_schema, constraint_rules, semantic_tags")
+                .select("id, product_name, product_code, unit_cost, unit_price, unit, product_type, bundle_schema, constraint_rules, semantic_tags, business_unit_id")
             
-            # Filtrar por organization_id O user_id
-            if organization_id:
-                query_builder = query_builder.eq("organization_id", organization_id)
-            else:
-                query_builder = query_builder.eq("user_id", user_id).is_("organization_id", "null")
+            query_builder = self._apply_catalog_visibility_filter(
+                query_builder,
+                organization_id=organization_id,
+                user_id=user_id,
+                business_unit_id=business_unit_id,
+            )
             
             response = query_builder\
                 .eq("is_active", True)\
@@ -332,7 +394,12 @@ class CatalogSearchServiceSync:
                     })
             
             # Ordenar por score y limitar
-            matches.sort(key=lambda x: x['confidence'], reverse=True)
+            matches.sort(
+                key=lambda x: (
+                    0 if business_unit_id and str(x.get("business_unit_id") or "") == business_unit_id else 1,
+                    -x['confidence'],
+                )
+            )
             return matches[:limit]
             
         except Exception as e:
@@ -343,7 +410,8 @@ class CatalogSearchServiceSync:
         self, 
         query: str, 
         organization_id: str = None,
-        user_id: str = None
+        user_id: str = None,
+        business_unit_id: str = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Búsqueda semántica con embeddings (SYNC)
@@ -354,6 +422,9 @@ class CatalogSearchServiceSync:
         """
         
         try:
+            if business_unit_id:
+                logger.info("ℹ️ Semantic search skipped for business-unit scoped catalog visibility")
+                return None
             # 1. Obtener embeddings cacheados de Redis
             owner_id = organization_id or user_id
             owner_type = "org" if organization_id else "user"
@@ -421,6 +492,7 @@ class CatalogSearchServiceSync:
         query: str, 
         organization_id: str = None,
         user_id: str = None,
+        business_unit_id: str = None,
         limit: int = 5
     ) -> List[Dict[str, Any]]:
         """
@@ -429,6 +501,9 @@ class CatalogSearchServiceSync:
         """
         
         try:
+            if business_unit_id:
+                logger.info("ℹ️ Semantic variant search skipped for business-unit scoped catalog visibility")
+                return []
             # 1. Obtener embeddings cacheados de Redis
             owner_id = organization_id or user_id
             owner_type = "org" if organization_id else "user"
@@ -509,7 +584,8 @@ class CatalogSearchServiceSync:
         self, 
         queries: List[str], 
         organization_id: str = None,
-        user_id: str = None
+        user_id: str = None,
+        business_unit_id: str = None,
     ) -> List[Optional[Dict[str, Any]]]:
         """
         Búsqueda en batch de múltiples productos (SYNC)
@@ -527,12 +603,17 @@ class CatalogSearchServiceSync:
         results = []
         
         for query in queries:
-            result = self.search_product(query, organization_id, user_id)
+            result = self.search_product(query, organization_id, user_id, business_unit_id=business_unit_id)
             results.append(result)
         
         return results
     
-    def get_catalog_stats(self, organization_id: str = None, user_id: str = None) -> Dict[str, Any]:
+    def get_catalog_stats(
+        self,
+        organization_id: str = None,
+        user_id: str = None,
+        business_unit_id: str = None,
+    ) -> Dict[str, Any]:
         """
         Obtener estadísticas del catálogo (SYNC)
         Lógica: organization_id primero, user_id como fallback
@@ -556,13 +637,14 @@ class CatalogSearchServiceSync:
             
             # Contar productos
             query_builder = self.db.client.table("product_catalog")\
-                .select("id, unit_cost, unit_price", count="exact")
+                .select("id, unit_cost, unit_price, business_unit_id", count="exact")
             
-            # Filtrar por organization_id O user_id
-            if organization_id:
-                query_builder = query_builder.eq("organization_id", organization_id)
-            else:
-                query_builder = query_builder.eq("user_id", user_id).is_("organization_id", "null")
+            query_builder = self._apply_catalog_visibility_filter(
+                query_builder,
+                organization_id=organization_id,
+                user_id=user_id,
+                business_unit_id=business_unit_id,
+            )
             
             response = query_builder\
                 .eq("is_active", True)\
