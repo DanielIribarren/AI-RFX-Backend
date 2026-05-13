@@ -67,8 +67,10 @@ def generate_apu():
     Body:
         rfx_id (str, required)
         tasa_bcv (float, optional)
-        pct_costos_indirectos (float, optional)
+        pct_admin_gg (float, optional)
+        pct_costos_indirectos (float, optional, alias legacy)
         pct_utilidad (float, optional)
+        pct_sobre_costo_labor (float, optional)
     """
     if not request.is_json:
         return jsonify({
@@ -99,8 +101,10 @@ def generate_apu():
         result = service.generate(
             rfx_id=payload.rfx_id,
             tasa_bcv=payload.tasa_bcv,
+            pct_admin_gg=payload.pct_admin_gg,
             pct_costos_indirectos=payload.pct_costos_indirectos,
             pct_utilidad=payload.pct_utilidad,
+            pct_sobre_costo_labor=payload.pct_sobre_costo_labor,
         )
     except APUGenerationError as e:
         logger.error("APU generation failed rfx_id=%s: %s", payload.rfx_id, e)
